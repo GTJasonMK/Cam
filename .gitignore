@@ -1,0 +1,47 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build output
+dist
+.next
+.turbo
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+
+# Database
+cam-data/
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+logs/
+
+# IDE & AI tools
+.claude/
+.codex/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS artifacts
+nul
+Thumbs.db
+.DS_Store
+
+# Test output
+playwright-report/
+test-results/
+coverage/
+
+# Project internal docs (non-essential)
+PROJECT_PLAN.md
+verification.md

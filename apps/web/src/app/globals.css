@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #07080a;
+  --color-foreground: #f0f0f0;
+  --color-card: #0f1117;
+  --color-card-foreground: #f0f0f0;
+  --color-card-elevated: #161820;
+  --color-primary: #6366f1;
+  --color-primary-foreground: #ffffff;
+  --color-muted: #1e2028;
+  --color-muted-foreground: #8b8fa3;
+  --color-border: #23262f;
+  --color-border-light: #2d3140;
+  --color-destructive: #f43f5e;
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-accent: #a78bfa;
+  --color-ring: #6366f1;
+  --color-cyan: #22d3ee;
+}
+
+:root {
+  --background: #07080a;
+  --foreground: #f0f0f0;
+  --card: #0f1117;
+  --card-elevated: #161820;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --muted: #1e2028;
+  --muted-foreground: #8b8fa3;
+  --border: #23262f;
+  --border-light: #2d3140;
+  --destructive: #f43f5e;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --accent: #a78bfa;
+  --cyan: #22d3ee;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(99, 102, 241, 0.35);
+  color: #fff;
+}
+
+/* 表单控件聚焦环 */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+/* 表格 hover */
+tr.hoverable { transition: background 0.15s; }
+tr.hoverable:hover { background: rgba(99, 102, 241, 0.04); }
+
+/* 微妙的噪点纹理（给纯色背景增加质感） */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* 全局 section 标题样式 */
+.section-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+}

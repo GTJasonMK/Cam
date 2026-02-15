@@ -1,0 +1,27 @@
+{
+  "name": "coding-agents-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Coding Agent cloud CI/CD system",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "dev:web": "pnpm --filter @cam/web dev",
+    "dev:worker": "pnpm --filter @cam/worker dev",
+    "build:shared": "pnpm --filter @cam/shared build",
+    "db:generate": "pnpm --filter @cam/web db:generate",
+    "db:migrate": "pnpm --filter @cam/web db:migrate",
+    "db:seed": "pnpm --filter @cam/web db:seed",
+    "docker:build:worker-base": "docker build -t cam-worker-base -f apps/worker/Dockerfile .",
+    "docker:build:agents": "pnpm docker:build:worker-base && docker build -t cam-worker:claude-code -f docker/claude-code/Dockerfile . && docker build -t cam-worker:codex -f docker/codex/Dockerfile . && docker build -t cam-worker:aider -f docker/aider/Dockerfile ."
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "devDependencies": {
+    "turbo": "^2.8.3"
+  }
+}
