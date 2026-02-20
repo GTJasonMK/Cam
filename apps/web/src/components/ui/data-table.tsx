@@ -141,7 +141,7 @@ export function DataTable<T>({
                 if (!onSelectionChange) return;
                 onSelectionChange(allSelected ? new Set() : new Set(allKeys));
               }}
-              className="h-4 w-4 rounded border-border accent-primary"
+              className="h-5 w-5 rounded border-border accent-primary sm:h-4 sm:w-4"
             />
           );
         },
@@ -159,7 +159,7 @@ export function DataTable<T>({
                 else next.add(key);
                 onSelectionChange(next);
               }}
-              className="h-4 w-4 rounded border-border accent-primary"
+              className="h-5 w-5 rounded border-border accent-primary sm:h-4 sm:w-4"
             />
           );
         },

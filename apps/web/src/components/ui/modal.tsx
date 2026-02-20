@@ -41,7 +41,7 @@ export function Modal({ open, onClose, title, description, children, size = 'md'
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
-        <div className="max-h-[calc(84vh-132px)] overflow-y-auto px-7 py-6">
+        <div className="max-h-[calc(84vh-132px)] overflow-y-auto px-5 py-4 sm:px-7 sm:py-6">
           {children}
         </div>
         {footer ? <DialogFooter>{footer}</DialogFooter> : null}

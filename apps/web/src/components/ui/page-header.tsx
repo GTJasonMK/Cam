@@ -11,7 +11,7 @@ export function PageHeader({ title, subtitle, children }: PageHeaderProps) {
     <div>
       <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="bg-gradient-to-b from-white via-white/95 to-white/70 bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl">
+          <h1 className="bg-gradient-to-b from-white via-white/95 to-white/70 bg-clip-text text-3xl font-semibold tracking-tight text-transparent sm:text-4xl lg:text-5xl">
             {title}
           </h1>
           {subtitle ? <p className="mt-3 text-lg leading-relaxed text-muted-foreground">{subtitle}</p> : null}

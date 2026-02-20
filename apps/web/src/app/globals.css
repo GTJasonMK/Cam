@@ -331,6 +331,13 @@
     animation: pulse-ambient 7.6s ease-in-out infinite;
   }
 
+  /* 移动端隐藏装饰性 blob（节省渲染开销） */
+  @media (max-width: 767px) {
+    .ambient-blobs {
+      display: none;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -351,6 +358,18 @@
   @media (min-width: 1200px) {
     html {
       font-size: 17px;
+    }
+  }
+
+  /* 移动端触摸优化 */
+  @media (max-width: 767px) {
+    /* 防止 iOS 双击缩放（让浏览器知道元素可点击） */
+    button,
+    a,
+    input,
+    select,
+    textarea {
+      touch-action: manipulation;
     }
   }
 }

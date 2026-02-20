@@ -26,14 +26,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="ambient-blob ambient-blob-tertiary" />
           <div className="ambient-blob ambient-blob-bottom" />
         </div>
-        <div className="relative z-10 flex h-screen w-full overflow-hidden">
+        <div className="relative z-10 flex h-dvh w-full overflow-hidden">
           <FeedbackProvider>
             <SSEListener />
             <Suspense>
               <AuthProvider>
                 <Sidebar />
                 <main className="relative flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-                  <div className="mx-auto max-w-[82rem] px-8 py-14 sm:px-12 lg:px-16 lg:py-16">
+                  <div className="mx-auto max-w-[82rem] px-4 py-6 sm:px-8 sm:py-14 lg:px-16 lg:py-16">
                     <RouteTransition>{children}</RouteTransition>
                   </div>
                 </main>

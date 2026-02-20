@@ -126,7 +126,7 @@ export function Sidebar() {
       <button
         type="button"
         onClick={() => setMobileOpen(true)}
-        className="fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/12 bg-white/[0.06] text-muted-foreground shadow-[0_8px_18px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-200 hover:border-white/20 hover:bg-white/[0.1] hover:text-foreground md:hidden"
+        className="fixed left-3 top-3 z-40 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/12 bg-white/[0.06] text-muted-foreground shadow-[0_8px_18px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-200 hover:border-white/20 hover:bg-white/[0.1] hover:text-foreground md:hidden"
         aria-label={SIDEBAR_UI_MESSAGES.openMenuAria}
       >
         <Menu size={19} />
@@ -143,7 +143,7 @@ export function Sidebar() {
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex h-screen w-[var(--sidebar-width)] flex-col border-r border-white/8 bg-sidebar shadow-[0_18px_36px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] md:static md:z-auto md:translate-x-0',
+          'fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(var(--sidebar-width),85vw)] flex-col border-r border-white/8 bg-sidebar shadow-[0_18px_36px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] md:static md:z-auto md:w-[var(--sidebar-width)] md:translate-x-0',
           mobileOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
@@ -194,7 +194,7 @@ export function Sidebar() {
                         setMobileOpen(false);
                       }}
                       className={cn(
-                        'group relative flex items-center gap-3 rounded-xl border px-3.5 py-2.5 text-[0.95rem] font-medium transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
+                        'group relative flex items-center gap-3 rounded-xl border px-3.5 py-3 text-[0.95rem] font-medium transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
                         isActive
                           ? 'border-primary/35 bg-[linear-gradient(120deg,rgba(94,106,210,0.2)_0%,rgba(94,106,210,0.08)_75%)] text-foreground shadow-[0_0_0_1px_rgba(94,106,210,0.2),0_8px_22px_rgba(94,106,210,0.16)]'
                           : 'border-transparent text-muted-foreground hover:border-white/10 hover:bg-white/[0.06] hover:text-foreground',
@@ -271,7 +271,7 @@ export function Sidebar() {
           </div>
           <button
             onClick={handleSignOut}
-            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground transition-all duration-200 hover:border-destructive/20 hover:bg-destructive/8 hover:text-destructive"
+            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-3 text-sm font-medium text-muted-foreground transition-all duration-200 hover:border-destructive/20 hover:bg-destructive/8 hover:text-destructive"
           >
             <LogOut size={14} />
             {SIDEBAR_UI_MESSAGES.signOut}
