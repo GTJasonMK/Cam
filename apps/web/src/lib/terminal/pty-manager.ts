@@ -7,6 +7,13 @@
 import * as pty from 'node-pty';
 import crypto from 'crypto';
 import type { SessionInfo } from './protocol';
+import { toWSLPath, buildWSLEnvArgs } from './wsl';
+
+/** 单个参数的 POSIX shell 引用（用于 bash -lc 拼接） */
+function shellQuote(s: string): string {
+  if (/^[A-Za-z0-9_\-=/.,:@+]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 /** 单个 PTY 会话 */
 interface PtySession {
@@ -58,6 +65,8 @@ class PtyManager {
     cwd?: string;
     /** 空闲超时毫秒数（覆盖默认 30 分钟，Agent 会话可设 4 小时） */
     idleTimeoutMs?: number;
+    /** 运行时环境：native = 直接执行，wsl = Windows 上通过 wsl.exe 代理执行 */
+    runtime?: 'native' | 'wsl';
   }): { sessionId: string; shell: string } {
     // 用户会话数限制
     const userSessionCount = this.listByUser(opts.userId).length;
@@ -66,16 +75,34 @@ class PtyManager {
     }
 
     const sessionId = crypto.randomUUID();
+    const cwd = opts.cwd || process.env.HOME || process.env.USERPROFILE || process.cwd();
 
     // command 模式：直接 spawn 命令；否则 spawn shell
-    // Windows 上 .cmd/.bat 文件无法被 CreateProcess 直接执行，需 cmd.exe /c 中转
     let file: string;
     let args: string[];
+    let skipEnvMerge = false;
     if (opts.command) {
-      if (process.platform === 'win32') {
+      const runtime = opts.runtime ?? 'native';
+      const useWSL = runtime === 'wsl' && process.platform === 'win32';
+
+      if (useWSL) {
+        // WSL 模式：通过 bash -lic 以登录交互 shell 方式执行
+        // 需要 source ~/.bashrc 因为 nvm/fnm 等工具的 PATH 通常写在 .bashrc 中，
+        // 而 `bash -lc`（login non-interactive）在多数 Ubuntu 配置下不会加载 .bashrc
+        const wslCwd = toWSLPath(cwd);
+        const envArgs = buildWSLEnvArgs(opts.env ?? {});
+        const cmdParts = [...envArgs, opts.command, ...(opts.args ?? [])];
+        const cmdStr = cmdParts.map(shellQuote).join(' ');
+        file = 'wsl.exe';
+        args = ['--cd', wslCwd, '--', 'bash', '-lic', cmdStr];
+        // WSL 模式下 env 通过 `env KEY=VAL` 前缀注入，不合并到 node-pty env
+        skipEnvMerge = true;
+      } else if (process.platform === 'win32') {
+        // Windows native：.cmd/.bat 文件无法被 CreateProcess 直接执行，需 cmd.exe /c 中转
         file = 'cmd.exe';
         args = ['/c', opts.command, ...(opts.args ?? [])];
       } else {
+        // Linux / macOS：直接执行
         file = opts.command;
         args = opts.args ?? [];
       }
@@ -86,14 +113,11 @@ class PtyManager {
     const shell = opts.command || opts.shell || detectDefaultShell();
     const now = new Date().toISOString();
 
-    const mergedEnv: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      ...opts.env,
-    };
+    const mergedEnv: Record<string, string> = skipEnvMerge
+      ? { ...(process.env as Record<string, string>) }
+      : { ...(process.env as Record<string, string>), ...opts.env };
     // 清除嵌套检测变量，允许 PTY 中启动 Claude Code CLI
     delete mergedEnv.CLAUDECODE;
-
-    const cwd = opts.cwd || process.env.HOME || process.env.USERPROFILE || process.cwd();
 
     const proc = pty.spawn(file, args, {
       name: 'xterm-256color',
@@ -185,7 +209,11 @@ class PtyManager {
   resize(sessionId: string, cols: number, rows: number): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.process.resize(cols, rows);
+    try {
+      session.process.resize(cols, rows);
+    } catch {
+      // PTY 进程可能已退出，忽略 resize 错误
+    }
   }
 
   /** 销毁 PTY 会话 */

@@ -444,7 +444,7 @@ interface TaskStore {
     workDir?: string;
     maxRetries?: number;
     groupId?: string;
-    steps: Array<{ title: string; description: string }>;
+    steps: Array<{ title: string; description: string; agentDefinitionId?: string }>;
   }) => Promise<{
     success: boolean;
     pipelineId?: string;

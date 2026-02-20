@@ -1,37 +1,48 @@
 // ============================================================
-// 目录浏览 + Claude Code 会话发现 REST API
-// GET /api/terminal/browse?path={}&discover=true
+// 目录浏览 + CLI Agent 会话发现 REST API
+// GET /api/terminal/browse?path={}&agent=claude-code|codex
+// agent 参数指定发现哪种 Agent 的会话
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { readdir, access } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-import { discoverClaudeSessions, type ClaudeSessionSummary } from '@/lib/terminal/claude-session-discovery';
+import { discoverClaudeSessions } from '@/lib/terminal/claude-session-discovery';
+import { discoverCodexSessions } from '@/lib/terminal/codex-session-discovery';
 
 const IS_WINDOWS = process.platform === 'win32';
+
+/** Agent 会话摘要（统一类型，Claude / Codex 共用） */
+export interface AgentSessionSummary {
+  sessionId: string;
+  lastModified: string;
+  sizeBytes: number;
+}
 
 /** 目录条目 */
 interface DirectoryEntry {
   name: string;
   path: string;
   isDirectory: boolean;
-  /** 是否为 Git 仓库（包含 .git 目录） */
   isGitRepo: boolean;
-  /** 是否包含 Claude 配置（CLAUDE.md 或 .claude/） */
   hasClaude: boolean;
+  /** 是否包含 Codex 配置（AGENTS.md） */
+  hasCodex: boolean;
 }
 
 /** 浏览响应 */
 interface BrowseResponse {
   currentPath: string;
   parentPath: string | null;
-  /** 当前目录自身是否为 Git 仓库 */
   isGitRepo: boolean;
-  /** 当前目录自身是否包含 Claude 配置 */
   hasClaude: boolean;
+  hasCodex: boolean;
   entries: DirectoryEntry[];
-  claudeSessions: ClaudeSessionSummary[];
+  /** 统一的 Agent 会话列表（按 agent 参数决定发现哪种） */
+  agentSessions: AgentSessionSummary[];
+  /** 向后兼容：与 agentSessions 相同 */
+  claudeSessions: AgentSessionSummary[];
 }
 
 /** 检查路径是否存在 */
@@ -44,14 +55,19 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-/** 并行检测目录的 Git / Claude 特征 */
-async function detectDirFeatures(fullPath: string): Promise<{ isGitRepo: boolean; hasClaude: boolean }> {
-  const [isGitRepo, hasClaudeMd, hasClaudeDir] = await Promise.all([
+/** 并行检测目录的 Git / Claude / Codex 特征 */
+async function detectDirFeatures(fullPath: string): Promise<{ isGitRepo: boolean; hasClaude: boolean; hasCodex: boolean }> {
+  const [isGitRepo, hasClaudeMd, hasClaudeDir, hasAgentsMd] = await Promise.all([
     exists(join(fullPath, '.git')),
     exists(join(fullPath, 'CLAUDE.md')),
     exists(join(fullPath, '.claude')),
+    exists(join(fullPath, 'AGENTS.md')),
   ]);
-  return { isGitRepo, hasClaude: hasClaudeMd || hasClaudeDir };
+  return {
+    isGitRepo,
+    hasClaude: hasClaudeMd || hasClaudeDir,
+    hasCodex: hasAgentsMd,
+  };
 }
 
 /** 获取 Windows 盘符列表（并行检测） */
@@ -60,7 +76,7 @@ async function getWindowsDrives(): Promise<DirectoryEntry[]> {
     const letter = String.fromCharCode(65 + i);
     const drivePath = `${letter}:\\`;
     return exists(drivePath).then((ok) =>
-      ok ? { name: `${letter}:`, path: drivePath, isDirectory: true, isGitRepo: false, hasClaude: false } : null,
+      ok ? { name: `${letter}:`, path: drivePath, isDirectory: true, isGitRepo: false, hasClaude: false, hasCodex: false } : null,
     );
   });
   const results = await Promise.all(checks);
@@ -77,7 +93,7 @@ async function getRootEntries(): Promise<DirectoryEntry[]> {
 
 /**
  * 扫描指定目录的子条目
- * 使用 withFileTypes 避免额外 stat 调用，并行检测 Git/Claude 特征
+ * 使用 withFileTypes 避免额外 stat 调用，并行检测 Git/Claude/Codex 特征
  */
 async function scanDirectory(dirPath: string): Promise<DirectoryEntry[]> {
   let dirents: import('node:fs').Dirent[];
@@ -92,7 +108,7 @@ async function scanDirectory(dirPath: string): Promise<DirectoryEntry[]> {
     (d) => d.isDirectory() && (!d.name.startsWith('.') || d.name === '.claude'),
   );
 
-  // 并行检测所有目录的 Git/Claude 特征
+  // 并行检测所有目录的特征
   const entries = await Promise.all(
     dirs.map(async (d) => {
       const fullPath = join(dirPath, d.name);
@@ -106,20 +122,44 @@ async function scanDirectory(dirPath: string): Promise<DirectoryEntry[]> {
     }),
   );
 
-  // 按名称排序，Git 仓库和 Claude 项目优先
+  // 按名称排序，Git 仓库和项目优先
   entries.sort((a, b) => {
     if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
     if (a.hasClaude !== b.hasClaude) return a.hasClaude ? -1 : 1;
+    if (a.hasCodex !== b.hasCodex) return a.hasCodex ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 
   return entries;
 }
 
+/** 按 agent 类型发现会话 */
+async function discoverSessions(
+  targetPath: string,
+  agent: string | null,
+  runtime: string | null,
+): Promise<AgentSessionSummary[]> {
+  if (agent === 'claude-code') {
+    return discoverClaudeSessions(targetPath);
+  }
+  if (agent === 'codex') {
+    return discoverCodexSessions(targetPath, {
+      runtime: runtime === 'wsl' ? 'wsl' : 'native',
+    });
+  }
+  return [];
+}
+
 async function handleGet(request: AuthenticatedRequest) {
   const { searchParams } = new URL(request.url);
   const rawPath = searchParams.get('path');
-  const discover = searchParams.get('discover') === 'true';
+  // agent 参数：claude-code | codex（决定发现哪种会话）
+  const agent = searchParams.get('agent');
+  // runtime 参数：native | wsl（影响 Codex 会话目录位置）
+  const runtime = searchParams.get('runtime');
+  // 向后兼容：discover=true 等价于 agent=claude-code
+  const legacyDiscover = searchParams.get('discover') === 'true';
+  const effectiveAgent = agent || (legacyDiscover ? 'claude-code' : null);
 
   // 未指定路径：返回常用根目录
   if (!rawPath) {
@@ -129,7 +169,9 @@ async function handleGet(request: AuthenticatedRequest) {
       parentPath: null,
       isGitRepo: false,
       hasClaude: false,
+      hasCodex: false,
       entries,
+      agentSessions: [],
       claudeSessions: [],
     };
     return NextResponse.json({ success: true, data: response });
@@ -138,7 +180,7 @@ async function handleGet(request: AuthenticatedRequest) {
   // 规范化路径
   const targetPath = resolve(rawPath);
 
-  // 验证路径存在且为目录（使用 readdir 代替 stat，一次性获取子目录）
+  // 验证路径存在且为目录
   let dirents: import('node:fs').Dirent[];
   try {
     dirents = await readdir(targetPath, { withFileTypes: true, encoding: 'utf-8' });
@@ -156,13 +198,12 @@ async function handleGet(request: AuthenticatedRequest) {
     );
   }
 
-  // 并行：扫描子目录 + 检测当前目录特征 + 发现 Claude 会话
+  // 并行：扫描子目录 + 检测当前目录特征 + 发现 Agent 会话
   const dirs = dirents.filter(
     (d) => d.isDirectory() && (!d.name.startsWith('.') || d.name === '.claude'),
   );
 
-  const [entries, currentFeatures, claudeSessions] = await Promise.all([
-    // 并行检测所有子目录特征
+  const [entries, currentFeatures, agentSessions] = await Promise.all([
     Promise.all(
       dirs.map(async (d) => {
         const fullPath = join(targetPath, d.name);
@@ -170,16 +211,15 @@ async function handleGet(request: AuthenticatedRequest) {
         return { name: d.name, path: fullPath, isDirectory: true, ...features };
       }),
     ),
-    // 检测当前目录自身特征
     detectDirFeatures(targetPath),
-    // 发现 Claude Code 会话
-    discover ? discoverClaudeSessions(targetPath) : Promise.resolve([]),
+    discoverSessions(targetPath, effectiveAgent, runtime),
   ]);
 
   // 排序
   entries.sort((a, b) => {
     if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
     if (a.hasClaude !== b.hasClaude) return a.hasClaude ? -1 : 1;
+    if (a.hasCodex !== b.hasCodex) return a.hasCodex ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 
@@ -192,7 +232,9 @@ async function handleGet(request: AuthenticatedRequest) {
     parentPath: hasParent ? parentPath : null,
     ...currentFeatures,
     entries,
-    claudeSessions,
+    agentSessions,
+    // 向后兼容
+    claudeSessions: agentSessions,
   };
 
   return NextResponse.json({ success: true, data: response });

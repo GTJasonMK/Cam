@@ -5,7 +5,7 @@
 
 'use client';
 
-import { Bot, ChevronRight, ChevronLeft, GitBranch, CheckCircle2, XCircle, Circle, Loader2 } from 'lucide-react';
+import { Bot, ChevronRight, ChevronLeft, GitBranch, CheckCircle2, XCircle, Circle, Loader2, Pause, Play } from 'lucide-react';
 import { useState, useCallback } from 'react';
 import { useTerminalStore } from '@/stores/terminal';
 import { AgentSessionCard } from './agent-session-card';
@@ -25,8 +25,8 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
 
   // 只展示 Agent 会话
   const agentSessions = sessions.filter((s) => s.isAgent);
-  // 活跃流水线
-  const activePipelines = pipelines.filter((p) => p.status === 'running');
+  // 活跃流水线（running 或 paused）
+  const activePipelines = pipelines.filter((p) => p.status === 'running' || p.status === 'paused');
 
   const handleView = useCallback((sessionId: string) => {
     setActiveSession(sessionId);
@@ -77,20 +77,56 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
       {activePipelines.length > 0 && (
         <div className="border-b border-white/8 p-2 space-y-2">
           {activePipelines.map((pipeline) => (
-            <div key={pipeline.pipelineId} className="rounded-lg border border-primary/20 bg-primary/5 p-2 space-y-1.5">
+            <div key={pipeline.pipelineId} className={`rounded-lg border p-2 space-y-1.5 ${
+              pipeline.status === 'paused'
+                ? 'border-yellow-500/30 bg-yellow-500/5'
+                : 'border-primary/20 bg-primary/5'
+            }`}>
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-primary">
+                <span className={`flex items-center gap-1.5 text-xs font-medium ${
+                  pipeline.status === 'paused' ? 'text-yellow-500' : 'text-primary'
+                }`}>
                   <GitBranch size={12} />
                   {MSG.pipeline.progress}
+                  {pipeline.status === 'paused' && (
+                    <span className="text-[10px] text-yellow-500/80">({MSG.pipeline.pausePipeline})</span>
+                  )}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => send({ type: 'pipeline-cancel', pipelineId: pipeline.pipelineId })}
-                  className="rounded px-1.5 py-0.5 text-[10px] text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
-                >
-                  {MSG.pipeline.cancelPipeline}
-                </button>
+                <div className="flex items-center gap-1">
+                  {/* 暂停/恢复按钮 */}
+                  {pipeline.status === 'running' && (
+                    <button
+                      type="button"
+                      onClick={() => send({ type: 'pipeline-pause', pipelineId: pipeline.pipelineId })}
+                      className="rounded px-1.5 py-0.5 text-[10px] text-yellow-500/70 hover:text-yellow-500 hover:bg-yellow-500/10 transition-colors"
+                      title={MSG.pipeline.pausedHint}
+                    >
+                      <Pause size={11} />
+                    </button>
+                  )}
+                  {pipeline.status === 'paused' && (
+                    <button
+                      type="button"
+                      onClick={() => send({ type: 'pipeline-resume', pipelineId: pipeline.pipelineId })}
+                      className="rounded px-1.5 py-0.5 text-[10px] text-green-500/70 hover:text-green-500 hover:bg-green-500/10 transition-colors"
+                    >
+                      <Play size={11} />
+                    </button>
+                  )}
+                  {/* 取消按钮 */}
+                  <button
+                    type="button"
+                    onClick={() => send({ type: 'pipeline-cancel', pipelineId: pipeline.pipelineId })}
+                    className="rounded px-1.5 py-0.5 text-[10px] text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  >
+                    {MSG.pipeline.cancelPipeline}
+                  </button>
+                </div>
               </div>
+              {/* 暂停提示 */}
+              {pipeline.status === 'paused' && (
+                <p className="text-[10px] text-yellow-500/60">{MSG.pipeline.pausedHint}</p>
+              )}
               <div className="space-y-1">
                 {pipeline.steps.map((step, i) => {
                   const icon = step.status === 'completed' ? <CheckCircle2 size={11} className="text-green-400" />

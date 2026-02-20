@@ -21,16 +21,18 @@ export const BUILTIN_AGENTS = [
     },
     defaultResourceLimits: { memoryLimitMb: 4096, timeoutMinutes: 120 },
     builtIn: true,
+    runtime: 'native',
   },
   {
     id: 'codex',
     displayName: 'Codex CLI',
-    description: 'OpenAI Codex CLI agent, full-auto approval mode',
+    description: 'OpenAI Codex CLI agent, supports --full-auto and --quiet modes',
     dockerImage: 'cam-worker:codex',
     command: 'codex',
-    args: ['--approval-mode', 'full-auto', '{{prompt}}'],
+    args: ['--quiet', '--full-auto', '{{prompt}}'],
     requiredEnvVars: [
-      { name: 'OPENAI_API_KEY', description: 'OpenAI API Key', required: true, sensitive: true },
+      { name: 'CODEX_API_KEY', description: 'Codex API Key（优先）', required: false, sensitive: true },
+      { name: 'OPENAI_API_KEY', description: 'OpenAI API Key（备选）', required: false, sensitive: true },
     ],
     capabilities: {
       nonInteractive: true,
@@ -40,6 +42,7 @@ export const BUILTIN_AGENTS = [
     },
     defaultResourceLimits: { memoryLimitMb: 4096, timeoutMinutes: 120 },
     builtIn: true,
+    runtime: 'native',
   },
   {
     id: 'aider',
@@ -60,5 +63,6 @@ export const BUILTIN_AGENTS = [
     },
     defaultResourceLimits: { memoryLimitMb: 2048, timeoutMinutes: 60 },
     builtIn: true,
+    runtime: 'native',
   },
 ];

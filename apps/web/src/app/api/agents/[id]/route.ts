@@ -48,6 +48,7 @@ async function handlePut(request: AuthenticatedRequest, { params }: { params: Pr
         requiredEnvVars: body.requiredEnvVars,
         capabilities: body.capabilities,
         defaultResourceLimits: body.defaultResourceLimits,
+        runtime: body.runtime,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(agentDefinitions.id, id))

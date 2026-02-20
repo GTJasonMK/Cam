@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useTaskStore, useAgentStore, useRepoStore } from '@/stores';
 import type { TaskItem, AgentDefinitionItem, RepositoryItem } from '@/stores';
 import { TASK_STATUS_COLORS, getStatusDisplayLabel } from '@/lib/constants';
@@ -37,12 +37,13 @@ function canRerunTask(status: string): boolean {
 
 export default function TasksPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { tasks, loading, fetchTasks, createTask, createPipeline } = useTaskStore();
   const { agents, fetchAgents } = useAgentStore();
   const { repos, fetchRepos } = useRepoStore();
   const { confirm: confirmDialog, prompt: promptDialog, notify } = useFeedback();
   const [createMode, setCreateMode] = useState<'single' | 'pipeline' | null>(null);
-  const [filterStatus, setFilterStatus] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<string>(searchParams.get('status') ?? '');
   const [filterGroupId, setFilterGroupId] = useState<string>('');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc');
@@ -846,6 +847,20 @@ function CreateTaskModal({
 
 // ---- 创建流水线 Modal ----
 
+type PipelineTemplate = {
+  id: string;
+  name: string;
+  agentDefinitionId: string | null;
+  repositoryId: string | null;
+  repoUrl: string | null;
+  baseBranch: string | null;
+  workDir: string | null;
+  pipelineSteps: Array<{ title: string; description: string; agentDefinitionId?: string }> | null;
+  maxRetries: number | null;
+};
+
+let _pipelineStepIdCounter = 100;
+
 function CreatePipelineModal({
   open, agents, repos, onClose, onCreated, createPipeline,
 }: {
@@ -857,28 +872,136 @@ function CreatePipelineModal({
   createPipeline: (input: {
     agentDefinitionId: string; repositoryId?: string; repoUrl: string; baseBranch?: string;
     workDir?: string; maxRetries?: number; groupId?: string;
-    steps: Array<{ title: string; description: string }>;
+    steps: Array<{ title: string; description: string; agentDefinitionId?: string }>;
   }) => Promise<{ success: boolean; groupId?: string; errorMessage?: string; missingEnvVars?: string[] }>;
 }) {
+  const { prompt: promptDialog, notify } = useFeedback();
   const [form, setForm] = useState({
     agentDefinitionId: '', repoUrl: '', baseBranch: 'main', workDir: '', maxRetries: 2, groupId: '',
   });
   const [repoPresetId, setRepoPresetId] = useState('');
-  const [steps, setSteps] = useState<Array<{ _id: string; title: string; description: string }>>([{ _id: '1', title: '', description: '' }]);
+  const [steps, setSteps] = useState<Array<{ _id: string; title: string; description: string; agentDefinitionId: string }>>([{ _id: '1', title: '', description: '', agentDefinitionId: '' }]);
   const [stepCounter, setStepCounter] = useState(2);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [missingEnvVars, setMissingEnvVars] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
+  // 流水线模板相关状态
+  const [pipelineTemplates, setPipelineTemplates] = useState<PipelineTemplate[]>([]);
+  const [pipelineTemplateId, setPipelineTemplateId] = useState('');
+  const [templateLoading, setTemplateLoading] = useState(false);
+
   useEffect(() => {
     if (open) {
       setForm({ agentDefinitionId: agents[0]?.id || '', repoUrl: '', baseBranch: 'main', workDir: '', maxRetries: 2, groupId: '' });
-      setRepoPresetId(''); setSteps([{ _id: '1', title: '', description: '' }]); setStepCounter(2); setSubmitError(null); setMissingEnvVars([]); setSaving(false);
+      setRepoPresetId(''); setSteps([{ _id: '1', title: '', description: '', agentDefinitionId: '' }]); setStepCounter(2);
+      setSubmitError(null); setMissingEnvVars([]); setSaving(false); setPipelineTemplateId('');
     }
   }, [open, agents]);
 
+  // 加载流水线模板列表
+  const fetchPipelineTemplates = useCallback(async (nextId?: string) => {
+    setTemplateLoading(true);
+    try {
+      const res = await fetch('/api/task-templates');
+      const json = await res.json().catch(() => null);
+      if (!json?.success || !Array.isArray(json?.data)) return;
+      // 只保留流水线模板（pipelineSteps 非空）
+      const pipelines = (json.data as PipelineTemplate[]).filter(
+        (t) => t.pipelineSteps && t.pipelineSteps.length > 0
+      );
+      setPipelineTemplates(pipelines);
+      if (typeof nextId === 'string') { setPipelineTemplateId(nextId); return; }
+      setPipelineTemplateId((prev) => (prev && pipelines.some((t) => t.id === prev) ? prev : ''));
+    } finally { setTemplateLoading(false); }
+  }, []);
+
+  useEffect(() => { if (open) fetchPipelineTemplates(); }, [open, fetchPipelineTemplates]);
+
+  // 选择模板后自动填充
+  const applyPipelineTemplate = (selectedId: string) => {
+    setPipelineTemplateId(selectedId);
+    if (!selectedId) return;
+    const tpl = pipelineTemplates.find((t) => t.id === selectedId);
+    if (!tpl) return;
+    const preset = tpl.repositoryId ? repos.find((r) => r.id === tpl.repositoryId) : null;
+    setRepoPresetId(tpl.repositoryId || '');
+    setForm((prev) => ({
+      ...prev,
+      agentDefinitionId: tpl.agentDefinitionId || prev.agentDefinitionId,
+      repoUrl: preset?.repoUrl || tpl.repoUrl || prev.repoUrl,
+      baseBranch: tpl.baseBranch || preset?.defaultBaseBranch || prev.baseBranch,
+      workDir: tpl.workDir || preset?.defaultWorkDir || '',
+      maxRetries: tpl.maxRetries ?? prev.maxRetries,
+    }));
+    // 填充步骤
+    if (tpl.pipelineSteps && tpl.pipelineSteps.length > 0) {
+      const newSteps = tpl.pipelineSteps.map((s) => {
+        _pipelineStepIdCounter += 1;
+        return { _id: String(_pipelineStepIdCounter), title: s.title, description: s.description, agentDefinitionId: s.agentDefinitionId || '' };
+      });
+      setSteps(newSteps);
+      setStepCounter(_pipelineStepIdCounter + 1);
+    }
+  };
+
+  // 保存当前配置为流水线模板
+  const handleSaveAsTemplate = async () => {
+    const validSteps = steps
+      .map((s) => ({
+        title: s.title.trim(),
+        description: s.description.trim(),
+        ...(s.agentDefinitionId.trim() ? { agentDefinitionId: s.agentDefinitionId.trim() } : {}),
+      }))
+      .filter((s) => s.title && s.description);
+    if (validSteps.length === 0) {
+      notify({ type: 'error', title: '缺少步骤', message: '请至少填写 1 个完整步骤再保存模板。' });
+      return;
+    }
+    const name = await promptDialog({
+      title: TASK_TEMPLATE_UI_MESSAGES.pipelineSaveDialog.title,
+      description: TASK_TEMPLATE_UI_MESSAGES.pipelineSaveDialog.description,
+      label: TASK_TEMPLATE_UI_MESSAGES.pipelineSaveDialog.label,
+      placeholder: TASK_TEMPLATE_UI_MESSAGES.pipelineSaveDialog.placeholder,
+      defaultValue: '', required: true,
+      confirmText: TASK_TEMPLATE_UI_MESSAGES.pipelineSaveDialog.confirmText,
+    });
+    if (name === null || !name.trim()) return;
+    setTemplateLoading(true);
+    try {
+      const res = await fetch('/api/task-templates', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          titleTemplate: '(流水线模板)',
+          promptTemplate: '(流水线模板)',
+          agentDefinitionId: form.agentDefinitionId || null,
+          repositoryId: repoPresetId || null,
+          repoUrl: form.repoUrl.trim() || null,
+          baseBranch: form.baseBranch.trim() || null,
+          workDir: form.workDir.trim() || null,
+          pipelineSteps: validSteps,
+          maxRetries: form.maxRetries,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!json?.success) {
+        notify({ type: 'error', title: TASK_TEMPLATE_UI_MESSAGES.saveFailedTitle, message: json?.error?.message || '' });
+        return;
+      }
+      notify({ type: 'success', title: TASK_TEMPLATE_UI_MESSAGES.saveSuccessTitle, message: TASK_TEMPLATE_UI_MESSAGES.saveSuccessMessage(name.trim()) });
+      await fetchPipelineTemplates(json?.data?.id);
+    } finally { setTemplateLoading(false); }
+  };
+
   const handleSubmit = async () => {
-    const normalizedSteps = steps.map((s) => ({ title: s.title.trim(), description: s.description.trim() })).filter((s) => s.title || s.description);
+    const normalizedSteps = steps
+      .map((s) => ({
+        title: s.title.trim(),
+        description: s.description.trim(),
+        ...(s.agentDefinitionId.trim() ? { agentDefinitionId: s.agentDefinitionId.trim() } : {}),
+      }))
+      .filter((s) => s.title || s.description);
     if (normalizedSteps.length === 0) { setSubmitError('请至少添加 1 个步骤'); return; }
     if (normalizedSteps.some((s) => !s.title || !s.description)) { setSubmitError('每个步骤都必须包含标题与描述'); return; }
 
@@ -901,7 +1024,8 @@ function CreatePipelineModal({
       <>
         <Button variant="secondary" size="sm" onClick={onClose}>取消</Button>
         <Button size="sm" variant="secondary" onClick={() => {
-          setSteps((s) => [...s, { _id: String(stepCounter), title: '', description: '' }]);
+          _pipelineStepIdCounter += 1;
+          setSteps((s) => [...s, { _id: String(_pipelineStepIdCounter), title: '', description: '', agentDefinitionId: '' }]);
           setStepCounter((c) => c + 1);
         }}>
           <Plus size={13} className="mr-1" /> 添加步骤
@@ -910,14 +1034,42 @@ function CreatePipelineModal({
       </>
     }>
       <div className="space-y-5">
+        {/* 流水线模板区 */}
+        <div className="rounded-lg border border-border bg-muted/10 p-4">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <Select
+              label={TASK_TEMPLATE_UI_MESSAGES.pipelineTemplateSelectLabel}
+              value={pipelineTemplateId}
+              onChange={(e) => applyPipelineTemplate(e.target.value)}
+              options={[
+                { value: '', label: templateLoading ? TASK_TEMPLATE_UI_MESSAGES.pipelineTemplateSelectLoading : TASK_TEMPLATE_UI_MESSAGES.pipelineTemplateSelectNone },
+                ...pipelineTemplates.map((t) => ({
+                  value: t.id,
+                  label: `${t.name} (${t.pipelineSteps?.length ?? 0} 步骤)`,
+                })),
+              ]}
+            />
+            <Button type="button" size="sm" variant="secondary" disabled={templateLoading} onClick={handleSaveAsTemplate}>
+              {TASK_TEMPLATE_UI_MESSAGES.pipelineSaveCurrentAction}
+            </Button>
+          </div>
+          <p className="mt-2.5 text-sm text-muted-foreground/70">
+            {TASK_TEMPLATE_UI_MESSAGES.pipelineSectionHint}
+            <Link href="/templates" className="ml-1 underline hover:text-foreground">{TASK_TEMPLATE_UI_MESSAGES.manageLink}</Link>
+          </p>
+        </div>
+
         <p className="text-sm text-muted-foreground">
           将创建 {steps.length} 个任务，并自动串行依赖(步骤 N 依赖步骤 N-1)。
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Select label="智能体" value={form.agentDefinitionId}
+          <Select label="默认智能体" value={form.agentDefinitionId}
             onChange={(e) => setForm({ ...form, agentDefinitionId: e.target.value })}
-            options={agents.map((a) => ({ value: a.id, label: a.displayName }))} />
+            options={[
+              { value: '', label: '不指定（各步骤单独配置）' },
+              ...agents.map((a) => ({ value: a.id, label: a.displayName })),
+            ]} />
           <Input label="基线分支" value={form.baseBranch} onChange={(e) => setForm({ ...form, baseBranch: e.target.value })} />
           <Select label="仓库预设" value={repoPresetId}
             onChange={(e) => {
@@ -951,6 +1103,12 @@ function CreatePipelineModal({
                 <Input label="标题" required value={step.title}
                   onChange={(e) => setSteps((s) => s.map((x, i) => (i === idx ? { ...x, title: e.target.value } : x)))}
                   placeholder="例如: 扫描仓库结构" />
+                <Select label="智能体" value={step.agentDefinitionId}
+                  onChange={(e) => setSteps((s) => s.map((x, i) => (i === idx ? { ...x, agentDefinitionId: e.target.value } : x)))}
+                  options={[
+                    { value: '', label: form.agentDefinitionId ? '使用默认智能体' : '不指定' },
+                    ...agents.map((a) => ({ value: a.id, label: a.displayName })),
+                  ]} />
                 <div className="sm:col-span-2">
                   <Textarea label="描述 / 提示词" required rows={3} value={step.description}
                     onChange={(e) => setSteps((s) => s.map((x, i) => (i === idx ? { ...x, description: e.target.value } : x)))}

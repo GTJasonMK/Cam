@@ -6,6 +6,7 @@
 import type { WebSocket } from 'ws';
 import { ptyManager } from './pty-manager';
 import { agentSessionManager } from './agent-session-manager';
+import type { PipelineStepCompletedEvent } from './agent-session-manager';
 import type { ClientMessage, ServerMessage } from './protocol';
 import type { WsUser } from './ws-auth';
 
@@ -77,11 +78,21 @@ async function handlePipelineAdvancement(
   }
 
   // 流水线已终止（失败/取消）
-  if (pipeline.status !== 'running') {
+  if (pipeline.status !== 'running' && pipeline.status !== 'paused') {
     send(ws, {
       type: 'pipeline-completed',
       pipelineId,
       finalStatus: pipeline.status as 'completed' | 'failed' | 'cancelled',
+    });
+    return;
+  }
+
+  // 流水线已暂停 → 不推进，通知前端
+  if (pipeline.status === 'paused') {
+    send(ws, {
+      type: 'pipeline-paused',
+      pipelineId,
+      currentStep: pipeline.currentStepIndex,
     });
     return;
   }
@@ -133,6 +144,33 @@ async function handlePipelineAdvancement(
 export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
   // 跟踪该连接 attach 的所有会话，断开时批量 detach
   const attachedSessions = new Set<string>();
+
+  // 订阅 hook 驱动的步骤完成事件（用于流水线推进）
+  const onStepCompleted = (event: PipelineStepCompletedEvent) => {
+    // 仅处理属于当前用户的流水线
+    if (event.userId !== user.id) return;
+
+    // 发送步骤退出相关的 WS 消息
+    if (event.sessionId) {
+      const updatedMeta = agentSessionManager.getMeta(event.sessionId);
+      send(ws, {
+        type: 'agent-status',
+        sessionId: event.sessionId,
+        status: updatedMeta?.status ?? 'completed',
+        exitCode: 0,
+        elapsedMs: updatedMeta ? Date.now() - updatedMeta.startedAt : undefined,
+      });
+      send(ws, { type: 'exited', sessionId: event.sessionId, exitCode: 0 });
+      attachedSessions.delete(event.sessionId);
+    }
+
+    // 推进流水线
+    handlePipelineAdvancement(ws, event.pipelineId, attachedSessions, user).catch((err) => {
+      console.error(`[Pipeline] Hook 推进失败: ${(err as Error).message}`);
+    });
+  };
+
+  agentSessionManager.events.on('pipeline-step-completed', onStepCompleted);
 
   ws.on('message', async (raw: Buffer | string) => {
     let msg: ClientMessage;
@@ -370,6 +408,95 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
         break;
       }
 
+      case 'pipeline-pause': {
+        const pipeline = agentSessionManager.getPipeline(msg.pipelineId);
+        if (!pipeline) {
+          send(ws, { type: 'error', message: '流水线不存在' });
+          break;
+        }
+        if (pipeline.userId !== user.id) {
+          send(ws, { type: 'error', message: '无权操作该流水线' });
+          break;
+        }
+        const paused = agentSessionManager.pausePipeline(msg.pipelineId);
+        if (paused) {
+          send(ws, {
+            type: 'pipeline-paused',
+            pipelineId: msg.pipelineId,
+            currentStep: pipeline.currentStepIndex,
+          });
+        } else {
+          send(ws, { type: 'error', message: '流水线当前状态无法暂停' });
+        }
+        break;
+      }
+
+      case 'pipeline-resume': {
+        const pipeline = agentSessionManager.getPipeline(msg.pipelineId);
+        if (!pipeline) {
+          send(ws, { type: 'error', message: '流水线不存在' });
+          break;
+        }
+        if (pipeline.userId !== user.id) {
+          send(ws, { type: 'error', message: '无权操作该流水线' });
+          break;
+        }
+        try {
+          const { advanced, sessionMeta } = await agentSessionManager.resumePipeline(
+            msg.pipelineId,
+            { id: user.id, username: user.username },
+          );
+
+          const updatedPipeline = agentSessionManager.getPipeline(msg.pipelineId);
+
+          send(ws, {
+            type: 'pipeline-resumed',
+            pipelineId: msg.pipelineId,
+            currentStep: updatedPipeline?.currentStepIndex ?? 0,
+            sessionId: sessionMeta?.sessionId,
+          });
+
+          // 如果推进了新步骤，attach 并发送 agent-created
+          if (advanced && sessionMeta) {
+            attachAgentSession(ws, sessionMeta, attachedSessions, user);
+
+            const nextStep = updatedPipeline?.steps[updatedPipeline.currentStepIndex];
+            send(ws, {
+              type: 'pipeline-step-status',
+              pipelineId: msg.pipelineId,
+              stepIndex: updatedPipeline?.currentStepIndex ?? 0,
+              taskId: nextStep?.taskId ?? '',
+              status: 'running',
+              sessionId: sessionMeta.sessionId,
+            });
+
+            send(ws, {
+              type: 'agent-created',
+              sessionId: sessionMeta.sessionId,
+              shell: 'agent',
+              agentDefinitionId: sessionMeta.agentDefinitionId,
+              agentDisplayName: sessionMeta.agentDisplayName,
+              workBranch: sessionMeta.workBranch,
+              status: 'running',
+              repoPath: sessionMeta.repoPath,
+              mode: sessionMeta.mode,
+            });
+          }
+
+          // 如果恢复后发现流水线已完成（最后一步已完成）
+          if (updatedPipeline && updatedPipeline.status === 'completed') {
+            send(ws, {
+              type: 'pipeline-completed',
+              pipelineId: msg.pipelineId,
+              finalStatus: 'completed',
+            });
+          }
+        } catch (err) {
+          send(ws, { type: 'error', message: (err as Error).message });
+        }
+        break;
+      }
+
       default: {
         send(ws, { type: 'error', message: `未知消息类型: ${(msg as { type: string }).type}` });
       }
@@ -377,6 +504,9 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
   });
 
   ws.on('close', () => {
+    // 取消订阅步骤完成事件
+    agentSessionManager.events.off('pipeline-step-completed', onStepCompleted);
+
     // 断开 WebSocket 时，detach 所有会话（不销毁 PTY，保留会话持久化）
     for (const sessionId of attachedSessions) {
       ptyManager.detach(sessionId);

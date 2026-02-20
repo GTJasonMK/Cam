@@ -57,6 +57,7 @@ async function handlePost(request: AuthenticatedRequest) {
         },
         defaultResourceLimits: body.defaultResourceLimits || {},
         builtIn: false,
+        runtime: body.runtime || 'native',
       })
       .returning();
 

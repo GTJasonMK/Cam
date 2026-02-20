@@ -62,15 +62,18 @@ export type ClientMessage =
   // 流水线编排
   | {
       type: 'pipeline-create';
+      /** 默认智能体（当步骤未指定时使用） */
       agentDefinitionId: string;
       workDir?: string;
       repoUrl?: string;
       baseBranch?: string;
       cols: number;
       rows: number;
-      steps: Array<{ title: string; prompt: string }>;
+      steps: Array<{ title: string; prompt: string; agentDefinitionId?: string }>;
     }
-  | { type: 'pipeline-cancel'; pipelineId: string };
+  | { type: 'pipeline-cancel'; pipelineId: string }
+  | { type: 'pipeline-pause'; pipelineId: string }
+  | { type: 'pipeline-resume'; pipelineId: string };
 
 // ---- 服务器 → 客户端 ----
 
@@ -132,4 +135,18 @@ export type ServerMessage =
       type: 'pipeline-completed';
       pipelineId: string;
       finalStatus: 'completed' | 'failed' | 'cancelled';
+    }
+  | {
+      type: 'pipeline-paused';
+      pipelineId: string;
+      /** 暂停时当前步骤索引 */
+      currentStep: number;
+    }
+  | {
+      type: 'pipeline-resumed';
+      pipelineId: string;
+      /** 恢复后正在运行的步骤索引 */
+      currentStep: number;
+      /** 恢复后启动的 Agent 会话 ID（如有新步骤启动） */
+      sessionId?: string;
     };

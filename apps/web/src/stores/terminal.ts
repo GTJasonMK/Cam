@@ -22,7 +22,7 @@ export interface TerminalPipelineState {
   pipelineId: string;
   steps: TerminalPipelineStep[];
   currentStep: number;
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 }
 
 /** 前端终端会话（包含 UI 状态） */
@@ -93,6 +93,8 @@ interface TerminalState {
   addPipeline: (pipeline: TerminalPipelineState) => void;
   updatePipelineStep: (pipelineId: string, stepIndex: number, status: string, sessionId?: string) => void;
   completePipeline: (pipelineId: string, finalStatus: 'completed' | 'failed' | 'cancelled') => void;
+  pausePipeline: (pipelineId: string) => void;
+  resumePipeline: (pipelineId: string) => void;
 }
 
 let sessionCounter = 0;
@@ -253,6 +255,22 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     set((state) => ({
       pipelines: state.pipelines.map((p) =>
         p.pipelineId === pipelineId ? { ...p, status: finalStatus } : p,
+      ),
+    }));
+  },
+
+  pausePipeline: (pipelineId) => {
+    set((state) => ({
+      pipelines: state.pipelines.map((p) =>
+        p.pipelineId === pipelineId ? { ...p, status: 'paused' as const } : p,
+      ),
+    }));
+  },
+
+  resumePipeline: (pipelineId) => {
+    set((state) => ({
+      pipelines: state.pipelines.map((p) =>
+        p.pipelineId === pipelineId ? { ...p, status: 'running' as const } : p,
       ),
     }));
   },

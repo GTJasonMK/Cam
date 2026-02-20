@@ -1,13 +1,14 @@
 // ============================================================
 // 流水线创建对话框
 // 定义多步 Agent 工作流，前一步完成后自动启动下一步
+// 支持每步独立 Agent、流水线模板加载/保存
 // ============================================================
 
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Bot, FolderOpen, Plus, Trash2, Play, Loader2, FileText,
+  Bot, FolderOpen, Plus, Trash2, Play, Save, Layers,
 } from 'lucide-react';
 import {
   Dialog,
@@ -17,20 +18,35 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { AGENT_SESSION_UI_MESSAGES as MSG } from '@/lib/i18n/ui-messages';
-import { extractTemplateVars, renderTemplate } from '@/lib/terminal/template-render';
 import type { ClientMessage } from '@/lib/terminal/protocol';
 
 // ---- 类型 ----
 
 interface AgentDef { id: string; displayName: string }
-interface TemplateItem {
-  id: string; name: string; promptTemplate: string;
+
+interface PipelineTemplateItem {
+  id: string;
+  name: string;
+  agentDefinitionId: string | null;
+  pipelineSteps: Array<{ title: string; description: string; agentDefinitionId?: string }> | null;
+  maxRetries: number | null;
+  repoUrl: string | null;
+  baseBranch: string | null;
+  workDir: string | null;
+}
+
+/** 单任务模板（用于"从模板填充"某个步骤） */
+interface SingleTemplateItem {
+  id: string;
+  name: string;
+  promptTemplate: string;
   agentDefinitionId: string | null;
 }
 
 interface PipelineStep {
   title: string;
   prompt: string;
+  agentDefinitionId: string;
 }
 
 interface Props {
@@ -41,6 +57,7 @@ interface Props {
 
 // ---- 样式 ----
 const inputCls = 'w-full rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
+const selectCls = 'rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
 
 // ============================================================
 // 组件
@@ -48,36 +65,86 @@ const inputCls = 'w-full rounded-lg border border-white/12 bg-white/[0.04] px-3 
 
 export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
   const [agents, setAgents] = useState<AgentDef[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState('');
+  const [defaultAgent, setDefaultAgent] = useState('');
   const [workDir, setWorkDir] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [error, setError] = useState('');
-  const [creating, setCreating] = useState(false);
 
-  // 模板列表（用于"从模板填充"步骤）
-  const [templates, setTemplates] = useState<TemplateItem[]>([]);
+  // 流水线模板
+  const [pipelineTemplates, setPipelineTemplates] = useState<PipelineTemplateItem[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
 
-  // 步骤列表
+  // 单任务模板列表（用于"从模板填充"步骤）
+  const [singleTemplates, setSingleTemplates] = useState<SingleTemplateItem[]>([]);
+
+  // 步骤列表（每步含独立 agentDefinitionId）
   const [steps, setSteps] = useState<PipelineStep[]>([
-    { title: '', prompt: '' },
-    { title: '', prompt: '' },
+    { title: '', prompt: '', agentDefinitionId: '' },
+    { title: '', prompt: '', agentDefinitionId: '' },
   ]);
+
+  // 保存模板弹窗
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saving, setSaving] = useState(false);
 
   // ---- 数据加载 ----
   useEffect(() => {
     if (!open) return;
+
     fetch('/api/agents').then((r) => r.json()).then((d) => {
       if (d.success && Array.isArray(d.data)) {
         const list = d.data.map((a: AgentDef) => ({ id: a.id, displayName: a.displayName }));
         setAgents(list);
-        if (list.length > 0 && !selectedAgent) setSelectedAgent(list[0].id);
+        if (list.length > 0 && !defaultAgent) setDefaultAgent(list[0].id);
       }
     }).catch(() => {});
+
     fetch('/api/task-templates').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) setTemplates(d.data);
+      if (d.success && Array.isArray(d.data)) {
+        // 分离流水线模板和单任务模板
+        const pipelineTpls: PipelineTemplateItem[] = [];
+        const singleTpls: SingleTemplateItem[] = [];
+        for (const t of d.data) {
+          if (t.pipelineSteps && Array.isArray(t.pipelineSteps) && t.pipelineSteps.length > 0) {
+            pipelineTpls.push(t);
+          } else {
+            singleTpls.push({
+              id: t.id,
+              name: t.name,
+              promptTemplate: t.promptTemplate,
+              agentDefinitionId: t.agentDefinitionId,
+            });
+          }
+        }
+        setPipelineTemplates(pipelineTpls);
+        setSingleTemplates(singleTpls);
+      }
     }).catch(() => {});
-  }, [open, selectedAgent]);
+  }, [open, defaultAgent]);
+
+  // ---- 模板加载 ----
+  const applyTemplate = useCallback((templateId: string) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+
+    const tpl = pipelineTemplates.find((t) => t.id === templateId);
+    if (!tpl || !tpl.pipelineSteps) return;
+
+    // 填充全局配置
+    if (tpl.agentDefinitionId) setDefaultAgent(tpl.agentDefinitionId);
+    if (tpl.repoUrl) setRepoUrl(tpl.repoUrl);
+    if (tpl.baseBranch) setBaseBranch(tpl.baseBranch);
+    if (tpl.workDir) setWorkDir(tpl.workDir);
+
+    // 填充步骤
+    setSteps(tpl.pipelineSteps.map((s) => ({
+      title: s.title,
+      prompt: s.description,
+      agentDefinitionId: s.agentDefinitionId || '',
+    })));
+  }, [pipelineTemplates]);
 
   // ---- 步骤操作 ----
   const updateStep = useCallback((index: number, field: keyof PipelineStep, value: string) => {
@@ -85,7 +152,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
   }, []);
 
   const addStep = useCallback(() => {
-    setSteps((prev) => [...prev, { title: '', prompt: '' }]);
+    setSteps((prev) => [...prev, { title: '', prompt: '', agentDefinitionId: '' }]);
   }, []);
 
   const removeStep = useCallback((index: number) => {
@@ -95,19 +162,72 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
     });
   }, []);
 
-  const fillFromTemplate = useCallback((index: number, template: TemplateItem) => {
-    // 提取变量并直接使用模板内容（变量保持 {{}} 格式让用户修改）
+  const fillFromSingleTemplate = useCallback((index: number, template: SingleTemplateItem) => {
     setSteps((prev) => prev.map((s, i) =>
-      i === index ? { ...s, title: template.name, prompt: template.promptTemplate } : s,
+      i === index ? {
+        ...s,
+        title: template.name,
+        prompt: template.promptTemplate,
+        agentDefinitionId: template.agentDefinitionId || s.agentDefinitionId,
+      } : s,
     ));
   }, []);
 
+  // ---- 保存为模板 ----
+  const handleSaveAsTemplate = useCallback(async () => {
+    if (!saveName.trim()) return;
+    setSaving(true);
+    try {
+      const pipelineSteps = steps.map((s) => ({
+        title: s.title.trim(),
+        description: s.prompt.trim(),
+        ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+      }));
+
+      const res = await fetch('/api/task-templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: saveName.trim(),
+          titleTemplate: '(流水线模板)',
+          promptTemplate: '(流水线模板)',
+          agentDefinitionId: defaultAgent || null,
+          repoUrl: repoUrl.trim() || null,
+          baseBranch: baseBranch.trim() || null,
+          workDir: workDir.trim() || null,
+          pipelineSteps,
+          maxRetries: 2,
+        }),
+      });
+
+      if (res.ok) {
+        setSaveDialogOpen(false);
+        setSaveName('');
+        // 刷新模板列表
+        const d = await fetch('/api/task-templates').then((r) => r.json());
+        if (d.success && Array.isArray(d.data)) {
+          const pipelineTpls: PipelineTemplateItem[] = d.data.filter(
+            (t: PipelineTemplateItem) => t.pipelineSteps && Array.isArray(t.pipelineSteps) && t.pipelineSteps.length > 0,
+          );
+          setPipelineTemplates(pipelineTpls);
+        }
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setError(d?.error?.message || MSG.pipeline.saveFailed);
+      }
+    } catch {
+      setError(MSG.pipeline.saveFailed);
+    } finally {
+      setSaving(false);
+    }
+  }, [saveName, steps, defaultAgent, repoUrl, baseBranch, workDir]);
+
   // ---- 启动流水线 ----
   const canLaunch = useMemo(() => {
-    if (!selectedAgent) return false;
+    if (!defaultAgent) return false;
     if (steps.length < 2) return false;
     return steps.every((s) => s.title.trim() && s.prompt.trim());
-  }, [selectedAgent, steps]);
+  }, [defaultAgent, steps]);
 
   const launchPipeline = useCallback(() => {
     if (!canLaunch) {
@@ -117,13 +237,17 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
 
     const ok = send({
       type: 'pipeline-create',
-      agentDefinitionId: selectedAgent,
+      agentDefinitionId: defaultAgent,
       workDir: workDir.trim() || undefined,
       repoUrl: repoUrl.trim() || undefined,
       baseBranch: baseBranch.trim() || undefined,
       cols: 80,
       rows: 24,
-      steps: steps.map((s) => ({ title: s.title.trim(), prompt: s.prompt.trim() })),
+      steps: steps.map((s) => ({
+        title: s.title.trim(),
+        prompt: s.prompt.trim(),
+        ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+      })),
     });
 
     if (!ok) {
@@ -132,10 +256,14 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
     }
 
     // 重置并关闭
-    setSteps([{ title: '', prompt: '' }, { title: '', prompt: '' }]);
+    setSteps([
+      { title: '', prompt: '', agentDefinitionId: '' },
+      { title: '', prompt: '', agentDefinitionId: '' },
+    ]);
+    setSelectedTemplateId('');
     setError('');
     onOpenChange(false);
-  }, [canLaunch, selectedAgent, workDir, repoUrl, baseBranch, steps, send, onOpenChange]);
+  }, [canLaunch, defaultAgent, workDir, repoUrl, baseBranch, steps, send, onOpenChange]);
 
   const close = useCallback(() => {
     setError('');
@@ -157,13 +285,37 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
 
         <div className="flex-1 overflow-y-auto space-y-4 px-6 py-3">
 
-          {/* Agent 类型 */}
+          {/* 流水线模板选择 */}
+          {pipelineTemplates.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                <Layers size={13} />
+                {MSG.pipeline.templateLabel}
+              </label>
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => applyTemplate(e.target.value)}
+                className={`w-full ${selectCls}`}
+              >
+                <option value="">{MSG.pipeline.templateNone}</option>
+                {pipelineTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} ({t.pipelineSteps?.length ?? 0} 步骤)
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-muted-foreground">{MSG.pipeline.templateHint}</p>
+            </div>
+          )}
+
+          {/* 默认 Agent 类型 */}
           <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">{MSG.agentLabel}</label>
-            <select value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)} className={inputCls}>
+            <label className="text-sm font-medium text-foreground">{MSG.pipeline.defaultAgent}</label>
+            <select value={defaultAgent} onChange={(e) => setDefaultAgent(e.target.value)} className={`w-full ${selectCls}`}>
               <option value="">{MSG.agentPlaceholder}</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.displayName}</option>)}
             </select>
+            <p className="text-[11px] text-muted-foreground">{MSG.pipeline.defaultAgentHint}</p>
           </div>
 
           {/* 项目目录 */}
@@ -189,18 +341,18 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-primary">步骤 {idx + 1}</span>
                   <div className="flex items-center gap-2">
-                    {/* 从模板填充 */}
-                    {templates.length > 0 && (
+                    {/* 从单任务模板填充 */}
+                    {singleTemplates.length > 0 && (
                       <select
                         value=""
                         onChange={(e) => {
-                          const tpl = templates.find((t) => t.id === e.target.value);
-                          if (tpl) fillFromTemplate(idx, tpl);
+                          const tpl = singleTemplates.find((t) => t.id === e.target.value);
+                          if (tpl) fillFromSingleTemplate(idx, tpl);
                         }}
                         className="rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-muted-foreground"
                       >
                         <option value="">{MSG.pipeline.fillFromTemplate}</option>
-                        {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        {singleTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                       </select>
                     )}
                     {steps.length > 2 && (
@@ -215,6 +367,20 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                     )}
                   </div>
                 </div>
+
+                {/* 步骤级 Agent 选择器 */}
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] text-muted-foreground whitespace-nowrap">{MSG.pipeline.stepAgent}:</label>
+                  <select
+                    value={step.agentDefinitionId}
+                    onChange={(e) => updateStep(idx, 'agentDefinitionId', e.target.value)}
+                    className="flex-1 rounded border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-foreground"
+                  >
+                    <option value="">{MSG.pipeline.stepAgentDefault}</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.displayName}</option>)}
+                  </select>
+                </div>
+
                 <input
                   type="text"
                   value={step.title}
@@ -259,19 +425,73 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
             </div>
           </details>
 
-          {/* 启动按钮 */}
-          <button
-            type="button"
-            onClick={launchPipeline}
-            disabled={!canLaunch || creating}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Play size={14} />
-            {MSG.pipeline.launch}
-          </button>
+          {/* 操作按钮 */}
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={launchPipeline}
+              disabled={!canLaunch}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Play size={14} />
+              {MSG.pipeline.launch}
+            </button>
+
+            {/* 保存为模板 */}
+            <button
+              type="button"
+              onClick={() => {
+                setSaveName('');
+                setSaveDialogOpen(true);
+              }}
+              disabled={steps.length < 2 || !steps.every((s) => s.title.trim() && s.prompt.trim())}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors disabled:opacity-50"
+            >
+              <Save size={14} />
+              {MSG.pipeline.saveAsTemplate}
+            </button>
+          </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
+
+        {/* 保存模板弹窗 */}
+        {saveDialogOpen && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded-lg z-10">
+            <div className="bg-card border border-white/12 rounded-lg p-5 w-80 space-y-3">
+              <h3 className="text-sm font-semibold">{MSG.pipeline.saveDialogTitle}</h3>
+              <p className="text-xs text-muted-foreground">{MSG.pipeline.saveDialogDesc}</p>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium">{MSG.pipeline.saveNameLabel}</label>
+                <input
+                  type="text"
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder={MSG.pipeline.saveNamePlaceholder}
+                  className={inputCls}
+                  autoFocus
+                />
+              </div>
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSaveDialogOpen(false)}
+                  className="rounded-md px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {MSG.cancel}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAsTemplate}
+                  disabled={!saveName.trim() || saving}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                >
+                  {saving ? '...' : MSG.pipeline.saveConfirm}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

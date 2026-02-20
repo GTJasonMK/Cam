@@ -36,6 +36,8 @@ export const agentDefinitions = sqliteTable('agent_definitions', {
     .default({}),
 
   builtIn: integer('built_in', { mode: 'boolean' }).notNull().default(false),
+  /** 运行时环境：native = 直接执行，wsl = Windows 上通过 wsl.exe 代理执行 */
+  runtime: text('runtime').notNull().default('native'),
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
 });
@@ -58,7 +60,7 @@ export const repositories = sqliteTable(
   ]
 );
 
-// ----- 任务模板表（创建任务时复用 Prompt 与默认配置） -----
+// ----- 任务模板表（创建任务时复用 Prompt 与默认配置，也支持流水线模板） -----
 export const taskTemplates = sqliteTable(
   'task_templates',
   {
@@ -71,6 +73,10 @@ export const taskTemplates = sqliteTable(
     repoUrl: text('repo_url'),
     baseBranch: text('base_branch'),
     workDir: text('work_dir'),
+    /** 流水线步骤（JSON 数组），null 表示单任务模板 */
+    pipelineSteps: text('pipeline_steps', { mode: 'json' }).$type<Array<{ title: string; description: string; agentDefinitionId?: string }> | null>(),
+    /** 流水线默认最大重试次数 */
+    maxRetries: integer('max_retries').default(2),
     createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
   },

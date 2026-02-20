@@ -42,6 +42,9 @@ export interface AgentDefinition {
   capabilities: AgentCapabilities;
   defaultResourceLimits: ResourceLimits;
 
+  /** 运行时环境：native = 直接执行，wsl = Windows 上通过 wsl.exe 代理执行 */
+  runtime?: 'native' | 'wsl';
+
   builtIn: boolean;
   createdAt: string;
   updatedAt: string;
@@ -59,4 +62,5 @@ export interface AgentDefinitionInput {
   requiredEnvVars: EnvVarSpec[];
   capabilities: AgentCapabilities;
   defaultResourceLimits: ResourceLimits;
+  runtime?: 'native' | 'wsl';
 }

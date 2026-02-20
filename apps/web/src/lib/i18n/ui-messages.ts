@@ -51,6 +51,24 @@ export const TEMPLATE_UI_MESSAGES = {
   createSuccessMessage: (name: string) => `已创建「${name}」。`,
   editSuccessMessage: (name: string) => `已更新「${name}」。`,
   requestFailed: '请求失败',
+  // 模板类型 Tab
+  tabAll: '全部',
+  tabSingle: '单任务',
+  tabPipeline: '流水线',
+  // 流水线相关
+  typeSingle: '单任务',
+  typePipeline: (count: number) => `流水线 · ${count} 步骤`,
+  templateType: '模板类型',
+  templateTypeSingle: '单任务模板',
+  templateTypePipeline: '流水线模板',
+  pipelineStepTitle: (idx: number) => `步骤 ${idx}`,
+  pipelineStepTitleLabel: '步骤标题',
+  pipelineStepTitlePlaceholder: '例如：扫描仓库结构',
+  pipelineStepDescLabel: '步骤描述',
+  pipelineStepDescPlaceholder: '描述该步骤需要智能体执行的内容...',
+  pipelineAddStep: '添加步骤',
+  pipelineMaxRetries: '最大重试次数',
+  pipelineStepRequired: '流水线模板至少需要 1 个步骤',
   fields: {
     name: '模板名称',
     namePlaceholder: '例如：缺陷修复模板',
@@ -67,7 +85,7 @@ export const TEMPLATE_UI_MESSAGES = {
     workDir: '默认工作目录（可选）',
     workDirPlaceholder: 'packages/app',
     usageTitle: '使用建议',
-    usageHint: '模板建议覆盖“标题 + Prompt + 默认仓库”，创建任务时再按具体需求微调。',
+    usageHint: '模板建议覆盖"标题 + Prompt + 默认仓库"，创建任务时再按具体需求微调。',
     prompt: 'Prompt 模板',
     promptPlaceholder: '描述这类任务的执行目标、约束和交付标准...',
   },
@@ -79,7 +97,7 @@ export const TASK_TEMPLATE_UI_MESSAGES = {
   loadFailedTitle: '读取模板失败',
   requestFailed: '请求失败',
   missingPromptTitle: '缺少提示词',
-  missingPromptMessage: '请先填写“任务描述 / 提示词”再保存模板。',
+  missingPromptMessage: '请先填写"任务描述 / 提示词"再保存模板。',
   saveDialog: {
     title: '保存为任务模板',
     description: '模板可复用标题、提示词和默认仓库/分支配置。',
@@ -106,6 +124,19 @@ export const TASK_TEMPLATE_UI_MESSAGES = {
   templateSelectNone: '不使用模板',
   saveCurrentAction: '保存当前为模板',
   deleteAction: '删除模板',
+  // 流水线模板
+  pipelineTemplateSelectLabel: '流水线模板',
+  pipelineTemplateSelectNone: '不使用模板',
+  pipelineTemplateSelectLoading: '加载模板中...',
+  pipelineSaveDialog: {
+    title: '保存为流水线模板',
+    description: '模板可复用智能体、仓库、步骤配置，方便下次快速创建流水线。',
+    label: '模板名称',
+    placeholder: '例如：前端代码审查流水线',
+    confirmText: '保存模板',
+  },
+  pipelineSaveCurrentAction: '保存当前为模板',
+  pipelineSectionHint: '选择流水线模板后会自动填充配置和步骤，可按需修改后创建。',
 } as const;
 
 export const EVENTS_UI_MESSAGES = {
@@ -288,6 +319,8 @@ export const AGENT_SESSION_UI_MESSAGES = {
     createDescription: '定义多步 Agent 工作流，前一步完成后自动启动下一步',
     stepTitle: '步骤标题',
     stepPrompt: '步骤提示词',
+    stepAgent: '步骤智能体',
+    stepAgentDefault: '使用默认',
     addStep: '+ 添加步骤',
     removeStep: '删除',
     fillFromTemplate: '从模板填充',
@@ -296,6 +329,30 @@ export const AGENT_SESSION_UI_MESSAGES = {
     progress: '流水线进度',
     cancelPipeline: '取消流水线',
     newPipeline: '流水线',
+    defaultAgent: '默认智能体',
+    defaultAgentHint: '未指定步骤智能体时使用此默认值',
+    // 模板集成
+    templateLabel: '流水线模板',
+    templateNone: '不使用模板',
+    templateLoading: '加载中...',
+    templateHint: '选择模板后自动填充配置和步骤，可按需修改后创建',
+    saveAsTemplate: '保存为模板',
+    saveDialogTitle: '保存流水线模板',
+    saveDialogDesc: '将当前流水线配置保存为模板，后续可直接加载',
+    saveNameLabel: '模板名称',
+    saveNamePlaceholder: '输入模板名称...',
+    saveConfirm: '保存',
+    saveFailed: '保存失败',
+    saveSuccess: '已保存为流水线模板',
+    // 暂停/恢复
+    pausePipeline: '暂停',
+    resumePipeline: '继续',
+    pausedHint: '已暂停，当前步骤完成后不会自动推进',
+  },
+  // Codex 特有
+  codex: {
+    resumeLatest: '恢复最近 Codex 会话',
+    autoCommitHint: 'Codex 会自动提交变更',
   },
   elapsed: (ms: number) => {
     const sec = Math.floor(ms / 1000);

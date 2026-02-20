@@ -105,7 +105,7 @@ export type CreatePipelinePayload = {
   workDir: string | null;
   maxRetries: number;
   groupId: string | null;
-  steps: Array<{ title: string; description: string }>;
+  steps: Array<{ title: string; description: string; agentDefinitionId?: string }>;
 };
 
 export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePipelinePayload> {
@@ -115,10 +115,10 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
 
   const agentDefinitionId = asTrimmedString(input.agentDefinitionId);
   const repoUrl = asTrimmedString(input.repoUrl);
-  if (!agentDefinitionId || !repoUrl) {
+  if (!repoUrl) {
     return {
       success: false,
-      errorMessage: '缺少必填字段: agentDefinitionId, repoUrl',
+      errorMessage: '缺少必填字段: repoUrl',
     };
   }
 
@@ -129,7 +129,7 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
     };
   }
 
-  const steps: Array<{ title: string; description: string }> = [];
+  const steps: Array<{ title: string; description: string; agentDefinitionId?: string }> = [];
   for (const rawStep of input.steps) {
     if (!isPlainObject(rawStep)) {
       return {
@@ -146,13 +146,22 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
         errorMessage: 'steps 必须是非空数组，且每项包含 title/description',
       };
     }
-    steps.push({ title, description });
+    const stepAgent = asTrimmedString(rawStep.agentDefinitionId);
+    steps.push({ title, description, ...(stepAgent ? { agentDefinitionId: stepAgent } : {}) });
+  }
+
+  // 每个步骤必须有 agent：要么步骤自带，要么有顶层默认
+  if (!agentDefinitionId && steps.some((s) => !s.agentDefinitionId)) {
+    return {
+      success: false,
+      errorMessage: '缺少 agentDefinitionId：每个步骤必须指定智能体，或设置顶层默认智能体',
+    };
   }
 
   return {
     success: true,
     data: {
-      agentDefinitionId,
+      agentDefinitionId: agentDefinitionId || steps[0].agentDefinitionId!,
       repositoryId: parseOptionalString(input.repositoryId),
       repoUrl,
       baseBranch: asTrimmedString(input.baseBranch) || 'main',

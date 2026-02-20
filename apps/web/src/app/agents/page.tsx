@@ -28,6 +28,7 @@ interface AgentFormData {
   command: string;
   args: string;
   envVars: EnvVarRow[];
+  runtime: string;
 }
 
 interface EnvVarRow {
@@ -45,6 +46,7 @@ const EMPTY_FORM: AgentFormData = {
   command: '',
   args: '',
   envVars: [],
+  runtime: 'native',
 };
 
 export default function AgentsPage() {
@@ -168,9 +170,7 @@ export default function AgentsPage() {
       key: 'actions',
       header: '',
       className: 'w-[100px] text-right',
-      cell: (row) => {
-        if (row.builtIn) return null;
-        return (
+      cell: (row) => (
           <div className="flex items-center justify-end gap-1">
             <Button
               variant="ghost"
@@ -181,18 +181,19 @@ export default function AgentsPage() {
             >
               <Pencil size={14} />
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => handleDelete(row)}
-              aria-label="删除"
-            >
-              <Trash2 size={14} />
-            </Button>
+            {!row.builtIn && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => handleDelete(row)}
+                aria-label="删除"
+              >
+                <Trash2 size={14} />
+              </Button>
+            )}
           </div>
-        );
-      },
+        ),
     },
   ];
 
@@ -247,6 +248,7 @@ export default function AgentsPage() {
               requiredEnvVars: normalizeEnvVars(data.envVars),
               capabilities: { nonInteractive: true, autoGitCommit: false, outputSummary: false, promptFromFile: false },
               defaultResourceLimits: { memoryLimitMb: 4096, timeoutMinutes: 120 },
+              runtime: data.runtime,
             }),
           });
           const json = await res.json().catch(() => null);
@@ -276,6 +278,7 @@ export default function AgentsPage() {
                   sensitive: Boolean(ev.sensitive),
                   description: ev.description || '',
                 })),
+                runtime: (editingAgent as AgentDefinitionItem & { runtime?: string }).runtime || 'native',
               }
             : EMPTY_FORM
         }
@@ -296,6 +299,7 @@ export default function AgentsPage() {
               requiredEnvVars: normalizeEnvVars(data.envVars),
               capabilities: editingAgent.capabilities,
               defaultResourceLimits: editingAgent.defaultResourceLimits,
+              runtime: data.runtime,
             }),
           });
           const json = await res.json().catch(() => null);
@@ -441,6 +445,24 @@ function AgentFormModal({
           onChange={(e) => setForm({ ...form, description: e.target.value })}
           placeholder="可选描述..."
         />
+
+        {/* 运行时环境 */}
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">运行时环境</label>
+          <select
+            value={form.runtime}
+            onChange={(e) => setForm({ ...form, runtime: e.target.value })}
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
+          >
+            <option value="native">原生执行（直接启动命令）</option>
+            <option value="wsl">WSL（通过 Windows Subsystem for Linux 执行）</option>
+          </select>
+          <p className="text-[11px] text-muted-foreground">
+            {form.runtime === 'wsl'
+              ? '命令将通过 wsl.exe 在 Linux 子系统中执行，工作目录自动转换为 /mnt/ 路径'
+              : 'Windows 上使用 cmd.exe 中转，Linux/macOS 直接执行'}
+          </p>
+        </div>
 
         {/* 环境变量编辑器 */}
         <EnvVarsEditor envVars={form.envVars} onChange={(envVars) => setForm({ ...form, envVars })} />

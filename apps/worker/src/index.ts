@@ -18,7 +18,7 @@ let currentTaskId: string | null = null;
 
 function parseReportedEnvVarAllowlist(): string[] {
   const raw = (process.env.CAM_WORKER_REPORTED_ENV_VARS || '').trim();
-  const defaults = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'GITEA_TOKEN'];
+  const defaults = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CODEX_API_KEY', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'GITEA_TOKEN'];
   if (!raw) return defaults;
   return raw
     .split(',')

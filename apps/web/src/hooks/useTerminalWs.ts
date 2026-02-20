@@ -43,6 +43,8 @@ export function useTerminalWs(): UseTerminalWsReturn {
   const addPipeline = useTerminalStore((s) => s.addPipeline);
   const updatePipelineStep = useTerminalStore((s) => s.updatePipelineStep);
   const completePipeline = useTerminalStore((s) => s.completePipeline);
+  const pausePipeline = useTerminalStore((s) => s.pausePipeline);
+  const resumePipeline = useTerminalStore((s) => s.resumePipeline);
 
   const send = useCallback((msg: ClientMessage): boolean => {
     const ws = wsRef.current;
@@ -156,6 +158,14 @@ export function useTerminalWs(): UseTerminalWsReturn {
         case 'pipeline-completed':
           completePipeline(msg.pipelineId, msg.finalStatus);
           break;
+
+        case 'pipeline-paused':
+          pausePipeline(msg.pipelineId);
+          break;
+
+        case 'pipeline-resumed':
+          resumePipeline(msg.pipelineId);
+          break;
       }
     };
 
@@ -177,7 +187,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
     ws.onerror = () => {
       // onclose 会随后触发，在那里处理重连
     };
-  }, [setConnected, addSession, removeSession, setSessions, addAgentSession, updateAgentStatus, setAgentSessions, addPipeline, updatePipelineStep, completePipeline, send]);
+  }, [setConnected, addSession, removeSession, setSessions, addAgentSession, updateAgentStatus, setAgentSessions, addPipeline, updatePipelineStep, completePipeline, pausePipeline, resumePipeline, send]);
 
   useEffect(() => {
     mountedRef.current = true;

@@ -23,13 +23,16 @@ import type { ClientMessage } from '@/lib/terminal/protocol';
 
 // ---- 类型 ----
 
-interface AgentDef { id: string; displayName: string; description?: string }
-interface ClaudeSession { sessionId: string; lastModified: string; sizeBytes: number }
-interface DirEntry { name: string; path: string; isDirectory: boolean; isGitRepo: boolean; hasClaude: boolean }
+interface AgentDef { id: string; displayName: string; description?: string; runtime?: string }
+interface AgentSession { sessionId: string; lastModified: string; sizeBytes: number }
+interface DirEntry { name: string; path: string; isDirectory: boolean; isGitRepo: boolean; hasClaude: boolean; hasCodex?: boolean }
 interface BrowseResult {
   currentPath: string; parentPath: string | null;
-  isGitRepo: boolean; hasClaude: boolean;
-  entries: DirEntry[]; claudeSessions: ClaudeSession[];
+  isGitRepo: boolean; hasClaude: boolean; hasCodex?: boolean;
+  entries: DirEntry[];
+  agentSessions: AgentSession[];
+  /** 向后兼容 */
+  claudeSessions?: AgentSession[];
 }
 interface RepoPreset { id: string; name: string; repoUrl: string; defaultWorkDir: string | null }
 interface TemplateItem {
@@ -70,6 +73,8 @@ function addRecentDir(dir: string): void {
 // ---- 工具 ----
 
 const isClaudeCode = (id: string) => id === 'claude-code';
+/** CLI Agent：支持会话发现和恢复的交互式 Agent */
+const isCLIAgent = (id: string) => id === 'claude-code' || id === 'codex';
 
 function fmtSize(b: number): string {
   if (b < 1024) return `${b}B`;
@@ -141,8 +146,8 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // 当前目录状态
   const [dirInfo, setDirInfo] = useState<{ isGitRepo: boolean; hasClaude: boolean } | null>(null);
 
-  // 已发现的 Claude 会话
-  const [sessions, setSessions] = useState<ClaudeSession[]>([]);
+  // 已发现的 Agent 会话（Claude Code 或 Codex）
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [discoverLoading, setDiscoverLoading] = useState(false);
 
   const discoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -154,7 +159,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     if (!open) return;
     fetch('/api/agents').then((r) => r.json()).then((d) => {
       if (d.success && Array.isArray(d.data)) {
-        const list = d.data.map((a: AgentDef) => ({ id: a.id, displayName: a.displayName, description: a.description }));
+        const list = d.data.map((a: AgentDef) => ({ id: a.id, displayName: a.displayName, description: a.description, runtime: a.runtime }));
         setAgents(list);
         if (list.length > 0 && !selectedAgent) setSelectedAgent(list[0].id);
       }
@@ -206,14 +211,15 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     setTemplateVars((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  // ---- 目录变更 → 自动发现会话 ----
+  // ---- 目录变更 → 自动检测目录特征 + 发现 Claude 会话 ----
   useEffect(() => {
-    if (!open || !workDir.trim() || !isClaudeCode(selectedAgent)) {
+    if (!open || !workDir.trim()) {
       setSessions([]);
       setDirInfo(null);
       return;
     }
     if (discoverRef.current) clearTimeout(discoverRef.current);
+    // 所有 Agent 都做目录检测；Claude Code 额外发现已有会话
     discoverRef.current = setTimeout(() => discover(workDir.trim()), 400);
     return () => { if (discoverRef.current) clearTimeout(discoverRef.current); };
   }, [workDir, selectedAgent, open]);
@@ -224,13 +230,17 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     const seq = ++discoverSeqRef.current;
     setDiscoverLoading(true);
     try {
-      const res = await fetch(`/api/terminal/browse?path=${encodeURIComponent(path)}&discover=true`);
+      // CLI Agent（Claude Code / Codex）发现会话；其他 Agent 仅做目录检测
+      const agentParam = isCLIAgent(selectedAgent) ? `&agent=${encodeURIComponent(selectedAgent)}` : '';
+      // WSL Agent 需要传递 runtime 以便后端从 WSL 文件系统查找会话
+      const agentRuntime = agents.find((a) => a.id === selectedAgent)?.runtime;
+      const runtimeParam = agentRuntime && agentRuntime !== 'native' ? `&runtime=${agentRuntime}` : '';
+      const res = await fetch(`/api/terminal/browse?path=${encodeURIComponent(path)}${agentParam}${runtimeParam}`);
       const d = await res.json();
-      // 丢弃过期响应（用户已切换到其他目录）
       if (seq !== discoverSeqRef.current) return;
       if (!d.success) return;
       const r = d.data as BrowseResult;
-      setSessions(r.claudeSessions);
+      setSessions(isCLIAgent(selectedAgent) ? (r.agentSessions ?? []) : []);
       setDirInfo({ isGitRepo: r.isGitRepo, hasClaude: r.hasClaude });
     } catch {
       if (seq === discoverSeqRef.current) {
@@ -242,7 +252,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
         setDiscoverLoading(false);
       }
     }
-  }, []);
+  }, [selectedAgent, agents]);
 
   const browse = useCallback(async (path?: string) => {
     setBrowseLoading(true);
@@ -328,7 +338,8 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // ---- 派生 ----
   const hasQuickSelect = repos.length > 0 || recentDirs.length > 0;
   const breadcrumbs = browseResult ? pathToBreadcrumbs(browseResult.currentPath) : [];
-  const showSessions = isClaudeCode(selectedAgent) && sessions.length > 0;
+  const showSessions = isCLIAgent(selectedAgent) && sessions.length > 0;
+  const isCodex = selectedAgent === 'codex';
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -380,11 +391,11 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
             </div>
 
             {/* 状态标签 */}
-            {workDir.trim() && isClaudeCode(selectedAgent) && (
+            {workDir.trim() && (
               <div className="flex flex-wrap items-center gap-1.5">
                 {discoverLoading && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-muted-foreground">
-                    <Loader2 size={10} className="animate-spin" /> 搜索会话...
+                    <Loader2 size={10} className="animate-spin" /> 检测目录...
                   </span>
                 )}
                 {!discoverLoading && dirInfo?.isGitRepo && (
@@ -392,9 +403,14 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     <GitBranch size={10} /> Git
                   </span>
                 )}
-                {!discoverLoading && dirInfo?.hasClaude && (
+                {!discoverLoading && dirInfo?.hasClaude && isClaudeCode(selectedAgent) && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-400">
                     <Sparkles size={10} /> Claude
+                  </span>
+                )}
+                {!discoverLoading && isCodex && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 text-[11px] text-orange-400">
+                    <Bot size={10} /> {MSG.codex.autoCommitHint}
                   </span>
                 )}
                 {!discoverLoading && sessions.length > 0 && (
@@ -402,9 +418,9 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     <Clock size={10} /> {sessions.length} 个会话
                   </span>
                 )}
-                {!discoverLoading && dirInfo && sessions.length === 0 && (
+                {!discoverLoading && dirInfo && !dirInfo.isGitRepo && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-muted-foreground">
-                    无已有会话
+                    非 Git 仓库
                   </span>
                 )}
               </div>
@@ -588,7 +604,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
           {showSessions && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-foreground">
-                {MSG.browse?.sessionListLabel ?? '已有 Claude Code 会话'}
+                {isCodex ? '已有 Codex 会话' : (MSG.browse?.sessionListLabel ?? '已有 Claude Code 会话')}
               </label>
               <div className="rounded-lg border border-white/12 bg-white/[0.02] divide-y divide-white/4">
                 {sessions.map((s, idx) => (

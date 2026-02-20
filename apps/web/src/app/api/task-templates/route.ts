@@ -90,6 +90,8 @@ async function handlePost(request: AuthenticatedRequest) {
         repoUrl: payload.repoUrl,
         baseBranch: payload.baseBranch,
         workDir: payload.workDir,
+        pipelineSteps: payload.pipelineSteps,
+        maxRetries: payload.maxRetries,
         createdAt: now,
         updatedAt: now,
       })

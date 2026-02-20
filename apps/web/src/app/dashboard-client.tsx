@@ -59,12 +59,12 @@ export default function DashboardClient({ initialData }: { initialData: Dashboar
 
       {/* KPI 指标行 */}
       <div className="grid grid-cols-1 gap-9 sm:grid-cols-2 lg:grid-cols-3">
-        <KpiCard label="总任务" value={kpi?.totalTasks ?? 0} icon={ListTodo} token="muted-foreground" />
-        <KpiCard label="运行中" value={kpi?.runningTasks ?? 0} icon={Play} token="primary" />
-        <KpiCard label="排队中" value={kpi?.queuedTasks ?? 0} icon={Clock} token="accent" />
-        <KpiCard label="待审批" value={kpi?.awaitingReview ?? 0} icon={AlertTriangle} token="warning" />
-        <KpiCard label="已完成" value={kpi?.completedTasks ?? 0} icon={CheckCircle} token="success" />
-        <KpiCard label="失败" value={kpi?.failedTasks ?? 0} icon={XCircle} token="destructive" />
+        <KpiCard label="总任务" value={kpi?.totalTasks ?? 0} icon={ListTodo} token="muted-foreground" href="/tasks" />
+        <KpiCard label="运行中" value={kpi?.runningTasks ?? 0} icon={Play} token="primary" href="/tasks?status=running" />
+        <KpiCard label="排队中" value={kpi?.queuedTasks ?? 0} icon={Clock} token="accent" href="/tasks?status=queued" />
+        <KpiCard label="待审批" value={kpi?.awaitingReview ?? 0} icon={AlertTriangle} token="warning" href="/tasks?status=awaiting_review" />
+        <KpiCard label="已完成" value={kpi?.completedTasks ?? 0} icon={CheckCircle} token="success" href="/tasks?status=completed" />
+        <KpiCard label="失败" value={kpi?.failedTasks ?? 0} icon={XCircle} token="destructive" href="/tasks?status=failed" />
         <KpiCard label="活跃会话" value={agentSessionSummary?.activeCount ?? 0} icon={TerminalSquare} token="primary" href="/terminal" />
       </div>
 
@@ -104,7 +104,7 @@ function KpiCard({
   const content = (
     <div
       className={`group relative min-h-[9.25rem] overflow-hidden rounded-2xl border border-white/8 p-7 shadow-[var(--shadow-card)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-        isActive ? 'hover:-translate-y-0.5 hover:border-white/14 hover:shadow-[var(--shadow-card-hover)]' : ''
+        isActive || href ? 'hover:-translate-y-0.5 hover:border-white/14 hover:shadow-[var(--shadow-card-hover)]' : ''
       }${href ? ' cursor-pointer' : ''}`}
       style={
         isActive

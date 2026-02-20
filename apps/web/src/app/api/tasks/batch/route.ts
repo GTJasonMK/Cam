@@ -34,7 +34,7 @@ async function handler(request: AuthenticatedRequest) {
     }
     const payload = parsed.data;
 
-    const agentDefinitionId = payload.agentDefinitionId;
+    const defaultAgentId = payload.agentDefinitionId;
     const repoUrl = payload.repoUrl;
     const repositoryId = payload.repositoryId;
     const baseBranch = payload.baseBranch;
@@ -42,6 +42,12 @@ async function handler(request: AuthenticatedRequest) {
     const maxRetries = payload.maxRetries;
     const groupIdInput = payload.groupId;
     const steps = payload.steps;
+
+    // 收集所有用到的 agentDefinitionId（去重）
+    const allAgentIds = new Set<string>();
+    for (const step of steps) {
+      allAgentIds.add(step.agentDefinitionId || defaultAgentId);
+    }
 
     if (repositoryId) {
       const repo = await db
@@ -57,41 +63,54 @@ async function handler(request: AuthenticatedRequest) {
       }
     }
 
-    // Agent 必需环境变量前置校验：缺失时直接阻止入队，避免跑到一半才失败
-    const agent = await db
-      .select({
-        id: agentDefinitions.id,
-        displayName: agentDefinitions.displayName,
-        requiredEnvVars: agentDefinitions.requiredEnvVars,
-      })
-      .from(agentDefinitions)
-      .where(eq(agentDefinitions.id, agentDefinitionId))
-      .limit(1);
+    // 验证所有 agent 存在并校验环境变量
+    const agentCache = new Map<string, { displayName: string; requiredEnvVars: Array<{ name: string; description?: string; required?: boolean }> }>();
+    for (const agentId of allAgentIds) {
+      const agent = await db
+        .select({
+          id: agentDefinitions.id,
+          displayName: agentDefinitions.displayName,
+          requiredEnvVars: agentDefinitions.requiredEnvVars,
+        })
+        .from(agentDefinitions)
+        .where(eq(agentDefinitions.id, agentId))
+        .limit(1);
 
-    if (agent.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFoundDefinition(agentDefinitionId) } },
-        { status: 404 }
-      );
+      if (agent.length === 0) {
+        return NextResponse.json(
+          { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFoundDefinition(agentId) } },
+          { status: 404 }
+        );
+      }
+
+      agentCache.set(agentId, {
+        displayName: agent[0].displayName,
+        requiredEnvVars: (agent[0].requiredEnvVars as Array<{ name: string; description?: string; required?: boolean }>) || [],
+      });
     }
 
-    const requiredEnvVars =
-      (agent[0].requiredEnvVars as Array<{ name: string; description?: string; required?: boolean }>) || [];
-
-    const missingEnvVars: string[] = [];
-    for (const ev of requiredEnvVars.filter((r) => Boolean(r.required))) {
-      if (isPresent(ev.name)) continue;
-      const ok = await hasUsableSecretValue(ev.name, {
-        agentDefinitionId,
-        repositoryId,
-        repoUrl,
-      });
-      if (!ok) missingEnvVars.push(ev.name);
+    // 聚合所有 agent 的必需环境变量并校验
+    const allMissingEnvVars = new Set<string>();
+    let firstMissingAgent = '';
+    for (const [agentId, agentInfo] of agentCache) {
+      const requiredEnvVars = agentInfo.requiredEnvVars;
+      for (const ev of requiredEnvVars.filter((r) => Boolean(r.required))) {
+        if (isPresent(ev.name)) continue;
+        const ok = await hasUsableSecretValue(ev.name, {
+          agentDefinitionId: agentId,
+          repositoryId,
+          repoUrl,
+        });
+        if (!ok) {
+          allMissingEnvVars.add(ev.name);
+          if (!firstMissingAgent) firstMissingAgent = agentInfo.displayName;
+        }
+      }
     }
 
     // 如果服务端未配置，但某个在线 daemon Worker 已上报该变量存在，则允许创建流水线
-    let finalMissingEnvVars = missingEnvVars;
-    if (missingEnvVars.length > 0) {
+    let finalMissingEnvVars = Array.from(allMissingEnvVars);
+    if (finalMissingEnvVars.length > 0) {
       const nowMs = Date.now();
       const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
       const workerRows = await db
@@ -114,13 +133,18 @@ async function handler(request: AuthenticatedRequest) {
         reportedEnvVars: (w.reportedEnvVars as string[]) || [],
       }));
 
-      const availableOnWorkers = collectWorkerEnvVarsForAgent(snapshots, {
-        agentDefinitionId,
-        nowMs,
-        staleTimeoutMs,
-      });
+      // 对每个 agent 分别检查 worker 上的环境变量
+      const workerCoveredVars = new Set<string>();
+      for (const agentId of allAgentIds) {
+        const availableOnWorkers = collectWorkerEnvVarsForAgent(snapshots, {
+          agentDefinitionId: agentId,
+          nowMs,
+          staleTimeoutMs,
+        });
+        for (const v of availableOnWorkers) workerCoveredVars.add(v);
+      }
 
-      finalMissingEnvVars = missingEnvVars.filter((name) => !availableOnWorkers.has(name));
+      finalMissingEnvVars = finalMissingEnvVars.filter((name) => !workerCoveredVars.has(name));
     }
 
     if (finalMissingEnvVars.length > 0) {
@@ -129,7 +153,7 @@ async function handler(request: AuthenticatedRequest) {
           success: false,
           error: {
             code: 'MISSING_ENV_VARS',
-            message: TASK_MESSAGES.missingAgentEnvVars(agent[0].displayName, finalMissingEnvVars),
+            message: TASK_MESSAGES.missingAgentEnvVars(firstMissingAgent, finalMissingEnvVars),
             missingEnvVars: finalMissingEnvVars,
           },
         },
@@ -137,7 +161,7 @@ async function handler(request: AuthenticatedRequest) {
       );
     }
 
-    // groupId：未指定则自动生成，便于在 UI 按组筛选/观察整条流水线
+    // groupId：未指定则自动生成
     const pipelineId = uuidv4();
     const groupId = groupIdInput || `pipeline/${pipelineId.slice(0, 8)}`;
 
@@ -147,6 +171,7 @@ async function handler(request: AuthenticatedRequest) {
 
     for (let i = 0; i < steps.length; i += 1) {
       const step = steps[i];
+      const stepAgentId = step.agentDefinitionId || defaultAgentId;
       const taskId = uuidv4();
       const workBranch = `cam/task-${taskId.slice(0, 8)}`;
       const dependsOn = previousTaskId ? [previousTaskId] : [];
@@ -158,7 +183,7 @@ async function handler(request: AuthenticatedRequest) {
           id: taskId,
           title: step.title,
           description: step.description,
-          agentDefinitionId,
+          agentDefinitionId: stepAgentId,
           repositoryId,
           repoUrl,
           baseBranch,
@@ -177,7 +202,7 @@ async function handler(request: AuthenticatedRequest) {
 
       await db.insert(systemEvents).values({
         type: 'task.created',
-        payload: { taskId, title: step.title, agentDefinitionId, groupId, pipelineId, stepIndex: i },
+        payload: { taskId, title: step.title, agentDefinitionId: stepAgentId, groupId, pipelineId, stepIndex: i },
       });
 
       sseManager.broadcast(initialStatus === 'queued' ? 'task.queued' : 'task.waiting', { taskId, title: step.title });
