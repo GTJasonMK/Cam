@@ -11,7 +11,7 @@ import type { AgentDefinitionItem } from '@/stores';
 import { getBadgeBg, getColorVar } from '@/lib/constants';
 import { PageHeader } from '@/components/ui/page-header';
 import { DataTable, type Column } from '@/components/ui/data-table';
-import { Tabs } from '@/components/ui/tabs';
+import { TabBar } from '@/components/ui/tabs';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
@@ -172,22 +172,24 @@ export default function AgentsPage() {
         if (row.builtIn) return null;
         return (
           <div className="flex items-center justify-end gap-1">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
               onClick={() => setEditingAgent(row)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="编辑"
+              aria-label="编辑"
             >
               <Pencil size={14} />
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
               onClick={() => handleDelete(row)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-              title="删除"
+              aria-label="删除"
             >
               <Trash2 size={14} />
-            </button>
+            </Button>
           </div>
         );
       },
@@ -195,7 +197,7 @@ export default function AgentsPage() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title="智能体定义" subtitle="配置编码智能体模板">
         <Button onClick={() => setCreateOpen(true)}>
           <Plus size={15} className="mr-1" />
@@ -204,7 +206,7 @@ export default function AgentsPage() {
       </PageHeader>
 
       {/* Tab 筛选 */}
-      <Tabs
+      <TabBar
         tabs={[
           { key: 'all', label: '全部', count: agents.length },
           { key: 'builtin', label: '内置', count: builtInCount },
@@ -386,8 +388,8 @@ function AgentFormModal({
           <Button variant="secondary" size="sm" onClick={onClose}>
             取消
           </Button>
-          <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {saving ? '保存中...' : mode === 'create' ? '创建' : '保存'}
+          <Button size="sm" disabled={!canSubmit} loading={saving} onClick={handleSubmit}>
+            {mode === 'create' ? '创建' : '保存'}
           </Button>
         </>
       }
@@ -537,14 +539,15 @@ function EnvVarsEditor({
                       <span className="text-muted-foreground">敏感</span>
                     </label>
                   </div>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
                     onClick={() => onChange(envVars.filter((_, i) => i !== idx))}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    title="移除"
+                    aria-label="移除"
                   >
                     <Trash2 size={13} />
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>

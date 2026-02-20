@@ -1,6 +1,7 @@
 // ============================================================
-// SSE Provider
-// 全局 SSE 连接提供者，接收服务端事件并刷新对应的 Zustand Store
+// SSE 监听器
+// 全局 SSE 连接，接收服务端事件并刷新对应的 Zustand Store
+// 纯副作用组件，不渲染任何 DOM
 // ============================================================
 
 'use client';
@@ -9,7 +10,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useSSE, type SSEEvent } from '@/hooks/useSSE';
 import { useTaskStore, useAgentStore, useWorkerStore, useDashboardStore } from '@/stores';
 
-export function SSEProvider({ children }: { children: React.ReactNode }) {
+export function SSEListener() {
   const fetchTasks = useTaskStore((s) => s.fetchTasks);
   const fetchWorkers = useWorkerStore((s) => s.fetchWorkers);
   const fetchAgents = useAgentStore((s) => s.fetchAgents);
@@ -38,6 +39,11 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         pendingRefreshRef.current.add(prefix);
       }
 
+      // agent.session.* 事件同时刷新 Dashboard（活跃会话数变化）
+      if (event.type.startsWith('agent.session.')) {
+        pendingRefreshRef.current.add('dashboard');
+      }
+
       if (applyDashboardRealtimeEvent(event)) {
         pendingRefreshRef.current.add('dashboard');
       }
@@ -61,5 +67,5 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  return <>{children}</>;
+  return null;
 }

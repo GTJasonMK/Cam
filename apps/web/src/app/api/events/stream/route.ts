@@ -8,8 +8,9 @@ import { sseManager } from '@/lib/sse/manager';
 import { v4 as uuidv4 } from 'uuid';
 
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
+import { withAuth } from '@/lib/auth/with-auth';
 
-export async function GET() {
+async function handler() {
   // 建立 SSE 时启动调度循环（避免在 next build 阶段产生副作用）
   ensureSchedulerStarted();
 
@@ -38,3 +39,5 @@ export async function GET() {
     },
   });
 }
+
+export const GET = withAuth(handler, 'event:read');

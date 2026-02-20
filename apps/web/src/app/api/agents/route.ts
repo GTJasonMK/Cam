@@ -7,12 +7,13 @@
 // DELETE /api/agents/[id]    - 删除 Agent 定义
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions } from '@/lib/db/schema';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
-export async function GET() {
+async function handleGet() {
   try {
     const result = await db.select().from(agentDefinitions).orderBy(agentDefinitions.createdAt);
     return NextResponse.json({ success: true, data: result });
@@ -25,7 +26,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: AuthenticatedRequest) {
   try {
     const body = await request.json();
 
@@ -68,3 +69,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'agent:read');
+export const POST = withAuth(handlePost, 'agent:create');

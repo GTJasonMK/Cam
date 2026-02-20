@@ -72,9 +72,11 @@ export function useSSE(options?: UseSSEOptions): UseSSEReturn {
   }, []);
 
   useEffect(() => {
-    connect();
+    // 延迟 2 秒再建立 SSE 连接，让首屏渲染先完成
+    const delay = setTimeout(() => connect(), 2000);
 
     return () => {
+      clearTimeout(delay);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }

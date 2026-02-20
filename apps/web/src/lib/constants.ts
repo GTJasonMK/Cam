@@ -25,6 +25,12 @@ export const WORKER_STATUS_COLORS: Record<string, string> = {
   draining: 'warning',
 };
 
+/** 用户状态 -> 颜色 token */
+export const USER_STATUS_COLORS: Record<string, string> = {
+  active: 'success',
+  disabled: 'destructive',
+};
+
 /** 事件类型前缀 -> 颜色 token */
 export const EVENT_TYPE_COLORS: Record<string, string> = {
   task: 'primary',
@@ -54,23 +60,23 @@ export const STATUS_DISPLAY_LABELS: Record<string, string> = {
 // ---- 颜色映射（适配新调色板） ----
 
 const COLOR_HEX: Record<string, string> = {
-  primary: '#6366f1',
-  success: '#10b981',
-  destructive: '#f43f5e',
-  warning: '#f59e0b',
-  accent: '#a78bfa',
-  cyan: '#22d3ee',
-  'muted-foreground': '#8b8fa3',
+  primary: '#5e6ad2',
+  success: '#26c281',
+  destructive: '#ef5a7a',
+  warning: '#f4b35f',
+  accent: '#6872d9',
+  cyan: '#59a6ff',
+  'muted-foreground': '#8a8f98',
 };
 
 const COLOR_RGB: Record<string, string> = {
-  primary: '99, 102, 241',
-  success: '16, 185, 129',
-  destructive: '244, 63, 94',
-  warning: '245, 158, 11',
-  accent: '167, 139, 250',
-  cyan: '34, 211, 238',
-  'muted-foreground': '139, 143, 163',
+  primary: '94, 106, 210',
+  success: '38, 194, 129',
+  destructive: '239, 90, 122',
+  warning: '244, 179, 95',
+  accent: '104, 114, 217',
+  cyan: '89, 166, 255',
+  'muted-foreground': '138, 143, 152',
 };
 
 export function getColorVar(token: string): string {
@@ -83,7 +89,13 @@ export function getColorHex(token: string): string {
 
 export function getBadgeBg(token: string): string {
   const rgb = COLOR_RGB[token] || COLOR_RGB['muted-foreground'];
-  return `rgba(${rgb}, 0.12)`;
+  return `rgba(${rgb}, 0.18)`;
+}
+
+/** 获取徽章边框色 */
+export function getBadgeBorder(token: string): string {
+  const rgb = COLOR_RGB[token] || COLOR_RGB['muted-foreground'];
+  return `rgba(${rgb}, 0.25)`;
 }
 
 /** 获取发光阴影（用于 KPI 卡片等） */

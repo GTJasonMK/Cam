@@ -5,10 +5,12 @@
 
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { agentDefinitions } from '@/lib/db/schema';
+import { agentDefinitions, workers } from '@/lib/db/schema';
 import fs from 'fs';
 import { hasUsableSecretValue } from '@/lib/secrets/resolve';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
+import { isEligibleCapabilityWorker, workerSupportsAgent, type WorkerCapabilitySnapshot } from '@/lib/workers/capabilities';
+import { withAuth } from '@/lib/auth/with-auth';
 
 const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 
@@ -17,9 +19,48 @@ function isPresent(name: string): boolean {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
-export async function GET() {
+async function handler() {
   try {
     const defs = await db.select().from(agentDefinitions).orderBy(agentDefinitions.createdAt);
+
+    const nowMs = Date.now();
+    const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
+
+    const workerRows = await db
+      .select({
+        id: workers.id,
+        name: workers.name,
+        status: workers.status,
+        mode: workers.mode,
+        lastHeartbeatAt: workers.lastHeartbeatAt,
+        supportedAgentIds: workers.supportedAgentIds,
+        reportedEnvVars: workers.reportedEnvVars,
+      })
+      .from(workers);
+
+    const workerSnapshots: Array<WorkerCapabilitySnapshot & { name: string }> = workerRows.map((w) => ({
+      id: w.id,
+      name: w.name,
+      status: w.status,
+      mode: w.mode,
+      lastHeartbeatAt: w.lastHeartbeatAt,
+      supportedAgentIds: (w.supportedAgentIds as string[]) || [],
+      reportedEnvVars: (w.reportedEnvVars as string[]) || [],
+    }));
+
+    const eligibleDaemonWorkers = workerSnapshots.filter((w) =>
+      isEligibleCapabilityWorker(w, { nowMs, staleTimeoutMs })
+    );
+
+    const isPresentOnAnyWorker = (name: string): boolean => {
+      return eligibleDaemonWorkers.some((w) => (w.reportedEnvVars || []).includes(name));
+    };
+
+    const isPresentOnAnyWorkerForAgent = (agentDefinitionId: string, name: string): boolean => {
+      return eligibleDaemonWorkers.some(
+        (w) => workerSupportsAgent(w, agentDefinitionId) && (w.reportedEnvVars || []).includes(name)
+      );
+    };
 
     const agents: Array<{
       id: string;
@@ -34,7 +75,9 @@ export async function GET() {
 
       const rows: Array<{ name: string; required: boolean; sensitive: boolean; present: boolean }> = [];
       for (const ev of requiredEnvVars) {
-        const present = isPresent(ev.name) || (await hasUsableSecretValue(ev.name, { agentDefinitionId: a.id }));
+        const presentOnServer = isPresent(ev.name) || (await hasUsableSecretValue(ev.name, { agentDefinitionId: a.id }));
+        const presentOnWorker = isPresentOnAnyWorkerForAgent(a.id, ev.name);
+        const present = presentOnServer || presentOnWorker;
         rows.push({
           name: ev.name,
           required: Boolean(ev.required),
@@ -75,7 +118,9 @@ export async function GET() {
         keyStatus.push({ name, present: isPresent(name) });
         continue;
       }
-      keyStatus.push({ name, present: isPresent(name) || (await hasUsableSecretValue(name, {})) });
+      const presentOnServer = isPresent(name) || (await hasUsableSecretValue(name, {}));
+      const presentOnWorker = isPresentOnAnyWorker(name);
+      keyStatus.push({ name, present: presentOnServer || presentOnWorker });
     }
 
     return NextResponse.json({
@@ -84,6 +129,17 @@ export async function GET() {
         docker: {
           socketPath: dockerSocketPath,
           available: fs.existsSync(dockerSocketPath),
+        },
+        workers: {
+          staleTimeoutMs,
+          daemonCount: eligibleDaemonWorkers.length,
+          daemonWorkers: eligibleDaemonWorkers.map((w) => ({
+            id: w.id,
+            name: w.name,
+            status: w.status,
+            lastHeartbeatAt: w.lastHeartbeatAt,
+            reportedEnvVars: w.reportedEnvVars || [],
+          })),
         },
         keys: keyStatus,
         agents,
@@ -97,3 +153,5 @@ export async function GET() {
     );
   }
 }
+
+export const GET = withAuth(handler);

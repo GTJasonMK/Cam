@@ -2,19 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { consumeRateLimitToken } from '@/lib/rate-limit/memory';
 import { GATEWAY_MESSAGES } from '@/lib/i18n/messages';
 
-const AUTH_COOKIE_NAME = 'cam_auth_token';
-const AUTH_TOKEN_ENV = 'CAM_AUTH_TOKEN';
-
-const PUBLIC_PAGE_PATHS = new Set<string>();
-const PUBLIC_API_PREFIXES = ['/api/auth/login', '/api/auth/logout', '/api/health'];
-const RATE_LIMIT_EXEMPT_API_PREFIXES = ['/api/health', '/api/events/stream'];
-
-function getConfiguredToken(): string | null {
-  const value = process.env[AUTH_TOKEN_ENV];
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
+const RATE_LIMIT_EXEMPT_API_PREFIXES = ['/api/health', '/api/events/stream', '/api/terminal/'];
 
 function parseIntInRange(raw: string | undefined, fallback: number, min: number, max: number): number {
   const parsed = Number(raw);
@@ -37,11 +25,6 @@ function getRateLimitConfig() {
   };
 }
 
-function isPublicPath(pathname: string): boolean {
-  if (PUBLIC_PAGE_PATHS.has(pathname)) return true;
-  return PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
-}
-
 function getRequestIp(request: NextRequest): string {
   const forwardedFor = request.headers.get('x-forwarded-for');
   if (forwardedFor) {
@@ -62,23 +45,6 @@ function isRateLimitExemptApi(pathname: string): boolean {
   if (isWorkerInternalApi(pathname)) return true;
   if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/logs/append')) return true;
   return false;
-}
-
-function hasValidAuth(request: NextRequest, configuredToken: string): boolean {
-  const cookieToken = request.cookies.get(AUTH_COOKIE_NAME)?.value?.trim();
-  if (cookieToken === configuredToken) return true;
-
-  const authorization = request.headers.get('authorization');
-  if (!authorization) return false;
-  const [scheme, token] = authorization.split(' ', 2);
-  return scheme?.toLowerCase() === 'bearer' && token?.trim() === configuredToken;
-}
-
-function buildApiUnauthorizedResponse() {
-  return NextResponse.json(
-    { success: false, error: { code: 'UNAUTHORIZED', message: GATEWAY_MESSAGES.unauthorized } },
-    { status: 401 }
-  );
 }
 
 function applyRateLimitIfNeeded(request: NextRequest): NextResponse | null {
@@ -118,30 +84,14 @@ export function middleware(request: NextRequest) {
   const limited = applyRateLimitIfNeeded(request);
   if (limited) return limited;
 
-  const configuredToken = getConfiguredToken();
-  if (!configuredToken) return NextResponse.next();
+  const response = NextResponse.next();
 
-  const { pathname, search } = request.nextUrl;
-  const authorized = hasValidAuth(request, configuredToken);
+  // 基础安全响应头
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
 
-  if (pathname === '/login') {
-    if (!authorized) return NextResponse.next();
-    const nextParam = request.nextUrl.searchParams.get('next') || '/';
-    const target = nextParam.startsWith('/') ? nextParam : '/';
-    return NextResponse.redirect(new URL(target, request.url));
-  }
-
-  if (isPublicPath(pathname) || request.method === 'OPTIONS') return NextResponse.next();
-
-  if (authorized) return NextResponse.next();
-
-  if (pathname.startsWith('/api/')) {
-    return buildApiUnauthorizedResponse();
-  }
-
-  const loginUrl = new URL('/login', request.url);
-  loginUrl.searchParams.set('next', `${pathname}${search}`);
-  return NextResponse.redirect(loginUrl);
+  return response;
 }
 
 export const config = {

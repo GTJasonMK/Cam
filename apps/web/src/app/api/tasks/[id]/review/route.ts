@@ -3,7 +3,7 @@
 // POST /api/tasks/[id]/review   - 审批通过或拒绝
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -21,6 +21,7 @@ import { resolveEnvVarValue } from '@/lib/secrets/resolve';
 import { parseReviewPayload } from '@/lib/validation/task-input';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 async function resolveProviderToken(
   provider: GitProvider,
@@ -76,7 +77,7 @@ async function commentPullRequestBestEffort(input: {
   }
 }
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handler(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const actor = resolveAuditActor(request);
@@ -356,3 +357,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:review');

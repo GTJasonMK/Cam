@@ -14,7 +14,7 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
-import { Plus, Pencil, Trash2, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2 } from 'lucide-react';
 
 // ---- 仓库表单状态 ----
 interface RepoFormData {
@@ -79,7 +79,7 @@ export default function ReposPage() {
     {
       key: 'repoUrl',
       header: '仓库地址',
-      cell: (row) => <span className="font-mono text-xs text-muted-foreground">{row.repoUrl}</span>,
+      cell: (row) => <span className="block max-w-[380px] truncate font-mono text-sm text-muted-foreground">{row.repoUrl}</span>,
     },
     {
       key: 'defaultBaseBranch',
@@ -100,7 +100,7 @@ export default function ReposPage() {
       header: '更新时间',
       className: 'w-[160px]',
       cell: (row) => (
-        <span className="text-xs text-muted-foreground">
+        <span className="text-sm text-muted-foreground">
           {new Date(row.updatedAt).toLocaleString('zh-CN')}
         </span>
       ),
@@ -108,54 +108,49 @@ export default function ReposPage() {
     {
       key: 'actions',
       header: '',
-      className: 'w-[100px] text-right',
+      className: 'w-[120px] text-right',
       cell: (row) => (
-        <div className="flex items-center justify-end gap-1">
-          <button
-            type="button"
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 w-9 p-0"
             onClick={() => setEditingRepo(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="编辑"
+            aria-label="编辑"
           >
-            <Pencil size={14} />
-          </button>
-          <button
-            type="button"
+            <Pencil size={16} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 w-9 p-0 hover:bg-destructive/10 hover:text-destructive"
             onClick={() => handleDelete(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            title="删除"
+            aria-label="删除"
           >
-            <Trash2 size={14} />
-          </button>
+            <Trash2 size={16} />
+          </Button>
         </div>
       ),
     },
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title="仓库预设" subtitle="用于任务编排的仓库预设">
         <Button onClick={() => setCreateOpen(true)}>
-          <Plus size={15} className="mr-1" />
+          <Plus size={16} className="mr-1.5" />
           新建仓库
         </Button>
       </PageHeader>
 
       {/* 搜索栏 */}
-      <div className="relative max-w-sm">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索名称或仓库地址..."
-          className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 transition-colors hover:border-border-light focus:border-primary focus:outline-none"
-        />
+      <div className="max-w-lg">
+        <Input placeholder="搜索名称或仓库地址..." value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
 
       {/* 错误提示 */}
       {!loading && error ? (
-        <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-base text-destructive">
           加载失败: {error}
         </div>
       ) : null}
@@ -249,8 +244,8 @@ function RepoFormModal({
     }
   }, [open, initialData]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault();
     setSaving(true);
     setSubmitError(null);
     try {
@@ -274,11 +269,8 @@ function RepoFormModal({
           <Button variant="secondary" size="sm" onClick={onClose}>
             取消
           </Button>
-          <Button size="sm" disabled={saving || !form.name.trim() || !form.repoUrl.trim()} onClick={() => {
-            const fakeEvent = { preventDefault: () => {} } as React.FormEvent;
-            handleSubmit(fakeEvent);
-          }}>
-            {saving ? '保存中...' : '保存'}
+          <Button type="submit" size="sm" loading={saving} disabled={!form.name.trim() || !form.repoUrl.trim()} onClick={handleSubmit}>
+            保存
           </Button>
         </>
       }
@@ -314,7 +306,7 @@ function RepoFormModal({
         </div>
 
         {submitError ? (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {submitError}
           </div>
         ) : null}

@@ -3,7 +3,7 @@
 // POST /api/task-groups/rerun-failed  - 将 groupId 下 failed/cancelled 的任务重新入队
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -11,6 +11,7 @@ import { sseManager } from '@/lib/sse/manager';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES, TASK_GROUP_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function normalizeString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -18,7 +19,7 @@ function normalizeString(value: unknown): string | null {
   return v.length > 0 ? v : null;
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: AuthenticatedRequest) {
   try {
     ensureSchedulerStarted();
     const actor = resolveAuditActor(request);
@@ -106,3 +107,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:update');

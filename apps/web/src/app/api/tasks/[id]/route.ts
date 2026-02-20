@@ -5,7 +5,7 @@
 // DELETE /api/tasks/[id]            - 删除任务
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -14,6 +14,7 @@ import { createOrFindPullRequest, parseGitRepository, type GitProvider } from '@
 import { resolveEnvVarValue } from '@/lib/secrets/resolve';
 import { parseTaskPatchPayload } from '@/lib/validation/task-input';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 async function resolveProviderToken(
   provider: GitProvider,
@@ -34,7 +35,7 @@ async function resolveProviderToken(
   return '';
 }
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
@@ -56,7 +57,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePatch(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const existing = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
@@ -199,7 +200,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleDelete(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const result = await db.delete(tasks).where(eq(tasks.id, id)).returning();
@@ -220,3 +221,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'task:read');
+export const PATCH = withAuth(handlePatch, 'task:update');
+export const DELETE = withAuth(handleDelete, 'task:delete');

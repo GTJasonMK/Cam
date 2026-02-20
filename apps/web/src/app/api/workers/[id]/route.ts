@@ -4,13 +4,14 @@
 // PATCH /api/workers/[id]   - Worker 操作（drain/offline/activate）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { workers, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 type WorkerAction = 'drain' | 'offline' | 'activate';
 
@@ -19,7 +20,7 @@ function parseAction(input: unknown): WorkerAction | null {
   return null;
 }
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const rows = await db.select().from(workers).where(eq(workers.id, id)).limit(1);
@@ -40,7 +41,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePatch(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const actor = resolveAuditActor(request);
@@ -113,3 +114,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'worker:read');
+export const PATCH = withAuth(handlePatch, 'worker:manage');

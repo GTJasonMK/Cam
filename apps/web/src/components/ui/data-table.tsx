@@ -1,13 +1,35 @@
 // ============================================================
-// 通用数据表格组件
-// 支持列定义、行选择、加载骨架、空状态、行点击
+// 通用数据表格组件（TanStack Table + shadcn/ui Table 原语）
+// 支持列定义、行选择、加载骨架、空状态、行点击、行展开
 // ============================================================
 
 'use client';
 
-import { type ReactNode, useCallback } from 'react';
+import {
+  type ReactNode,
+  type ComponentType,
+  useCallback,
+  useMemo,
+  Fragment,
+} from 'react';
+import {
+  useReactTable,
+  getCoreRowModel,
+  flexRender,
+  type ColumnDef,
+} from '@tanstack/react-table';
+import { cn } from '@/lib/utils';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from '@/components/ui/table';
 
-// ---- 类型定义 ----
+// ---- 公开类型（向后兼容的简化列定义） ----
 
 export interface Column<T> {
   /** 列唯一标识 */
@@ -31,6 +53,8 @@ export interface DataTableProps<T> {
   emptyMessage?: string;
   /** 空数据补充提示 */
   emptyHint?: string;
+  /** 空数据图标 */
+  emptyIcon?: ComponentType<{ size?: number; className?: string }>;
   /** 是否启用行选择 */
   selectable?: boolean;
   /** 已选中的行 key 集合 */
@@ -41,23 +65,30 @@ export interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   /** 表头是否固定 */
   stickyHeader?: boolean;
+  /** 行展开渲染（返回 null 表示该行不可展开） */
+  renderExpandedRow?: (row: T) => ReactNode | null;
+  /** 当前展开的行 key 集合 */
+  expandedKeys?: Set<string>;
+  /** 展开变更回调 */
+  onExpandChange?: (keys: Set<string>) => void;
+  /** 是否无外边框（嵌入 Card 内时使用） */
+  borderless?: boolean;
 }
 
 // ---- 骨架行 ----
 
 function SkeletonRows({ columns, rows = 5 }: { columns: number; rows?: number }) {
-  // 预定义不同宽度，让骨架看起来更自然
   const widths = ['w-3/4', 'w-1/2', 'w-2/3', 'w-5/6', 'w-1/3'];
   return (
     <>
       {Array.from({ length: rows }, (_, rowIdx) => (
-        <tr key={rowIdx} className="border-t border-border">
+        <TableRow key={rowIdx} className="border-t border-white/6">
           {Array.from({ length: columns }, (_, colIdx) => (
-            <td key={colIdx} className="px-4 py-3">
-              <div className={`h-4 rounded bg-muted animate-pulse ${widths[(rowIdx + colIdx) % widths.length]}`} />
-            </td>
+            <TableCell key={colIdx}>
+              <Skeleton className={cn('h-[1.1rem]', widths[(rowIdx + colIdx) % widths.length])} />
+            </TableCell>
           ))}
-        </tr>
+        </TableRow>
       ))}
     </>
   );
@@ -72,138 +103,230 @@ export function DataTable<T>({
   loading = false,
   emptyMessage = '暂无数据',
   emptyHint,
+  emptyIcon: EmptyIcon,
   selectable = false,
   selectedKeys,
   onSelectionChange,
   onRowClick,
   stickyHeader = false,
+  renderExpandedRow,
+  expandedKeys,
+  onExpandChange,
+  borderless = false,
 }: DataTableProps<T>) {
-  // 全选 / 取消全选
-  const allKeys = data.map(rowKey);
-  const allSelected = allKeys.length > 0 && selectedKeys != null && allKeys.every((k) => selectedKeys.has(k));
-  const someSelected = selectedKeys != null && selectedKeys.size > 0 && !allSelected;
+  // 将简化 Column<T> 转换为 TanStack ColumnDef
+  const tanstackColumns = useMemo<ColumnDef<T, unknown>[]>(() => {
+    const defs: ColumnDef<T, unknown>[] = [];
 
-  const handleSelectAll = useCallback(() => {
-    if (!onSelectionChange) return;
-    if (allSelected) {
-      onSelectionChange(new Set());
-    } else {
-      onSelectionChange(new Set(allKeys));
+    // 选择列
+    if (selectable) {
+      defs.push({
+        id: '__select',
+        header: () => {
+          const allKeys = data.map(rowKey);
+          const allSelected =
+            allKeys.length > 0 &&
+            selectedKeys != null &&
+            allKeys.every((k) => selectedKeys.has(k));
+          const someSelected =
+            selectedKeys != null && selectedKeys.size > 0 && !allSelected;
+          return (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = someSelected;
+              }}
+              onChange={() => {
+                if (!onSelectionChange) return;
+                onSelectionChange(allSelected ? new Set() : new Set(allKeys));
+              }}
+              className="h-4 w-4 rounded border-border accent-primary"
+            />
+          );
+        },
+        cell: ({ row }) => {
+          const key = rowKey(row.original);
+          const checked = selectedKeys?.has(key) ?? false;
+          return (
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={() => {
+                if (!onSelectionChange || !selectedKeys) return;
+                const next = new Set(selectedKeys);
+                if (next.has(key)) next.delete(key);
+                else next.add(key);
+                onSelectionChange(next);
+              }}
+              className="h-4 w-4 rounded border-border accent-primary"
+            />
+          );
+        },
+        size: 40,
+        meta: { className: 'w-10' },
+      });
     }
-  }, [allSelected, allKeys, onSelectionChange]);
 
-  const handleSelectRow = useCallback(
-    (key: string) => {
-      if (!onSelectionChange || !selectedKeys) return;
-      const next = new Set(selectedKeys);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      onSelectionChange(next);
-    },
-    [selectedKeys, onSelectionChange]
-  );
+    // 数据列
+    for (const col of columns) {
+      defs.push({
+        id: col.key,
+        header: () => col.header,
+        cell: ({ row }) => col.cell(row.original),
+        meta: { className: col.className },
+      });
+    }
 
-  // 总列数（含 checkbox 列）
+    return defs;
+  }, [columns, selectable, data, rowKey, selectedKeys, onSelectionChange]);
+
+  const table = useReactTable({
+    data,
+    columns: tanstackColumns,
+    getCoreRowModel: getCoreRowModel(),
+    getRowId: (row) => rowKey(row),
+  });
+
   const totalColumns = selectable ? columns.length + 1 : columns.length;
 
-  return (
-    <div className="rounded-xl border border-border overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          {/* 表头 */}
-          <thead>
-            <tr
-              className={`bg-muted/50 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground ${
-                stickyHeader ? 'sticky top-0 z-10' : ''
-              }`}
-            >
-              {selectable ? (
-                <th className="w-10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = someSelected;
-                    }}
-                    onChange={handleSelectAll}
-                    className="h-3.5 w-3.5 rounded border-border accent-primary"
-                  />
-                </th>
-              ) : null}
-              {columns.map((col) => (
-                <th key={col.key} className={`px-4 py-3 ${col.className || ''}`}>
-                  {col.header}
-                </th>
-              ))}
-            </tr>
-          </thead>
+  const handleToggleExpand = useCallback(
+    (key: string) => {
+      if (!onExpandChange || !expandedKeys) return;
+      const next = new Set(expandedKeys);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      onExpandChange(next);
+    },
+    [expandedKeys, onExpandChange],
+  );
 
-          {/* 表体 */}
-          <tbody>
-            {loading ? (
-              <SkeletonRows columns={totalColumns} />
-            ) : data.length === 0 ? (
-              <tr>
-                <td colSpan={totalColumns} className="py-16 text-center">
-                  <p className="text-sm text-muted-foreground">{emptyMessage}</p>
-                  {emptyHint ? (
-                    <p className="mt-1 text-xs text-muted-foreground/70">{emptyHint}</p>
-                  ) : null}
-                </td>
-              </tr>
-            ) : (
-              data.map((row) => {
-                const key = rowKey(row);
-                const selected = selectedKeys?.has(key) ?? false;
+  const handleRowClick = useCallback(
+    (row: T, key: string, e: React.MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'BUTTON' ||
+        target.closest('button') ||
+        target.closest('a')
+      ) {
+        return;
+      }
+      if (renderExpandedRow && onExpandChange) {
+        const expandContent = renderExpandedRow(row);
+        if (expandContent !== null) {
+          handleToggleExpand(key);
+          return;
+        }
+      }
+      onRowClick?.(row);
+    },
+    [renderExpandedRow, onExpandChange, handleToggleExpand, onRowClick],
+  );
+
+  const isClickable = Boolean(onRowClick || (renderExpandedRow && onExpandChange));
+
+  return (
+    <div
+      className={cn(
+        'overflow-hidden',
+        !borderless && 'rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.05)_0%,rgba(255,255,255,0.02)_100%)] shadow-[var(--shadow-card)]',
+      )}
+    >
+      <Table>
+        {/* 表头 */}
+        <TableHeader>
+          {table.getHeaderGroups().map((headerGroup) => (
+            <TableRow
+              key={headerGroup.id}
+              className={cn(
+                'bg-white/[0.04] hover:bg-white/[0.04]',
+                stickyHeader && 'sticky top-0 z-10',
+              )}
+            >
+              {headerGroup.headers.map((header) => {
+                const meta = header.column.columnDef.meta as
+                  | { className?: string }
+                  | undefined;
                 return (
-                  <tr
-                    key={key}
-                    className={`border-t border-border transition-colors ${
-                      selected ? 'bg-primary/5' : 'hover:bg-muted/30'
-                    } ${onRowClick ? 'cursor-pointer' : ''}`}
+                  <TableHead key={header.id} className={meta?.className}>
+                    {header.isPlaceholder
+                      ? null
+                      : flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableHeader>
+
+        {/* 表体 */}
+        <TableBody>
+          {loading ? (
+            <SkeletonRows columns={totalColumns} />
+          ) : table.getRowModel().rows.length === 0 ? (
+            <TableRow className="hover:bg-transparent">
+              <TableCell colSpan={totalColumns} className="py-20 text-center">
+                {EmptyIcon && (
+                  <div className="mb-4 flex justify-center">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/8 bg-muted/60 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
+                      <EmptyIcon size={28} className="text-muted-foreground/50" />
+                    </div>
+                  </div>
+                )}
+                <p className="text-[0.95rem] font-medium text-muted-foreground">{emptyMessage}</p>
+                {emptyHint ? (
+                  <p className="mt-1.5 text-sm text-muted-foreground/70">{emptyHint}</p>
+                ) : null}
+              </TableCell>
+            </TableRow>
+          ) : (
+            table.getRowModel().rows.map((row) => {
+              const key = row.id;
+              const selected = selectedKeys?.has(key) ?? false;
+              const expanded = expandedKeys?.has(key) ?? false;
+              const expandContent = renderExpandedRow
+                ? renderExpandedRow(row.original)
+                : null;
+              return (
+                <Fragment key={key}>
+                  <TableRow
+                    data-state={selected ? 'selected' : undefined}
+                    className={cn(
+                      'border-t border-white/6',
+                      selected ? 'bg-primary/12' : '',
+                      isClickable && 'cursor-pointer',
+                    )}
                     onClick={
-                      onRowClick
-                        ? (e) => {
-                            // 点击 checkbox 或按钮时不触发行点击
-                            const target = e.target as HTMLElement;
-                            if (
-                              target.tagName === 'INPUT' ||
-                              target.tagName === 'BUTTON' ||
-                              target.closest('button') ||
-                              target.closest('a')
-                            ) {
-                              return;
-                            }
-                            onRowClick(row);
-                          }
+                      isClickable
+                        ? (e) => handleRowClick(row.original, key, e)
                         : undefined
                     }
                   >
-                    {selectable ? (
-                      <td className="w-10 px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={() => handleSelectRow(key)}
-                          className="h-3.5 w-3.5 rounded border-border accent-primary"
-                        />
-                      </td>
-                    ) : null}
-                    {columns.map((col) => (
-                      <td key={col.key} className={`px-4 py-3 ${col.className || ''}`}>
-                        {col.cell(row)}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                    {row.getVisibleCells().map((cell) => {
+                      const meta = cell.column.columnDef.meta as
+                        | { className?: string }
+                        | undefined;
+                      return (
+                        <TableCell key={cell.id} className={meta?.className}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                  {expanded && expandContent !== null && (
+                    <TableRow className="border-t border-white/10 bg-white/[0.04] hover:bg-white/[0.04]">
+                      <TableCell colSpan={totalColumns} className="px-6 py-5">
+                        {expandContent}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
+              );
+            })
+          )}
+        </TableBody>
+      </Table>
     </div>
   );
 }

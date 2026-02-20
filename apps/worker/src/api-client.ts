@@ -69,6 +69,8 @@ export async function registerWorker(input: {
   id: string;
   name: string;
   supportedAgentIds: string[];
+  mode?: string;
+  reportedEnvVars?: string[];
 }): Promise<void> {
   await request('/api/workers', {
     method: 'POST',

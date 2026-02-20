@@ -7,6 +7,9 @@ export const SIDEBAR_UI_MESSAGES = {
     agents: '智能体',
     workers: '工作节点',
     repos: '仓库',
+    terminal: '终端',
+    profile: '个人设置',
+    users: '用户管理',
     settings: '设置',
   },
   navTitle: '导航',
@@ -215,5 +218,90 @@ export const TASK_DETAIL_UI_MESSAGES = {
     completedAt: '完成时间',
     elapsed: '耗时',
     pullRequest: '拉取请求',
+  },
+} as const;
+
+export const AGENT_SESSION_UI_MESSAGES = {
+  viewTerminal: '终端',
+  viewAgent: 'Agent',
+  newAgent: '+ 新建 Agent',
+  newTerminal: '+ 新建终端',
+  createTitle: '新建 Agent 会话',
+  agentLabel: 'Agent 类型',
+  agentPlaceholder: '选择 Agent...',
+  promptLabel: '提示词',
+  promptPlaceholder: '描述你希望 Agent 完成的任务...',
+  repoUrlLabel: '仓库地址（可选）',
+  repoUrlPlaceholder: 'git@github.com:org/repo.git',
+  workDirLabel: '工作目录（可选）',
+  workDirPlaceholder: '/path/to/project',
+  baseBranchLabel: '基线分支（可选）',
+  baseBranchPlaceholder: 'main',
+  cancel: '取消',
+  create: '启动 Agent',
+  creating: '启动中...',
+  promptRequired: '请填写提示词',
+  agentRequired: '请选择 Agent 类型',
+  // 目录浏览 + 会话发现
+  browse: {
+    directoryLabel: '项目目录',
+    createDescription: '选择 Agent 类型和项目目录，可发现并恢复已有 Claude Code 会话',
+    emptyDirectory: '空目录',
+    sessionListLabel: '已有 Claude Code 会话',
+    newSession: '新建会话',
+    resumeSession: '恢复会话',
+    mostRecent: '最近',
+    advancedOptions: '高级选项（仓库地址 / 基线分支）',
+    gitRepo: 'Git 仓库',
+    claudeProject: 'Claude 项目',
+    sessionCount: (n: number) => `${n} 个已有会话`,
+  },
+  statusPanel: {
+    title: 'Agent 会话',
+    empty: '暂无 Agent 会话',
+    emptyHint: '点击上方"+ 新建 Agent"启动',
+    view: '查看',
+    cancelAgent: '取消',
+    cancelConfirmTitle: '取消 Agent 会话？',
+    cancelConfirmDescription: '将发送 SIGINT 中断 Agent 进程。',
+    cancelConfirm: '确认取消',
+  },
+  status: {
+    running: '运行中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  },
+  // 模板选择
+  template: {
+    sectionLabel: '从模板创建',
+    selectPlaceholder: '选择模板...',
+    noTemplates: '暂无模板',
+    varLabel: (name: string) => name,
+    preview: '渲染预览',
+    launchFromTemplate: '从模板启动',
+    fillAllVars: '请填写所有模板变量',
+  },
+  // 流水线
+  pipeline: {
+    createTitle: '创建流水线',
+    createDescription: '定义多步 Agent 工作流，前一步完成后自动启动下一步',
+    stepTitle: '步骤标题',
+    stepPrompt: '步骤提示词',
+    addStep: '+ 添加步骤',
+    removeStep: '删除',
+    fillFromTemplate: '从模板填充',
+    launch: '启动流水线',
+    minSteps: '至少需要 2 个步骤',
+    progress: '流水线进度',
+    cancelPipeline: '取消流水线',
+    newPipeline: '流水线',
+  },
+  elapsed: (ms: number) => {
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${sec}秒`;
+    const min = Math.floor(sec / 60);
+    const remSec = sec % 60;
+    return `${min}:${String(remSec).padStart(2, '0')}`;
   },
 } as const;

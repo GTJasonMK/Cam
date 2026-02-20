@@ -31,6 +31,17 @@ type RepoMini = { id: string; name: string };
 
 interface SettingsData {
   docker: { socketPath: string; available: boolean };
+  workers?: {
+    staleTimeoutMs: number;
+    daemonCount: number;
+    daemonWorkers: Array<{
+      id: string;
+      name: string;
+      status: string;
+      lastHeartbeatAt: string | null;
+      reportedEnvVars: string[];
+    }>;
+  };
   keys: Array<{ name: string; present: boolean }>;
   agents: Array<{
     id: string;
@@ -220,29 +231,31 @@ export default function SettingsPage() {
       className: 'w-[120px] text-right',
       cell: (row) => (
         <div className="flex items-center justify-end gap-1">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
             onClick={() => handleRotateSecret(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="轮换"
+            aria-label="轮换"
           >
             <RotateCcw size={14} />
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
             onClick={() => handleDeleteSecret(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            title="删除"
+            aria-label="删除"
           >
             <Trash2 size={14} />
-          </button>
+          </Button>
         </div>
       ),
     },
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title="设置" subtitle="系统配置" />
 
       {loading ? (
@@ -254,10 +267,10 @@ export default function SettingsPage() {
           设置加载失败。
         </Card>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-5">
           {/* Docker 运行环境 */}
           <Card padding="lg">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-3">运行环境</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">运行环境</p>
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <StatusPill label="Docker" ok={data.docker.available} />
               <span className="text-xs font-mono text-muted-foreground">{data.docker.socketPath}</span>
@@ -271,7 +284,7 @@ export default function SettingsPage() {
 
           {/* 认证状态 */}
           <Card padding="lg">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-3">密钥与令牌</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">密钥与令牌</p>
             <div className="flex flex-wrap gap-2">
               {data.keys.map((k) => (
                 <StatusPill key={k.name} label={k.name} ok={k.present} />
@@ -282,11 +295,65 @@ export default function SettingsPage() {
             </p>
           </Card>
 
+          {/* Worker 上报能力 */}
+          <Card padding="lg">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">工作节点能力</p>
+            {!data.workers ? (
+              <p className="text-sm text-muted-foreground">当前版本未提供工作节点能力信息。</p>
+            ) : data.workers.daemonCount === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                暂无在线常驻 Worker（daemon）。启动本地 Worker 后，可自动上报已配置的环境变量名用于任务校验。
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  在线 daemon Worker: {data.workers.daemonCount}（心跳超时阈值 {Math.round(data.workers.staleTimeoutMs / 1000)} 秒）
+                </p>
+                <div className="space-y-2">
+                  {data.workers.daemonWorkers.map((w) => (
+                    <div key={w.id} className="rounded-lg border border-border bg-muted/10 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-foreground">{w.name}</p>
+                          <p className="text-2xs text-muted-foreground/70">
+                            {w.status}
+                            {w.lastHeartbeatAt ? ` · ${new Date(w.lastHeartbeatAt).toLocaleTimeString('zh-CN')}` : ''}
+                          </p>
+                        </div>
+                        <span className="font-mono text-2xs text-muted-foreground/50">{w.id.slice(0, 8)}</span>
+                      </div>
+
+                      {w.reportedEnvVars.length === 0 ? (
+                        <p className="mt-2 text-2xs text-muted-foreground">
+                          未上报可用环境变量（可设置 `CAM_WORKER_REPORTED_ENV_VARS` 指定要检测的变量名）。
+                        </p>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {w.reportedEnvVars.slice(0, 12).map((name) => (
+                            <span key={name} className="rounded bg-background px-2 py-1 font-mono text-2xs text-muted-foreground">
+                              {name}
+                            </span>
+                          ))}
+                          {w.reportedEnvVars.length > 12 && (
+                            <span className="text-2xs text-muted-foreground">+{w.reportedEnvVars.length - 12}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  仅上报“名称”，不包含任何密钥值。用于在服务端未配置密钥时，仍可允许由本地常驻 Worker 使用本机环境执行任务。
+                </p>
+              </div>
+            )}
+          </Card>
+
           {/* 密钥管理 */}
           <Card padding="lg">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">密钥管理</p>
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">密钥管理</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   密钥加密存储在 SQLite 中(需 CAM_MASTER_KEY)。作用域越具体优先级越高。
                 </p>
@@ -316,12 +383,13 @@ export default function SettingsPage() {
               loading={secretsLoading}
               emptyMessage="暂无密钥配置"
               emptyHint="点击「添加密钥」创建第一个密钥。"
+              borderless
             />
           </Card>
 
           {/* 智能体缺失环境变量 */}
           <Card padding="lg">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-3">智能体环境变量</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">智能体环境变量</p>
             {missingRequired.length === 0 ? (
               <p className="text-sm text-muted-foreground">当前智能体定义所需环境变量均已配置。</p>
             ) : (
@@ -477,7 +545,7 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }) {
   const token = ok ? 'success' : 'destructive';
   return (
     <span
-      className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-semibold"
+      className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-2xs font-semibold"
       style={{ background: getBadgeBg(token), color: getColorVar(token) }}
       title={ok ? '已配置' : '缺失'}
     >

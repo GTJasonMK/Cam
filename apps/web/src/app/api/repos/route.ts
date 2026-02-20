@@ -4,12 +4,13 @@
 // POST /api/repos  - 创建仓库配置（Repo Preset）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { repositories, systemEvents } from '@/lib/db/schema';
 import { API_COMMON_MESSAGES, REPO_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
-export async function GET(request: NextRequest) {
+async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const q = (searchParams.get('q') || '').trim();
@@ -31,7 +32,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: AuthenticatedRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -72,3 +73,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'repo:read');
+export const POST = withAuth(handlePost, 'repo:create');

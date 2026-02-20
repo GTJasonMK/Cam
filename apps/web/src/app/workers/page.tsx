@@ -15,6 +15,7 @@ import { DataTable, type Column } from '@/components/ui/data-table';
 import { Button } from '@/components/ui/button';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { Trash2 } from 'lucide-react';
+import { InlineBar } from '@/components/ui/inline-bar';
 
 export default function WorkersPage() {
   const { workers, loading, fetchWorkers, updateWorkerStatus, pruneOfflineWorkers } = useWorkerStore();
@@ -112,34 +113,34 @@ export default function WorkersPage() {
       className: 'w-[130px]',
       cell: (row) =>
         row.currentTaskId ? (
-          <span className="font-mono text-xs text-muted-foreground">{row.currentTaskId.slice(0, 8)}...</span>
+          <span className="font-mono text-sm text-muted-foreground">{row.currentTaskId.slice(0, 8)}...</span>
         ) : (
-          <span className="text-xs text-muted-foreground/50">-</span>
+          <span className="text-sm text-muted-foreground/50">-</span>
         ),
     },
     {
       key: 'cpuUsage',
       header: 'CPU',
       className: 'w-[120px]',
-      cell: (row) => <InlineResourceBar value={row.cpuUsage} max={100} unit="%" />,
+      cell: (row) => <InlineBar value={row.cpuUsage} max={100} unit="%" />,
     },
     {
       key: 'memoryUsageMb',
       header: '内存',
       className: 'w-[120px]',
-      cell: (row) => <InlineResourceBar value={row.memoryUsageMb} max={8192} unit="MB" />,
+      cell: (row) => <InlineBar value={row.memoryUsageMb} max={8192} unit="MB" />,
     },
     {
       key: 'completed',
       header: '已完成',
       className: 'w-[80px]',
-      cell: (row) => <span className="text-xs text-success">{row.totalTasksCompleted}</span>,
+      cell: (row) => <span className="text-sm text-success">{row.totalTasksCompleted}</span>,
     },
     {
       key: 'failed',
       header: '已失败',
       className: 'w-[80px]',
-      cell: (row) => <span className="text-xs text-destructive">{row.totalTasksFailed}</span>,
+      cell: (row) => <span className="text-sm text-destructive">{row.totalTasksFailed}</span>,
     },
     {
       key: 'lastHeartbeatAt',
@@ -147,9 +148,9 @@ export default function WorkersPage() {
       className: 'w-[100px]',
       cell: (row) =>
         row.lastHeartbeatAt ? (
-          <span className="text-xs text-muted-foreground">{new Date(row.lastHeartbeatAt).toLocaleTimeString('zh-CN')}</span>
+          <span className="text-sm text-muted-foreground">{new Date(row.lastHeartbeatAt).toLocaleTimeString('zh-CN')}</span>
         ) : (
-          <span className="text-xs text-muted-foreground/50">-</span>
+          <span className="text-sm text-muted-foreground/50">-</span>
         ),
     },
     {
@@ -157,36 +158,38 @@ export default function WorkersPage() {
       header: '',
       className: 'w-[200px] text-right',
       cell: (row) => (
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex items-center justify-end gap-1.5">
           {row.status !== 'draining' && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={pendingActionKey === `${row.id}:drain`}
               onClick={() => handleWorkerAction(row, 'drain')}
-              className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
             >
               排空
-            </button>
+            </Button>
           )}
           {row.status !== 'offline' && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={pendingActionKey === `${row.id}:offline`}
               onClick={() => handleWorkerAction(row, 'offline')}
-              className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+              className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
             >
               离线
-            </button>
+            </Button>
           )}
           {(row.status === 'draining' || row.status === 'offline') && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={pendingActionKey === `${row.id}:activate`}
               onClick={() => handleWorkerAction(row, 'activate')}
-              className="rounded-md px-2 py-1 text-xs font-medium text-success transition-colors hover:bg-success/10 disabled:opacity-40"
+              className="text-success hover:bg-success/10"
             >
               恢复
-            </button>
+            </Button>
           )}
         </div>
       ),
@@ -194,29 +197,30 @@ export default function WorkersPage() {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title="工作节点" subtitle="监控工作节点与资源使用情况">
         <Button
           size="sm"
           variant="destructive"
+          loading={pruningOffline}
           disabled={offlineCount === 0 || pruningOffline}
           onClick={handlePruneOfflineWorkers}
         >
-          <Trash2 size={14} className="mr-1" />
-          {pruningOffline ? '清理中...' : `清理离线 (${offlineCount})`}
+          <Trash2 size={16} className="mr-1.5" />
+          清理离线 ({offlineCount})
         </Button>
       </PageHeader>
 
       {/* 摘要统计行 */}
-      <div className="flex flex-wrap items-center gap-4">
-        <span className="text-xs text-muted-foreground">共 {workers.length} 个节点</span>
+      <div className="flex flex-wrap items-center gap-5 rounded-xl border border-white/8 bg-white/[0.02] px-5 py-4">
+        <span className="text-sm text-muted-foreground">共 {workers.length} 个节点</span>
         <span className="h-3 w-px bg-border" />
         {Object.entries(WORKER_STATUS_COLORS).map(([status, token]) => {
           const count = statusCounts[status] || 0;
           if (count === 0) return null;
           return (
-            <span key={status} className="flex items-center gap-1.5 text-xs">
-              <span className="h-1.5 w-1.5 rounded-full" style={{ background: getColorVar(token) }} />
+            <span key={status} className="flex items-center gap-2.5 text-sm">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ background: getColorVar(token) }} />
               <span className="text-muted-foreground">{count} {getStatusDisplayLabel(status)}</span>
             </span>
           );
@@ -236,27 +240,3 @@ export default function WorkersPage() {
   );
 }
 
-// ---- 行内资源进度条 ----
-
-function InlineResourceBar({ value, max, unit }: { value: number | null; max: number; unit: string }) {
-  if (value == null) {
-    return <span className="text-xs text-muted-foreground/40">-</span>;
-  }
-  const pct = Math.min((value / max) * 100, 100);
-  const color =
-    pct > 80 ? 'var(--color-destructive)' : pct > 50 ? 'var(--color-warning)' : 'var(--color-primary)';
-
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, backgroundColor: color }}
-        />
-      </div>
-      <span className="font-mono text-[11px] text-muted-foreground/60">
-        {value}{unit}
-      </span>
-    </div>
-  );
-}

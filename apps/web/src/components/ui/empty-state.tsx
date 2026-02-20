@@ -12,14 +12,14 @@ interface EmptyStateProps {
 
 export function EmptyState({ message, hint, icon }: EmptyStateProps) {
   return (
-    <Card padding="lg" className="text-center py-20">
+    <Card padding="lg" className="animate-fade-in py-24 text-center">
       {icon ? (
-        <div className="mx-auto mb-6 flex h-12 w-12 items-center justify-center rounded-xl bg-muted text-muted-foreground/60">
+        <div className="mx-auto mb-7 flex h-20 w-20 items-center justify-center rounded-2xl border border-white/8 bg-muted/60 text-muted-foreground/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
           {icon}
         </div>
       ) : null}
-      <p className="text-sm font-medium text-muted-foreground">{message}</p>
-      {hint ? <p className="mt-2 text-xs text-muted-foreground/60">{hint}</p> : null}
+      <p className="text-base font-medium text-muted-foreground">{message}</p>
+      {hint ? <p className="mt-2.5 text-sm text-muted-foreground/60">{hint}</p> : null}
     </Card>
   );
 }

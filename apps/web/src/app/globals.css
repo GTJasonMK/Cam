@@ -1,102 +1,356 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 @theme {
-  --color-background: #07080a;
-  --color-foreground: #f0f0f0;
-  --color-card: #0f1117;
-  --color-card-foreground: #f0f0f0;
-  --color-card-elevated: #161820;
-  --color-primary: #6366f1;
+  /* 线性风格主题色板 */
+  --color-background: #050506;
+  --color-input-bg: #0f1014;
+  --color-card: #0a0c12;
+  --color-card-foreground: #edecef;
+  --color-card-elevated: #121620;
+  --color-surface-hover: rgba(255, 255, 255, 0.08);
+  --color-muted: rgba(255, 255, 255, 0.04);
+
+  --color-foreground: #edecef;
+  --color-text-tertiary: #6e7483;
+  --color-muted-foreground: #8a8f98;
+
+  --color-border-subtle: rgba(255, 255, 255, 0.05);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-light: rgba(255, 255, 255, 0.14);
+
+  --color-primary: #5e6ad2;
   --color-primary-foreground: #ffffff;
-  --color-muted: #1e2028;
-  --color-muted-foreground: #8b8fa3;
-  --color-border: #23262f;
-  --color-border-light: #2d3140;
-  --color-destructive: #f43f5e;
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-accent: #a78bfa;
-  --color-ring: #6366f1;
-  --color-cyan: #22d3ee;
+  --color-destructive: #ef5a7a;
+  --color-success: #26c281;
+  --color-warning: #f4b35f;
+  --color-accent: #6872d9;
+  --color-ring: #5e6ad2;
+  --color-cyan: #59a6ff;
+
+  --color-secondary: rgba(255, 255, 255, 0.06);
+  --color-secondary-foreground: #edecef;
+  --color-destructive-foreground: #ffffff;
+  --color-accent-foreground: #edecef;
+  --color-popover: #0a0c12;
+  --color-popover-foreground: #edecef;
+  --color-input: rgba(255, 255, 255, 0.12);
+
+  --radius: 1rem;
+
+  --color-sidebar: rgba(8, 10, 14, 0.9);
+  --color-sidebar-foreground: #edecef;
+  --color-sidebar-primary: #5e6ad2;
+  --color-sidebar-primary-foreground: #ffffff;
+  --color-sidebar-accent: rgba(255, 255, 255, 0.06);
+  --color-sidebar-accent-foreground: #edecef;
+  --color-sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-width: 16.5rem;
 }
+
+/* ---- 自定义 CSS 变量（不影响布局，放在 unlayered 没问题） ---- */
 
 :root {
-  --background: #07080a;
-  --foreground: #f0f0f0;
-  --card: #0f1117;
-  --card-elevated: #161820;
-  --primary: #6366f1;
+  --background-deep: #020203;
+  --background: #050506;
+  --background-elevated: #0a0a0c;
+  --foreground: #edecef;
+  --card: #0a0c12;
+  --card-elevated: #121620;
+  --primary: #5e6ad2;
   --primary-foreground: #ffffff;
-  --muted: #1e2028;
-  --muted-foreground: #8b8fa3;
-  --border: #23262f;
-  --border-light: #2d3140;
-  --destructive: #f43f5e;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --accent: #a78bfa;
-  --cyan: #22d3ee;
+  --muted: rgba(255, 255, 255, 0.04);
+  --muted-foreground: #8a8f98;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.14);
+  --destructive: #ef5a7a;
+  --success: #26c281;
+  --warning: #f4b35f;
+  --accent: #6872d9;
+  --cyan: #59a6ff;
+  --accent-glow: rgba(94, 106, 210, 0.28);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 20px rgba(0, 0, 0, 0.42), 0 0 42px rgba(0, 0, 0, 0.24);
+  --shadow-card-hover: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 10px 42px rgba(0, 0, 0, 0.52), 0 0 82px rgba(94, 106, 210, 0.14);
+  --shadow-accent: 0 0 0 1px rgba(94, 106, 210, 0.5), 0 4px 14px rgba(94, 106, 210, 0.34), inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* ---- 元素基础样式 — 放入 @layer base 以允许 Tailwind utilities 正常覆盖 ---- */
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  html {
+    font-size: 16px;
+  }
+
+  body {
+    position: relative;
+    overflow-x: hidden;
+    background: var(--background);
+    color: var(--foreground);
+    background-image:
+      radial-gradient(1200px 680px at 50% -14%, rgba(94, 106, 210, 0.22) 0%, rgba(94, 106, 210, 0.02) 52%, transparent 74%),
+      radial-gradient(980px 760px at 10% 18%, rgba(104, 114, 217, 0.14) 0%, transparent 64%),
+      radial-gradient(900px 700px at 92% 22%, rgba(90, 102, 186, 0.12) 0%, transparent 62%),
+      radial-gradient(ellipse at top, #0a0a0f 0%, #050506 52%, #020203 100%);
+    font-family: var(--font-inter), "Geist Sans", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: dark;
+    line-height: 1.5;
+  }
+
+  a,
+  button,
+  input,
+  textarea,
+  select {
+    transition-timing-function: var(--ease-expo);
+  }
+
+  ::selection {
+    background: rgba(94, 106, 210, 0.36);
+    color: #fff;
+  }
+
+  /* 表单控件聚焦环 */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    border-color: rgba(94, 106, 210, 0.78) !important;
+    box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.5), 0 0 0 6px rgba(94, 106, 210, 0.12);
+  }
+
+  button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.5), 0 0 0 5px rgba(94, 106, 210, 0.18);
+  }
+
+  /* 滚动条 */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+
+  /* 深色主题 select 下拉箭头 */
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f98' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    padding-right: 2.5rem;
+  }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-inter), system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+/* ---- 自定义工具类 ---- */
 
-::selection {
-  background: rgba(99, 102, 241, 0.35);
-  color: #fff;
-}
-
-/* 表单控件聚焦环 */
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible {
-  outline: none;
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
-}
-
-button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
-}
-
-/* 滚动条 */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
-
-/* 表格 hover */
-tr.hoverable { transition: background 0.15s; }
-tr.hoverable:hover { background: rgba(99, 102, 241, 0.04); }
-
-/* 微妙的噪点纹理（给纯色背景增加质感） */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.015;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-/* 全局 section 标题样式 */
-.section-title {
-  font-size: 0.8125rem;
+@utility section-title {
+  font-size: 0.875rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted-foreground);
+}
+
+@utility text-2xs {
+  font-size: 0.6875rem;
+  line-height: 0.875rem;
+}
+
+/* ---- 动画 ---- */
+
+@layer base {
+  @keyframes shimmer {
+    0%   { transform: translateX(-100%); opacity: 0; }
+    30%  { opacity: 1; }
+    100% { transform: translateX(100%); opacity: 0; }
+  }
+
+  @keyframes ping-slow {
+    75%, 100% { transform: scale(2); opacity: 0; }
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes fade-in-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes fade-in-down {
+    from { opacity: 0; transform: translateY(-12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.92); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  @keyframes slide-out-right {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(16px); }
+  }
+
+  @keyframes bounce-in {
+    0%   { opacity: 0; transform: scale(0.85); }
+    50%  { opacity: 1; transform: scale(1.03); }
+    75%  { transform: scale(0.98); }
+    100% { transform: scale(1); }
+  }
+
+  @keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(94, 106, 210, 0.2); }
+    50%      { box-shadow: 0 0 22px rgba(94, 106, 210, 0.34); }
+  }
+
+  @keyframes float-ambient {
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+    50% { transform: translate3d(0, -22px, 0) rotate(1deg); }
+  }
+
+  @keyframes float-ambient-alt {
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+    50% { transform: translate3d(0, 18px, 0) rotate(-1deg); }
+  }
+
+  @keyframes pulse-ambient {
+    0%, 100% { opacity: 0.12; }
+    50% { opacity: 0.2; }
+  }
+}
+
+@utility animate-shimmer {
+  animation: shimmer 1.8s var(--ease-expo) infinite;
+}
+
+@utility animate-ping-slow {
+  animation: ping-slow 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@utility animate-fade-in {
+  animation: fade-in 220ms var(--ease-expo) both;
+}
+
+@utility animate-fade-in-up {
+  animation: fade-in-up 300ms var(--ease-expo) both;
+}
+
+@utility animate-fade-in-down {
+  animation: fade-in-down 300ms var(--ease-expo) both;
+}
+
+@utility animate-scale-in {
+  animation: scale-in 250ms var(--ease-expo) both;
+}
+
+@utility animate-slide-in-right {
+  animation: slide-in-right 300ms var(--ease-expo) both;
+}
+
+@utility animate-slide-out-right {
+  animation: slide-out-right 220ms ease-in both;
+}
+
+@utility animate-bounce-in {
+  animation: bounce-in 350ms var(--ease-expo) both;
+}
+
+@utility animate-glow-pulse {
+  animation: glow-pulse 2.5s ease-in-out infinite;
+}
+
+/* ---- 装饰性元素（ambient blobs） ---- */
+
+@layer base {
+  .ambient-blobs {
+    pointer-events: none;
+    position: fixed;
+    inset: -16% -24% -12% -24%;
+    overflow: hidden;
+    z-index: 0;
+    contain: strict;
+  }
+
+  .ambient-blob {
+    position: absolute;
+    border-radius: 999px;
+    will-change: transform;
+    contain: layout style;
+  }
+
+  .ambient-blob-primary {
+    top: -12%;
+    left: 34%;
+    height: 1300px;
+    width: 900px;
+    background: radial-gradient(circle, rgba(94, 106, 210, 0.18) 0%, rgba(94, 106, 210, 0) 85%);
+    animation: float-ambient 9.5s ease-in-out infinite;
+  }
+
+  .ambient-blob-secondary {
+    top: 8%;
+    left: -16%;
+    height: 860px;
+    width: 640px;
+    background: radial-gradient(circle, rgba(104, 114, 217, 0.14) 0%, rgba(104, 114, 217, 0) 80%);
+    animation: float-ambient-alt 8.8s ease-in-out infinite;
+  }
+
+  .ambient-blob-tertiary {
+    top: 12%;
+    right: -18%;
+    height: 780px;
+    width: 580px;
+    background: radial-gradient(circle, rgba(82, 91, 164, 0.14) 0%, rgba(82, 91, 164, 0) 82%);
+    animation: float-ambient 10.5s ease-in-out infinite;
+  }
+
+  .ambient-blob-bottom {
+    bottom: -26%;
+    left: 24%;
+    height: 760px;
+    width: 920px;
+    background: radial-gradient(circle, rgba(94, 106, 210, 0.10) 0%, rgba(94, 106, 210, 0) 86%);
+    animation: pulse-ambient 7.6s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+
+    .ambient-blob {
+      animation: none !important;
+    }
+  }
+}
+
+@layer base {
+  @media (min-width: 1200px) {
+    html {
+      font-size: 17px;
+    }
+  }
 }

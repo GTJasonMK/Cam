@@ -5,11 +5,12 @@
 // DELETE /api/repos/[id]   - 删除仓库配置
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { repositories, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { API_COMMON_MESSAGES, REPO_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function normalizeString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -17,7 +18,7 @@ function normalizeString(value: unknown): string | null {
   return v.length > 0 ? v : null;
 }
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const rows = await db.select().from(repositories).where(eq(repositories.id, id)).limit(1);
@@ -38,7 +39,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePatch(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const existing = await db.select().from(repositories).where(eq(repositories.id, id)).limit(1);
@@ -82,7 +83,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleDelete(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const result = await db.delete(repositories).where(eq(repositories.id, id)).returning();
@@ -107,3 +108,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'repo:read');
+export const PATCH = withAuth(handlePatch, 'repo:update');
+export const DELETE = withAuth(handleDelete, 'repo:delete');

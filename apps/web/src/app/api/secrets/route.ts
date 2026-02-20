@@ -4,12 +4,13 @@
 // POST /api/secrets  - 创建（写入加密值）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { secrets, systemEvents, repositories, agentDefinitions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { encryptSecretValue, isMasterKeyPresent } from '@/lib/secrets/crypto';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, SECRET_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -20,7 +21,7 @@ function normalizeOptionalId(value: unknown): string | null {
   return v.length > 0 ? v : null;
 }
 
-export async function GET(request: NextRequest) {
+async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const name = normalizeString(searchParams.get('name'));
@@ -53,7 +54,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: AuthenticatedRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -150,3 +151,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'secret:read');
+export const POST = withAuth(handlePost, 'secret:create');

@@ -4,7 +4,7 @@
 // DELETE /api/task-templates/[id]  - 删除任务模板
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions, repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -12,12 +12,13 @@ import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_TEMPLATE_MESSA
 import { parsePatchTaskTemplatePayload } from '@/lib/validation/task-template-input';
 import { resolveAuditActor } from '@/lib/audit/actor';
 import { sseManager } from '@/lib/sse/manager';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function hasOwn<T extends object>(input: T, key: keyof T): boolean {
   return Object.prototype.hasOwnProperty.call(input, key);
 }
 
-export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function handlePut(request: AuthenticatedRequest, context: { params: Promise<{ id: string }> }) {
   try {
     const actor = resolveAuditActor(request);
     const { id } = await context.params;
@@ -99,7 +100,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   }
 }
 
-export async function DELETE(request: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function handleDelete(request: AuthenticatedRequest, context: { params: Promise<{ id: string }> }) {
   try {
     const actor = resolveAuditActor(request);
     const { id } = await context.params;
@@ -133,3 +134,6 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     );
   }
 }
+
+export const PUT = withAuth(handlePut, 'template:update');
+export const DELETE = withAuth(handleDelete, 'template:delete');

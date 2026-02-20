@@ -3,23 +3,25 @@
 // POST /api/tasks/batch  - 创建一组串行依赖的任务（step N depends on step N-1）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { tasks, systemEvents, agentDefinitions, repositories } from '@/lib/db/schema';
+import { tasks, systemEvents, agentDefinitions, repositories, workers } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { sseManager } from '@/lib/sse/manager';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { hasUsableSecretValue } from '@/lib/secrets/resolve';
+import { collectWorkerEnvVarsForAgent, type WorkerCapabilitySnapshot } from '@/lib/workers/capabilities';
 import { parseCreatePipelinePayload } from '@/lib/validation/task-input';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function isPresent(name: string): boolean {
   const v = process.env[name];
   return typeof v === 'string' && v.trim().length > 0;
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
   try {
     const body = await request.json().catch(() => ({}));
@@ -87,14 +89,48 @@ export async function POST(request: NextRequest) {
       if (!ok) missingEnvVars.push(ev.name);
     }
 
+    // 如果服务端未配置，但某个在线 daemon Worker 已上报该变量存在，则允许创建流水线
+    let finalMissingEnvVars = missingEnvVars;
     if (missingEnvVars.length > 0) {
+      const nowMs = Date.now();
+      const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
+      const workerRows = await db
+        .select({
+          id: workers.id,
+          status: workers.status,
+          mode: workers.mode,
+          lastHeartbeatAt: workers.lastHeartbeatAt,
+          supportedAgentIds: workers.supportedAgentIds,
+          reportedEnvVars: workers.reportedEnvVars,
+        })
+        .from(workers);
+
+      const snapshots: WorkerCapabilitySnapshot[] = workerRows.map((w) => ({
+        id: w.id,
+        status: w.status,
+        mode: w.mode,
+        lastHeartbeatAt: w.lastHeartbeatAt,
+        supportedAgentIds: (w.supportedAgentIds as string[]) || [],
+        reportedEnvVars: (w.reportedEnvVars as string[]) || [],
+      }));
+
+      const availableOnWorkers = collectWorkerEnvVarsForAgent(snapshots, {
+        agentDefinitionId,
+        nowMs,
+        staleTimeoutMs,
+      });
+
+      finalMissingEnvVars = missingEnvVars.filter((name) => !availableOnWorkers.has(name));
+    }
+
+    if (finalMissingEnvVars.length > 0) {
       return NextResponse.json(
         {
           success: false,
           error: {
             code: 'MISSING_ENV_VARS',
-            message: TASK_MESSAGES.missingAgentEnvVars(agent[0].displayName, missingEnvVars),
-            missingEnvVars,
+            message: TASK_MESSAGES.missingAgentEnvVars(agent[0].displayName, finalMissingEnvVars),
+            missingEnvVars: finalMissingEnvVars,
           },
         },
         { status: 400 }
@@ -165,3 +201,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:create');

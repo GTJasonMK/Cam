@@ -3,12 +3,13 @@
 // GET /api/events - 分页查询系统事件（支持类型前缀与关键词过滤）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { and, desc, like, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { systemEvents } from '@/lib/db/schema';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 50;
@@ -64,7 +65,7 @@ function buildEventsCsv(
   return lines.join('\n');
 }
 
-export async function GET(request: NextRequest) {
+async function handler(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
   try {
     const { searchParams } = new URL(request.url);
@@ -175,3 +176,5 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+export const GET = withAuth(handler, 'event:read');

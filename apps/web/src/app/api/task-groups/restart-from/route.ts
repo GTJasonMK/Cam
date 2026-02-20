@@ -3,7 +3,7 @@
 // POST /api/task-groups/restart-from  - fromTaskId + dependents(closure) 重新入队
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq, inArray } from 'drizzle-orm';
@@ -11,6 +11,7 @@ import { sseManager } from '@/lib/sse/manager';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES, TASK_GROUP_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function normalizeString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -57,7 +58,7 @@ function computeClosure(fromTaskId: string, dependents: Map<string, string[]>): 
   return visited;
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: AuthenticatedRequest) {
   try {
     ensureSchedulerStarted();
     const actor = resolveAuditActor(request);
@@ -207,3 +208,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:update');

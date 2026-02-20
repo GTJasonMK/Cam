@@ -3,7 +3,7 @@
 // GET /api/workers/[id]/next-task  - Worker 拉取待执行任务
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, agentDefinitions, workers, systemEvents } from '@/lib/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
@@ -11,8 +11,9 @@ import { sseManager } from '@/lib/sse/manager';
 import { resolveEnvVarValue } from '@/lib/secrets/resolve';
 import { areDependenciesSatisfied } from '@/lib/scheduler/logic';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handler(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     // 获取 Worker 支持的 Agent 类型
@@ -176,3 +177,5 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     );
   }
 }
+
+export const GET = withAuth(handler, 'worker:manage');

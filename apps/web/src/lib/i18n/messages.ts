@@ -10,6 +10,7 @@ export const AUTH_MESSAGES = {
   loginFailed: '登录失败',
   loginFailedWithStatus: (status: number) => `登录失败（HTTP ${status}）`,
   tokenInputHint: '请输入访问令牌（CAM_AUTH_TOKEN）',
+  setupHint: '首次运行需要初始化管理员账户（仅用于本实例）。',
 } as const;
 
 export const GATEWAY_MESSAGES = {

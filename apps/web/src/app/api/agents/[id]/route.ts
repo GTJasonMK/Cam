@@ -2,13 +2,14 @@
 // API: 单个 AgentDefinition 操作
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const result = await db.select().from(agentDefinitions).where(eq(agentDefinitions.id, id)).limit(1);
@@ -30,7 +31,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePut(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const body = await request.json();
@@ -69,7 +70,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleDelete(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     // 检查是否内置定义
@@ -99,3 +100,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'agent:read');
+export const PUT = withAuth(handlePut, 'agent:update');
+export const DELETE = withAuth(handleDelete, 'agent:delete');

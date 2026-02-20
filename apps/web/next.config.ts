@@ -4,10 +4,22 @@ const nextConfig: NextConfig = {
   transpilePackages: ['@cam/shared'],
   output: 'standalone',
   // dockerode 依赖原生 .node 模块（cpu-features, ssh2），不可被 webpack 打包
-  serverExternalPackages: ['dockerode', 'ssh2', 'cpu-features', 'better-sqlite3'],
+  serverExternalPackages: ['dockerode', 'ssh2', 'cpu-features', 'better-sqlite3', 'node-pty'],
   // 关闭开发模式 devtools 指示器，规避 Next.js 15.5.x 在 monorepo 下
   // SegmentViewNode / segment-explorer-node 组件的 React Client Manifest 报错
   devIndicators: false,
+  experimental: {
+    // 将 barrel import 转为直接路径导入，消除未使用代码的打包
+    optimizePackageImports: [
+      'lucide-react',
+      'sonner',
+      '@radix-ui/react-alert-dialog',
+      '@radix-ui/react-dialog',
+      '@radix-ui/react-select',
+      '@radix-ui/react-tabs',
+      '@radix-ui/react-tooltip',
+    ],
+  },
 };
 
 export default nextConfig;

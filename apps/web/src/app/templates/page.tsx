@@ -170,29 +170,31 @@ export default function TemplatesPage() {
       className: 'w-[100px] text-right',
       cell: (row) => (
         <div className="flex items-center justify-end gap-1">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
             onClick={() => setEditingTemplate(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title={TEMPLATE_UI_MESSAGES.edit}
+            aria-label={TEMPLATE_UI_MESSAGES.edit}
           >
             <Pencil size={14} />
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 hover:bg-destructive/10 hover:text-destructive"
             onClick={() => handleDelete(row)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            title={TEMPLATE_UI_MESSAGES.deleteConfirm}
+            aria-label={TEMPLATE_UI_MESSAGES.deleteConfirm}
           >
             <Trash2 size={14} />
-          </button>
+          </Button>
         </div>
       ),
     },
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title={TEMPLATE_UI_MESSAGES.pageTitle} subtitle={TEMPLATE_UI_MESSAGES.pageSubtitle}>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus size={15} className="mr-1" />
@@ -202,13 +204,12 @@ export default function TemplatesPage() {
 
       {/* 搜索栏 */}
       <div className="relative max-w-sm">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+        <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={TEMPLATE_UI_MESSAGES.searchPlaceholder}
-          className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 transition-colors hover:border-border-light focus:border-primary focus:outline-none"
+          className="pl-9"
         />
       </div>
 

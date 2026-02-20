@@ -5,12 +5,13 @@
 // DELETE /api/secrets/[id]   - 删除
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { secrets, systemEvents, repositories, agentDefinitions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { encryptSecretValue, isMasterKeyPresent } from '@/lib/secrets/crypto';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, SECRET_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -22,7 +23,7 @@ function normalizeOptionalId(value: unknown): string | null {
   return v.length > 0 ? v : null;
 }
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const row = await db.select().from(secrets).where(eq(secrets.id, id)).limit(1);
@@ -54,7 +55,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   }
 }
 
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handlePut(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const existing = await db.select().from(secrets).where(eq(secrets.id, id)).limit(1);
@@ -166,7 +167,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handleDelete(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const existing = await db.select().from(secrets).where(eq(secrets.id, id)).limit(1);
@@ -193,3 +194,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'secret:read');
+export const PUT = withAuth(handlePut, 'secret:update');
+export const DELETE = withAuth(handleDelete, 'secret:delete');

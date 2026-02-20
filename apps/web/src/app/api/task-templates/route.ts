@@ -4,7 +4,7 @@
 // POST /api/task-templates  - 创建任务模板
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions, repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -12,8 +12,9 @@ import { API_COMMON_MESSAGES, REPO_MESSAGES, AGENT_MESSAGES } from '@/lib/i18n/m
 import { parseCreateTaskTemplatePayload } from '@/lib/validation/task-template-input';
 import { resolveAuditActor } from '@/lib/audit/actor';
 import { sseManager } from '@/lib/sse/manager';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
-export async function GET(request: NextRequest) {
+async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const q = (searchParams.get('q') || '').trim().toLowerCase();
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: AuthenticatedRequest) {
   try {
     const actor = resolveAuditActor(request);
     const body = await request.json().catch(() => ({}));
@@ -113,3 +114,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const GET = withAuth(handleGet, 'template:read');
+export const POST = withAuth(handlePost, 'template:create');

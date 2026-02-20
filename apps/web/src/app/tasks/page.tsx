@@ -15,14 +15,14 @@ import { Card } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { DataTable, type Column } from '@/components/ui/data-table';
-import { Tabs } from '@/components/ui/tabs';
+import { TabBar } from '@/components/ui/tabs';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea, Select } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { formatTaskElapsed } from '@/lib/time/duration';
 import { TASK_TEMPLATE_UI_MESSAGES } from '@/lib/i18n/ui-messages';
-import { Plus, Layers, Search, ArrowUpDown, XCircle, RotateCcw, CheckCircle, X, ExternalLink, Trash2 } from 'lucide-react';
+import { Plus, Layers, Search, ArrowUpDown, XCircle, RotateCcw, CheckCircle, X, ExternalLink, Trash2, TerminalSquare } from 'lucide-react';
 
 const FILTER_STATUSES = ['', 'queued', 'waiting', 'running', 'awaiting_review', 'completed', 'failed', 'cancelled'];
 const CANCELLABLE_STATUSES = new Set(['queued', 'waiting', 'running']);
@@ -372,9 +372,12 @@ export default function TasksPage() {
       className: 'min-w-[200px]',
       cell: (row) => (
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-foreground">{row.title}</p>
+          <p className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
+            {row.source === 'terminal' && <span title="终端会话"><TerminalSquare size={13} className="shrink-0 text-primary/70" /></span>}
+            {row.title}
+          </p>
           {row.description && (
-            <p className="truncate text-xs text-muted-foreground/60 mt-0.5 max-w-[280px]">{row.description.slice(0, 80)}</p>
+            <p className="mt-1 truncate text-sm text-muted-foreground/70">{row.description.slice(0, 100)}</p>
           )}
         </div>
       ),
@@ -392,25 +395,25 @@ export default function TasksPage() {
       key: 'agent',
       header: 'Agent',
       className: 'w-[120px]',
-      cell: (row) => <span className="text-xs text-muted-foreground">{row.agentDefinitionId}</span>,
+      cell: (row) => <span className="text-sm text-muted-foreground">{row.agentDefinitionId}</span>,
     },
     {
       key: 'branch',
       header: '分支',
       className: 'w-[130px]',
-      cell: (row) => <span className="font-mono text-xs text-muted-foreground">{row.workBranch}</span>,
+      cell: (row) => <span className="font-mono text-sm text-muted-foreground">{row.workBranch}</span>,
     },
     {
       key: 'worker',
       header: 'Worker',
       className: 'w-[100px]',
-      cell: (row) => <span className="text-xs text-muted-foreground">{row.assignedWorkerId || '-'}</span>,
+      cell: (row) => <span className="text-sm text-muted-foreground">{row.assignedWorkerId || '-'}</span>,
     },
     {
       key: 'createdAt',
       header: '创建时间',
       className: 'w-[130px]',
-      cell: (row) => <span className="text-xs text-muted-foreground">{new Date(row.createdAt).toLocaleString('zh-CN')}</span>,
+      cell: (row) => <span className="text-sm text-muted-foreground">{new Date(row.createdAt).toLocaleString('zh-CN')}</span>,
     },
     {
       key: 'elapsed',
@@ -419,7 +422,7 @@ export default function TasksPage() {
       cell: (row) => {
         const elapsed = formatTaskElapsed(row, { nowMs });
         return (
-          <span className="text-xs text-muted-foreground">
+          <span className="text-sm text-muted-foreground">
             {elapsed.text !== '-' ? elapsed.text : '-'}
             {elapsed.ongoing ? ' ...' : ''}
           </span>
@@ -429,41 +432,41 @@ export default function TasksPage() {
     {
       key: 'actions',
       header: '',
-      className: 'w-[200px] text-right',
+      className: 'w-[230px] text-right',
       cell: (row) => (
-        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
           {row.status === 'awaiting_review' && (
             <>
-              <button type="button" onClick={() => handleRowReview(row, 'approve')}
-                className="rounded-md px-2 py-1 text-xs font-medium text-success transition-colors hover:bg-success/10" title="通过">
-                <CheckCircle size={14} />
-              </button>
-              <button type="button" onClick={() => handleRowReview(row, 'approve', { merge: true })}
-                className="rounded-md px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10" title="通过并合并">
+              <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-success hover:bg-success/10"
+                onClick={() => handleRowReview(row, 'approve')} aria-label="通过">
+                <CheckCircle size={16} />
+              </Button>
+              <Button variant="ghost" size="sm" className="text-primary hover:bg-primary/10"
+                onClick={() => handleRowReview(row, 'approve', { merge: true })}>
                 通过+合并
-              </button>
-              <button type="button" onClick={() => handleRowReview(row, 'reject')}
-                className="rounded-md px-2 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10" title="拒绝并重跑">
-                <XCircle size={14} />
-              </button>
+              </Button>
+              <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-destructive hover:bg-destructive/10"
+                onClick={() => handleRowReview(row, 'reject')} aria-label="拒绝并重跑">
+                <XCircle size={16} />
+              </Button>
             </>
           )}
           {canCancelTask(row.status) && (
-            <button type="button" onClick={() => handleRowCancel(row)}
-              className="rounded-md px-2 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10" title={row.status === 'running' ? '停止' : '取消'}>
-              <X size={14} />
-            </button>
+            <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-destructive hover:bg-destructive/10"
+              onClick={() => handleRowCancel(row)} aria-label={row.status === 'running' ? '停止' : '取消'}>
+              <X size={16} />
+            </Button>
           )}
           {canRerunTask(row.status) && (
-            <button type="button" onClick={() => handleRowRerun(row)}
-              className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" title="重跑">
-              <RotateCcw size={14} />
-            </button>
+            <Button variant="ghost" size="sm" className="h-9 w-9 p-0"
+              onClick={() => handleRowRerun(row)} aria-label="重跑">
+              <RotateCcw size={16} />
+            </Button>
           )}
           {row.prUrl && (
             <a href={row.prUrl} target="_blank" rel="noopener noreferrer"
-              className="rounded-md px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10" title="查看 PR">
-              <ExternalLink size={14} />
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-primary transition-colors hover:bg-primary/10" aria-label="查看 PR">
+              <ExternalLink size={16} />
             </a>
           )}
         </div>
@@ -480,9 +483,9 @@ export default function TasksPage() {
   }));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-12">
       <PageHeader title="任务" subtitle="管理与监控编排任务">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <Button onClick={() => setCreateMode('single')}>
             <Plus size={15} className="mr-1" />
             新建任务
@@ -495,23 +498,22 @@ export default function TasksPage() {
       </PageHeader>
 
       {/* 状态 Tabs */}
-      <Tabs
+      <TabBar
         tabs={tabs}
         activeKey={filterStatus || 'all'}
         onChange={(key) => setFilterStatus(key === 'all' ? '' : key)}
       />
 
       {/* 工具栏: 搜索 + 分组筛选 + 排序 + 批量操作 */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="relative w-64">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
+      <div className="flex flex-wrap items-end justify-between gap-5">
+        <div className="flex flex-wrap items-end gap-5">
+          <div className="relative w-72">
+            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
               value={searchKeyword}
               onChange={(e) => setSearchKeyword(e.target.value)}
               placeholder="标题 / 描述 / ID"
-              className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 transition-colors hover:border-border-light focus:border-primary focus:outline-none"
+              className="pl-10"
             />
           </div>
           {groupIds.length > 0 && (
@@ -524,30 +526,31 @@ export default function TasksPage() {
               />
             </div>
           )}
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setSortDirection((d) => d === 'desc' ? 'asc' : 'desc')}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="切换排序"
+            className="h-11 border border-border"
+            aria-label="切换排序"
           >
-            <ArrowUpDown size={13} />
+            <ArrowUpDown size={14} />
             {sortDirection === 'desc' ? '最新优先' : '最早优先'}
-          </button>
+          </Button>
         </div>
 
         {/* 批量操作 */}
         {selectedTaskIds.size > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">已选 {selectedTaskIds.size} 项</span>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="text-sm text-muted-foreground">已选 {selectedTaskIds.size} 项</span>
             <Button size="sm" variant="destructive" disabled={batchActionLoading !== null || selectedCancellableCount === 0} onClick={handleBatchCancel}>
               {batchActionLoading === 'cancel' ? '取消中...' : `批量取消 (${selectedCancellableCount})`}
             </Button>
             <Button size="sm" variant="secondary" disabled={batchActionLoading !== null || selectedRerunnableCount === 0} onClick={handleBatchRerun}>
               {batchActionLoading === 'rerun' ? '重跑中...' : `批量重跑 (${selectedRerunnableCount})`}
             </Button>
-            <button onClick={() => setSelectedTaskIds(new Set())}
-              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
+            <Button variant="ghost" size="sm" onClick={() => setSelectedTaskIds(new Set())}>
               清空
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -555,35 +558,34 @@ export default function TasksPage() {
       {/* 分组汇总 */}
       {filterGroupId && groupSummary && (
         <Card padding="lg">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-wrap items-start justify-between gap-5">
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 mb-1">分组</p>
-              <p className="truncate font-mono text-sm">{filterGroupId}</p>
-              <p className="mt-1 text-xs text-muted-foreground/70">
+              <p className="mb-1 text-sm font-semibold uppercase tracking-wider text-muted-foreground/60">分组</p>
+              <p className="truncate font-mono text-base">{filterGroupId}</p>
+              <p className="mt-1.5 text-sm text-muted-foreground/70">
                 {groupSummary.completed}/{groupSummary.total} 已完成 ({groupSummary.percent}%)
                 {groupSummary.blocked > 0 ? ` | ${groupSummary.blocked} 个阻塞` : ''}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               <Button size="sm" variant="destructive" disabled={groupActionLoading || groupCancellableCount === 0} onClick={handleCancelGroup}>
                 取消分组
               </Button>
               <Button size="sm" variant="secondary" disabled={groupActionLoading || groupRerunnableCount === 0} onClick={handleRerunFailedInGroup}>
                 重跑失败
               </Button>
-              <button onClick={() => setFilterGroupId('')}
-                className="rounded-lg bg-muted px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground transition-colors">
+              <Button variant="ghost" size="sm" onClick={() => setFilterGroupId('')}>
                 清空筛选
-              </button>
+              </Button>
             </div>
           </div>
 
-          <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
             <div className="h-full rounded-full bg-success transition-all duration-500" style={{ width: `${groupSummary.percent}%` }} />
           </div>
 
           {groupTaskOptions.length > 0 && (
-            <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div className="mt-4 flex flex-wrap items-end gap-3">
               <div className="min-w-[260px] flex-1">
                 <Select label="从步骤重启" value={restartFromTaskId}
                   onChange={(e) => setRestartFromTaskId(e.target.value)} options={groupTaskOptions} />
@@ -752,10 +754,10 @@ function CreateTaskModal({
     <Modal open={open} onClose={onClose} title="创建任务" size="xl" footer={
       <>
         <Button variant="secondary" size="sm" onClick={onClose}>取消</Button>
-        <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>{saving ? '创建中...' : '创建并入队'}</Button>
+        <Button size="sm" disabled={!canSubmit} loading={saving} onClick={handleSubmit}>创建并入队</Button>
       </>
     }>
-      <div className="space-y-4">
+      <div className="space-y-5">
         {/* 模板区 */}
         <div className="rounded-lg border border-border bg-muted/10 p-4">
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-end">
@@ -766,7 +768,7 @@ function CreateTaskModal({
               {TASK_TEMPLATE_UI_MESSAGES.saveCurrentAction}
             </Button>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground/70">
+          <p className="mt-2.5 text-sm text-muted-foreground/70">
             {TASK_TEMPLATE_UI_MESSAGES.sectionHint}
             <Link href="/templates" className="ml-1 underline hover:text-foreground">{TASK_TEMPLATE_UI_MESSAGES.manageLink}</Link>
           </p>
@@ -795,8 +797,8 @@ function CreateTaskModal({
           placeholder="描述要交给编码智能体执行的任务..." />
 
         {/* 高级编排 */}
-        <details className="rounded-lg border border-border bg-muted/10 px-4 py-3">
-          <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">高级编排选项</summary>
+        <details className="rounded-lg border border-border bg-muted/10 px-4 py-4">
+          <summary className="cursor-pointer text-sm font-semibold text-muted-foreground">高级编排选项</summary>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Input label="最大重试次数" type="number" min={0} max={20} value={String(form.maxRetries)}
               onChange={(e) => setForm({ ...form, maxRetries: Number(e.target.value || 0) })} />
@@ -809,15 +811,15 @@ function CreateTaskModal({
               }}
               options={[{ value: '', label: '选择任务...' }, ...availableTasks.map((t) => ({ value: t.id, label: `${t.title} (${getStatusDisplayLabel(t.status)})` }))]} />
             <div>
-              <p className="mb-2 block text-xs font-medium text-muted-foreground">已选依赖</p>
-              {form.dependsOn.length === 0 ? <p className="text-xs text-muted-foreground/60">暂无</p> : (
+              <p className="mb-2 block text-sm font-medium text-muted-foreground">已选依赖</p>
+              {form.dependsOn.length === 0 ? <p className="text-sm text-muted-foreground/60">暂无</p> : (
                 <div className="flex flex-wrap gap-2">
                   {form.dependsOn.map((id) => (
                     <button key={id} type="button"
                       onClick={() => setForm((prev) => ({ ...prev, dependsOn: prev.dependsOn.filter((x) => x !== id) }))}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-muted/40" title="点击移除">
+                      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3.5 py-2 text-sm text-muted-foreground hover:bg-muted/40" title="点击移除">
                       <span className="font-mono">{id.slice(0, 8)}</span>
-                      <span className="text-muted-foreground/50">x</span>
+                      <X size={12} className="text-muted-foreground/50" />
                     </button>
                   ))}
                 </div>
@@ -827,7 +829,7 @@ function CreateTaskModal({
         </details>
 
         {submitError && (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             <div className="font-medium">{submitError}</div>
             {missingEnvVars.length > 0 && (
               <div className="mt-1 text-muted-foreground">
@@ -862,7 +864,8 @@ function CreatePipelineModal({
     agentDefinitionId: '', repoUrl: '', baseBranch: 'main', workDir: '', maxRetries: 2, groupId: '',
   });
   const [repoPresetId, setRepoPresetId] = useState('');
-  const [steps, setSteps] = useState<Array<{ title: string; description: string }>>([{ title: '', description: '' }]);
+  const [steps, setSteps] = useState<Array<{ _id: string; title: string; description: string }>>([{ _id: '1', title: '', description: '' }]);
+  const [stepCounter, setStepCounter] = useState(2);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [missingEnvVars, setMissingEnvVars] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -870,7 +873,7 @@ function CreatePipelineModal({
   useEffect(() => {
     if (open) {
       setForm({ agentDefinitionId: agents[0]?.id || '', repoUrl: '', baseBranch: 'main', workDir: '', maxRetries: 2, groupId: '' });
-      setRepoPresetId(''); setSteps([{ title: '', description: '' }]); setSubmitError(null); setMissingEnvVars([]); setSaving(false);
+      setRepoPresetId(''); setSteps([{ _id: '1', title: '', description: '' }]); setStepCounter(2); setSubmitError(null); setMissingEnvVars([]); setSaving(false);
     }
   }, [open, agents]);
 
@@ -897,14 +900,17 @@ function CreatePipelineModal({
     <Modal open={open} onClose={onClose} title="创建流水线" size="xl" footer={
       <>
         <Button variant="secondary" size="sm" onClick={onClose}>取消</Button>
-        <Button size="sm" variant="secondary" onClick={() => setSteps((s) => [...s, { title: '', description: '' }])}>
+        <Button size="sm" variant="secondary" onClick={() => {
+          setSteps((s) => [...s, { _id: String(stepCounter), title: '', description: '' }]);
+          setStepCounter((c) => c + 1);
+        }}>
           <Plus size={13} className="mr-1" /> 添加步骤
         </Button>
-        <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>{saving ? '创建中...' : '创建流水线'}</Button>
+        <Button size="sm" disabled={!canSubmit} loading={saving} onClick={handleSubmit}>创建流水线</Button>
       </>
     }>
-      <div className="space-y-4">
-        <p className="text-xs text-muted-foreground">
+      <div className="space-y-5">
+        <p className="text-sm text-muted-foreground">
           将创建 {steps.length} 个任务，并自动串行依赖(步骤 N 依赖步骤 N-1)。
         </p>
 
@@ -929,9 +935,9 @@ function CreatePipelineModal({
 
         <div className="space-y-3">
           {steps.map((step, idx) => (
-            <div key={idx} className="rounded-lg border border-border bg-muted/10 p-4">
+            <div key={step._id} className="rounded-lg border border-border bg-muted/10 p-4">
               <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs font-semibold text-muted-foreground">
+                <p className="text-sm font-semibold text-muted-foreground">
                   步骤 {idx + 1}{idx > 0 ? `(依赖步骤 ${idx})` : ''}
                 </p>
                 {steps.length > 1 && (
@@ -956,7 +962,7 @@ function CreatePipelineModal({
         </div>
 
         {submitError && (
-          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             <div className="font-medium">{submitError}</div>
             {missingEnvVars.length > 0 && (
               <div className="mt-1 text-muted-foreground">

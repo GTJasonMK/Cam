@@ -5,23 +5,23 @@
 
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import type { TaskItem } from '@/stores';
 import { TASK_STATUS_COLORS } from '@/lib/constants';
 import { Card } from '@/components/ui/card';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { Tabs } from '@/components/ui/tabs';
+import { TabBar } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-// Input/Textarea 未直接使用 (review/rerun 通过 promptDialog 弹窗)
+import { Input } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { formatTaskElapsed } from '@/lib/time/duration';
 import { TASK_DETAIL_UI_MESSAGES } from '@/lib/i18n/ui-messages';
 import {
-  ArrowLeft, Search, ExternalLink, X, RotateCcw,
+  ArrowLeft, ExternalLink, X, RotateCcw,
   CheckCircle, XCircle, GitMerge, Clock, Bot, GitFork,
-  GitBranch, FolderOpen, Server, Hash, Layers,
+  GitBranch, FolderOpen, Server, Hash, Layers, TerminalSquare,
 } from 'lucide-react';
 
 type TaskMini = {
@@ -100,7 +100,7 @@ export default function TaskDetailPage() {
 
   useEffect(() => {
     if (!task) return;
-    const autoRefreshStatuses = ['queued', 'running', 'waiting'];
+    const autoRefreshStatuses = ['queued', 'running', 'waiting', 'awaiting_review'];
     if (!autoRefreshStatuses.includes(task.status)) return;
     const interval = setInterval(() => {
       fetchTask();
@@ -276,8 +276,7 @@ export default function TaskDetailPage() {
   const isReview = task.status === 'awaiting_review';
 
   return (
-    <div className="space-y-4">
-      {/* 面包屑 */}
+    <div className="space-y-12">
       <BackLink />
 
       {/* 顶部信息栏 */}
@@ -313,7 +312,7 @@ export default function TaskDetailPage() {
                   <CheckCircle size={14} className="mr-1" />
                   {reviewLoading ? TASK_DETAIL_UI_MESSAGES.processing : TASK_DETAIL_UI_MESSAGES.approve}
                 </Button>
-                <Button size="sm" variant="primary" disabled={reviewLoading} onClick={() => handleReview('approve', { merge: true })}>
+                <Button size="sm" disabled={reviewLoading} onClick={() => handleReview('approve', { merge: true })}>
                   <GitMerge size={14} className="mr-1" />
                   {reviewLoading ? TASK_DETAIL_UI_MESSAGES.processing : TASK_DETAIL_UI_MESSAGES.approveAndMerge}
                 </Button>
@@ -345,6 +344,15 @@ export default function TaskDetailPage() {
                 <ExternalLink size={13} />
                 {TASK_DETAIL_UI_MESSAGES.viewPr}
               </a>
+            )}
+            {canRerun && task.agentDefinitionId && (
+              <Link
+                href={`/terminal?agent=${encodeURIComponent(task.agentDefinitionId)}&repo=${encodeURIComponent(task.repoUrl)}&branch=${encodeURIComponent(task.workBranch)}&dir=${encodeURIComponent(task.workDir || '')}`}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <TerminalSquare size={13} />
+                终端调试
+              </Link>
             )}
           </div>
         </div>
@@ -379,7 +387,7 @@ export default function TaskDetailPage() {
       )}
 
       {/* Tabs */}
-      <Tabs tabs={tabs} activeKey={activeTab} onChange={setActiveTab} />
+      <TabBar tabs={tabs} activeKey={activeTab} onChange={setActiveTab} />
 
       {/* Tab 内容 */}
       {activeTab === 'logs' && (
@@ -462,33 +470,18 @@ function LogsPanel({
             </span>
           )}
         </div>
-        <div className="relative w-72 max-w-full">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
+        <div className="w-72 max-w-full">
+          <Input
             value={logKeyword}
             onChange={(e) => onKeywordChange(e.target.value)}
             placeholder={TASK_DETAIL_UI_MESSAGES.logKeywordPlaceholder}
-            className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 transition-colors hover:border-border-light focus:border-primary focus:outline-none"
           />
         </div>
       </div>
 
       <div className="rounded-xl border border-border overflow-hidden">
         {filteredLogs.length > 0 ? (
-          <div className="max-h-[600px] overflow-y-auto font-mono text-xs leading-relaxed">
-            {filteredLogs.map((line, i) => (
-              <div
-                key={i}
-                className={`flex gap-4 px-4 py-1 ${i % 2 === 0 ? '' : 'bg-muted/15'} hover:bg-primary/5 transition-colors duration-75`}
-              >
-                <span className="w-8 shrink-0 select-none text-right text-muted-foreground/30">
-                  {i + 1}
-                </span>
-                <span className="whitespace-pre-wrap break-all">{line}</span>
-              </div>
-            ))}
-          </div>
+          <LogsScrollArea filteredLogs={filteredLogs} />
         ) : (
           <div className="py-20 text-center text-sm text-muted-foreground">
             {logs.length > 0
@@ -499,6 +492,37 @@ function LogsPanel({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- 日志滚动区域（自动滚动到底部） ----
+
+function LogsScrollArea({ filteredLogs }: { filteredLogs: string[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const prevLengthRef = useRef(0);
+
+  useEffect(() => {
+    // 只在新增日志时自动滚动（不干扰用户手动上滚查看历史）
+    if (filteredLogs.length > prevLengthRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+    prevLengthRef.current = filteredLogs.length;
+  }, [filteredLogs.length]);
+
+  return (
+    <div ref={scrollRef} className="max-h-[600px] overflow-y-auto font-mono text-xs leading-relaxed">
+      {filteredLogs.map((line, i) => (
+        <div
+          key={i}
+          className={`flex gap-4 px-4 py-1 ${i % 2 === 0 ? '' : 'bg-muted/15'} hover:bg-primary/5 transition-colors duration-75`}
+        >
+          <span className="w-8 shrink-0 select-none text-right text-muted-foreground/30">
+            {i + 1}
+          </span>
+          <span className="whitespace-pre-wrap break-all">{line}</span>
+        </div>
+      ))}
     </div>
   );
 }

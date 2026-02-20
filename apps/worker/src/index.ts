@@ -16,11 +16,39 @@ const HEARTBEAT_INTERVAL_MS = 10_000; // 10 秒心跳
 let isRunning = true;
 let currentTaskId: string | null = null;
 
+function parseReportedEnvVarAllowlist(): string[] {
+  const raw = (process.env.CAM_WORKER_REPORTED_ENV_VARS || '').trim();
+  const defaults = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'GITEA_TOKEN'];
+  if (!raw) return defaults;
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function collectReportedEnvVars(): string[] {
+  const allowlist = parseReportedEnvVarAllowlist();
+  const found: string[] = [];
+  for (const name of allowlist) {
+    const val = process.env[name];
+    if (typeof val === 'string' && val.trim().length > 0) {
+      found.push(name);
+    }
+  }
+  return Array.from(new Set(found)).sort();
+}
+
 async function main(): Promise<void> {
   console.log(`[Worker] 启动: ${WORKER_ID}`);
   console.log(`[Worker] 支持的 Agent: ${SUPPORTED_AGENTS.length > 0 ? SUPPORTED_AGENTS.join(', ') : '全部'}`);
   if (TASK_ID) {
     console.log(`[Worker] 单任务模式: TASK_ID=${TASK_ID}`);
+  }
+
+  const mode = TASK_ID ? 'task' : 'daemon';
+  const reportedEnvVars = collectReportedEnvVars();
+  if (reportedEnvVars.length > 0) {
+    console.log(`[Worker] 已检测到环境变量: ${reportedEnvVars.join(', ')}`);
   }
 
   // 1. 注册 Worker
@@ -29,6 +57,8 @@ async function main(): Promise<void> {
       id: WORKER_ID,
       name: WORKER_ID,
       supportedAgentIds: SUPPORTED_AGENTS,
+      mode,
+      reportedEnvVars,
     });
   } catch (err) {
     console.error(`[Worker] 注册失败: ${(err as Error).message}`);

@@ -3,7 +3,7 @@
 // POST /api/tasks/[id]/cancel  - 取消 queued 任务或停止 running 任务
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -12,6 +12,7 @@ import Dockerode from 'dockerode';
 import fs from 'fs';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 const docker = new Dockerode({ socketPath: dockerSocketPath });
@@ -39,7 +40,7 @@ async function stopTaskContainers(taskId: string): Promise<number> {
   return stopped;
 }
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handler(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const actor = resolveAuditActor(request);
@@ -106,3 +107,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:update');

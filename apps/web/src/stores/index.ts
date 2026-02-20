@@ -55,6 +55,8 @@ export interface TaskItem {
   reviewComment: string | null;
   reviewedAt: string | null;
   feedback: string | null;
+  /** 任务来源：'scheduler' | 'terminal' */
+  source: string;
   createdAt: string;
   queuedAt: string | null;
   startedAt: string | null;
@@ -77,6 +79,20 @@ export interface WorkerItem {
   registeredAt: string;
 }
 
+/** 用户（用于用户系统模式的管理页 / 当前用户信息） */
+export interface UserItem {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+  role: string;
+  status: string;
+  avatarUrl?: string | null;
+  lastLoginAt?: string | null;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
 /** 系统事件 */
 export interface SystemEventItem {
   id: string;
@@ -97,6 +113,20 @@ export interface AgentStatItem {
 }
 
 // ----- Dashboard Store -----
+interface AgentSessionSummaryItem {
+  sessionId: string;
+  agentDisplayName: string;
+  status: string;
+  elapsedMs: number;
+  repoPath?: string;
+}
+
+interface AgentSessionSummary {
+  activeCount: number;
+  totalToday: number;
+  sessions: AgentSessionSummaryItem[];
+}
+
 interface DashboardData {
   kpi: {
     totalTasks: number;
@@ -124,6 +154,7 @@ interface DashboardData {
     activeSampleCount: number;
   };
   taskStatuses?: Record<string, string>;
+  agentSessionSummary: AgentSessionSummary;
 }
 
 type DashboardKpiKey = keyof DashboardData['kpi'];
@@ -358,6 +389,32 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
             workerSummary: toWorkerStatusSummary(workers),
           };
         }
+      }
+
+      // ---- Agent 会话实时事件处理 ----
+      if (eventType === 'agent.session.created') {
+        const summary = nextData.agentSessionSummary ?? { activeCount: 0, totalToday: 0, sessions: [] };
+        nextData = {
+          ...nextData,
+          agentSessionSummary: {
+            ...summary,
+            activeCount: summary.activeCount + 1,
+            totalToday: summary.totalToday + 1,
+          },
+        };
+      } else if (
+        eventType === 'agent.session.completed' ||
+        eventType === 'agent.session.failed' ||
+        eventType === 'agent.session.cancelled'
+      ) {
+        const summary = nextData.agentSessionSummary ?? { activeCount: 0, totalToday: 0, sessions: [] };
+        nextData = {
+          ...nextData,
+          agentSessionSummary: {
+            ...summary,
+            activeCount: Math.max(0, summary.activeCount - 1),
+          },
+        };
       }
 
       if (nextData === state.data && nextTaskStatuses === state.taskStatuses) {
@@ -683,6 +740,202 @@ export const useWorkerStore = create<WorkerStore>((set) => ({
       }));
 
       return { success: true, removed };
+    } catch (err) {
+      return { success: false, errorMessage: (err as Error).message };
+    }
+  },
+}));
+
+// ----- Navigation Store -----
+interface NavigationStore {
+  /** 当前正在跳转的目标路径（用于路由切换过渡） */
+  pendingPath: string | null;
+  setPendingPath: (path: string | null) => void;
+}
+
+export const useNavigationStore = create<NavigationStore>((set) => ({
+  pendingPath: null,
+  setPendingPath: (path) => set({ pendingPath: path }),
+}));
+
+// ----- Auth Store -----
+export type AuthUser = {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+  role: string;
+  status: string;
+  avatarUrl?: string | null;
+  authSource: string;
+  hasPassword?: boolean;
+};
+
+interface AuthStore {
+  user: AuthUser | null;
+  loading: boolean;
+  initialized: boolean;
+  error: string | null;
+  statusCode: number | null;
+  fetchCurrentUser: () => Promise<void>;
+  clearUser: () => void;
+}
+
+export const useAuthStore = create<AuthStore>((set) => ({
+  user: null,
+  loading: false,
+  initialized: false,
+  error: null,
+  statusCode: null,
+
+  clearUser: () => set({ user: null, initialized: true, statusCode: null, error: null }),
+
+  fetchCurrentUser: async () => {
+    set({ loading: true, error: null, statusCode: null });
+    try {
+      const res = await fetch('/api/auth/me');
+      const status = res.status;
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok || !json?.success) {
+        set({
+          user: null,
+          loading: false,
+          initialized: true,
+          error: json?.error?.message || `HTTP ${res.status}`,
+          statusCode: status,
+        });
+        return;
+      }
+
+      set({
+        user: json.data as AuthUser,
+        loading: false,
+        initialized: true,
+        error: null,
+        statusCode: status,
+      });
+    } catch (err) {
+      set({
+        user: null,
+        loading: false,
+        initialized: true,
+        error: (err as Error).message,
+        statusCode: null,
+      });
+    }
+  },
+}));
+
+// ----- User Store -----
+interface UserStore {
+  users: UserItem[];
+  loading: boolean;
+  error: string | null;
+  fetchUsers: () => Promise<void>;
+  createUser: (input: {
+    username: string;
+    displayName: string;
+    password: string;
+    email?: string;
+    role: string;
+  }) => Promise<{ success: boolean; errorMessage?: string }>;
+  updateUser: (
+    id: string,
+    patch: Partial<Pick<UserItem, 'displayName' | 'email' | 'role' | 'status'>>
+  ) => Promise<{ success: boolean; errorMessage?: string }>;
+  deleteUser: (id: string) => Promise<{ success: boolean; errorMessage?: string }>;
+  resetPassword: (id: string, newPassword: string) => Promise<{ success: boolean; errorMessage?: string }>;
+}
+
+export const useUserStore = create<UserStore>((set) => ({
+  users: [],
+  loading: false,
+  error: null,
+
+  fetchUsers: async () => {
+    set({ loading: true, error: null });
+    try {
+      const res = await fetch('/api/users');
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        set({ loading: false, error: json?.error?.message || `HTTP ${res.status}` });
+        return;
+      }
+      set({ users: (json.data as UserItem[]) || [], loading: false, error: null });
+    } catch (err) {
+      set({ loading: false, error: (err as Error).message });
+    }
+  },
+
+  createUser: async (input) => {
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      }
+
+      set((state) => ({ users: [...state.users, json.data as UserItem], error: null }));
+      return { success: true };
+    } catch (err) {
+      return { success: false, errorMessage: (err as Error).message };
+    }
+  },
+
+  updateUser: async (id, patch) => {
+    try {
+      const res = await fetch(`/api/users/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      }
+
+      const updated = json.data as UserItem;
+      set((state) => ({
+        users: state.users.map((u) => (u.id === id ? { ...u, ...updated } : u)),
+        error: null,
+      }));
+      return { success: true };
+    } catch (err) {
+      return { success: false, errorMessage: (err as Error).message };
+    }
+  },
+
+  deleteUser: async (id) => {
+    try {
+      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      }
+      set((state) => ({ users: state.users.filter((u) => u.id !== id), error: null }));
+      return { success: true };
+    } catch (err) {
+      return { success: false, errorMessage: (err as Error).message };
+    }
+  },
+
+  resetPassword: async (id, newPassword) => {
+    try {
+      const res = await fetch(`/api/users/${id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      }
+      return { success: true };
     } catch (err) {
       return { success: false, errorMessage: (err as Error).message };
     }

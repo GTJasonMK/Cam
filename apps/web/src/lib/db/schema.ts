@@ -99,6 +99,8 @@ export const tasks = sqliteTable(
     workDir: text('work_dir'),
 
     status: text('status').notNull().default('draft'),
+    /** 任务来源：'scheduler'（调度器/批量API）| 'terminal'（终端交互） */
+    source: text('source').notNull().default('scheduler'),
     retryCount: integer('retry_count').notNull().default(0),
     maxRetries: integer('max_retries').notNull().default(2),
 
@@ -164,6 +166,12 @@ export const secrets = sqliteTable(
   ]
 );
 
+type ClaudeAuthStatus = {
+  loggedIn: boolean;
+  authMethod: string;
+  apiProvider: string;
+};
+
 // ----- Worker 表 -----
 export const workers = sqliteTable(
   'workers',
@@ -173,6 +181,13 @@ export const workers = sqliteTable(
 
     supportedAgentIds: text('supported_agent_ids', { mode: 'json' }).notNull().$type<string[]>().default([]),
     maxConcurrent: integer('max_concurrent').notNull().default(1),
+
+    // worker 运行模式：daemon（常驻轮询）/ task（单任务容器）/ unknown
+    mode: text('mode').notNull().default('unknown'),
+    // Worker 上报的“已配置环境变量名”（仅名称，不包含值）
+    reportedEnvVars: text('reported_env_vars', { mode: 'json' }).notNull().$type<string[]>().default([]),
+    // Worker 上报的 Claude Code 登录态（claude auth status --json，仅状态不含密钥）
+    reportedClaudeAuth: text('reported_claude_auth', { mode: 'json' }).$type<ClaudeAuthStatus | null>(),
 
     status: text('status').notNull().default('offline'),
     currentTaskId: text('current_task_id'),
@@ -191,6 +206,105 @@ export const workers = sqliteTable(
     createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   },
   (table) => [index('idx_workers_status').on(table.status)]
+);
+
+// ----- 用户表 -----
+export const users = sqliteTable(
+  'users',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    username: text('username').notNull(),
+    displayName: text('display_name').notNull(),
+    email: text('email'),
+    // scrypt 哈希后的密码，OAuth-only 用户此字段为 null
+    passwordHash: text('password_hash'),
+    role: text('role').notNull().default('developer'), // admin | developer | viewer
+    status: text('status').notNull().default('active'), // active | disabled
+    avatarUrl: text('avatar_url'),
+    lastLoginAt: text('last_login_at'),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_users_username').on(table.username),
+    uniqueIndex('uniq_users_email').on(table.email),
+    index('idx_users_role').on(table.role),
+    index('idx_users_status').on(table.status),
+  ]
+);
+
+// ----- 会话表 -----
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // 发给浏览器的不透明 token（32 字节随机 hex = 64 字符）
+    token: text('token').notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    expiresAt: text('expires_at').notNull(),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_sessions_token').on(table.token),
+    index('idx_sessions_user_id').on(table.userId),
+    index('idx_sessions_expires_at').on(table.expiresAt),
+  ]
+);
+
+// ----- OAuth 账户关联表 -----
+export const oauthAccounts = sqliteTable(
+  'oauth_accounts',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(), // github | gitlab
+    providerAccountId: text('provider_account_id').notNull(),
+    providerUsername: text('provider_username'),
+    accessToken: text('access_token'), // AES-256-GCM 加密存储
+    refreshToken: text('refresh_token'), // AES-256-GCM 加密存储
+    tokenExpiresAt: text('token_expires_at'),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_oauth_provider_account').on(table.provider, table.providerAccountId),
+    index('idx_oauth_user_id').on(table.userId),
+    index('idx_oauth_provider').on(table.provider),
+  ]
+);
+
+// ----- API Token 表（用于 Worker 和 API 集成） -----
+export const apiTokens = sqliteTable(
+  'api_tokens',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    // 存储 token 的 SHA-256 哈希，原始 token 只在创建时返回一次
+    tokenHash: text('token_hash').notNull(),
+    // token 前缀，用于用户识别（如 "cam_xxxx..."）
+    tokenPrefix: text('token_prefix').notNull(),
+    permissions: text('permissions', { mode: 'json' })
+      .notNull()
+      .$type<string[]>()
+      .default([]),
+    lastUsedAt: text('last_used_at'),
+    expiresAt: text('expires_at'),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_tokens_hash').on(table.tokenHash),
+    index('idx_api_tokens_user_id').on(table.userId),
+    index('idx_api_tokens_prefix').on(table.tokenPrefix),
+  ]
 );
 
 // ----- 系统事件表 -----

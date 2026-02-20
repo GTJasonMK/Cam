@@ -3,11 +3,12 @@
 // GET /api/tasks/[id]/relations  - 返回 dependencies + dependents（不含日志/明文）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks } from '@/lib/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 type TaskMini = {
   id: string;
@@ -17,7 +18,7 @@ type TaskMini = {
   createdAt: string;
 };
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function handler(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const row = await db
@@ -84,3 +85,5 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     );
   }
 }
+
+export const GET = withAuth(handler, 'task:read');

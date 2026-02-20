@@ -50,6 +50,27 @@
       "when": 1771171800000,
       "tag": "0006_majestic_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1771430156742,
+      "tag": "0008_worker_capabilities",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1771467883919,
+      "tag": "0009_worker_claude_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1771550000000,
+      "tag": "0010_task_source",
+      "breakpoints": true
     }
   ]
 }

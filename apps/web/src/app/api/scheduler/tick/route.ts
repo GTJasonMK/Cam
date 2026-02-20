@@ -6,8 +6,9 @@
 import { NextResponse } from 'next/server';
 import { runSchedulerTick } from '@/lib/scheduler';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
+import { withAuth } from '@/lib/auth/with-auth';
 
-export async function POST() {
+async function handler() {
   try {
     await runSchedulerTick();
     return NextResponse.json({ success: true, message: API_COMMON_MESSAGES.schedulerTickExecuted });
@@ -19,3 +20,5 @@ export async function POST() {
     );
   }
 }
+
+export const POST = withAuth(handler, 'worker:manage');

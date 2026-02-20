@@ -3,7 +3,7 @@
 // POST /api/task-groups/cancel  - 取消一个 groupId 下的所有非终态任务
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents } from '@/lib/db/schema';
 import { eq, inArray } from 'drizzle-orm';
@@ -13,6 +13,7 @@ import fs from 'fs';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES, TASK_GROUP_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 
 const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 const docker = new Dockerode({ socketPath: dockerSocketPath });
@@ -46,7 +47,7 @@ async function stopTaskContainers(taskId: string): Promise<number> {
   return stopped;
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: AuthenticatedRequest) {
   try {
     ensureSchedulerStarted();
     const actor = resolveAuditActor(request);
@@ -127,3 +128,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = withAuth(handler, 'task:update');
