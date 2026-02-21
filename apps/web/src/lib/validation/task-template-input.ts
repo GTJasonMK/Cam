@@ -7,6 +7,9 @@ type ParseFailure = { success: false; errorMessage: string };
 type ParseResult<T> = ParseSuccess<T> | ParseFailure;
 
 type NullableString = string | null;
+type PipelineStep = { title: string; description: string; agentDefinitionId?: string };
+
+const MAX_PIPELINE_TEMPLATE_STEPS = 50;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -43,7 +46,7 @@ export type TaskTemplateCreatePayload = {
   baseBranch: NullableString;
   workDir: NullableString;
   /** 流水线步骤，null 表示单任务模板 */
-  pipelineSteps: Array<{ title: string; description: string; agentDefinitionId?: string }> | null;
+  pipelineSteps: PipelineStep[] | null;
   /** 流水线默认最大重试次数 */
   maxRetries: number;
 };
@@ -59,7 +62,11 @@ export function parseCreateTaskTemplatePayload(input: unknown): ParseResult<Task
   }
 
   // 流水线步骤验证
-  const pipelineSteps = parsePipelineSteps(input.pipelineSteps);
+  const pipelineResult = parsePipelineStepsField(input.pipelineSteps);
+  if (pipelineResult.errorMessage) {
+    return { success: false, errorMessage: pipelineResult.errorMessage };
+  }
+  const pipelineSteps = pipelineResult.steps;
   const isPipeline = pipelineSteps !== null;
 
   // 单任务模板：titleTemplate + promptTemplate 必填
@@ -96,24 +103,41 @@ export function parseCreateTaskTemplatePayload(input: unknown): ParseResult<Task
   };
 }
 
-/** 解析流水线步骤数组，返回 null 表示非流水线 */
-function parsePipelineSteps(
+function parsePipelineStepsField(
   value: unknown,
-): Array<{ title: string; description: string; agentDefinitionId?: string }> | null {
-  if (value === null || value === undefined) return null;
-  if (!Array.isArray(value)) return null;
-  if (value.length === 0) return null;
+): { steps: PipelineStep[] | null; errorMessage: string | null } {
+  if (value === undefined || value === null) {
+    return { steps: null, errorMessage: null };
+  }
 
-  const steps: Array<{ title: string; description: string; agentDefinitionId?: string }> = [];
-  for (const item of value) {
-    if (!isPlainObject(item)) return null;
+  if (!Array.isArray(value)) {
+    return { steps: null, errorMessage: 'pipelineSteps 必须是数组或 null' };
+  }
+
+  if (value.length === 0) {
+    return { steps: null, errorMessage: 'pipelineSteps 至少需要 1 个步骤' };
+  }
+
+  if (value.length > MAX_PIPELINE_TEMPLATE_STEPS) {
+    return { steps: null, errorMessage: `pipelineSteps 最多允许 ${MAX_PIPELINE_TEMPLATE_STEPS} 个步骤` };
+  }
+
+  const steps: PipelineStep[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!isPlainObject(item)) {
+      return { steps: null, errorMessage: `pipelineSteps[${i}] 必须是对象` };
+    }
     const title = toTrimmedString(item.title);
     const description = toTrimmedString(item.description);
-    if (!title || !description) return null;
+    if (!title || !description) {
+      return { steps: null, errorMessage: `pipelineSteps[${i}] 缺少有效的 title/description` };
+    }
     const agentDefinitionId = toTrimmedString(item.agentDefinitionId);
     steps.push({ title, description, ...(agentDefinitionId ? { agentDefinitionId } : {}) });
   }
-  return steps;
+
+  return { steps, errorMessage: null };
 }
 
 export type TaskTemplatePatchPayload = Partial<TaskTemplateCreatePayload>;
@@ -164,7 +188,11 @@ export function parsePatchTaskTemplatePayload(input: unknown): ParseResult<TaskT
   // 流水线字段
   if (Object.prototype.hasOwnProperty.call(input, 'pipelineSteps')) {
     touched += 1;
-    updateData.pipelineSteps = parsePipelineSteps(input.pipelineSteps);
+    const pipelineResult = parsePipelineStepsField(input.pipelineSteps);
+    if (pipelineResult.errorMessage) {
+      return { success: false, errorMessage: pipelineResult.errorMessage };
+    }
+    updateData.pipelineSteps = pipelineResult.steps;
   }
   if (Object.prototype.hasOwnProperty.call(input, 'maxRetries')) {
     touched += 1;

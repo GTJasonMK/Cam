@@ -69,6 +69,13 @@ export const TEMPLATE_UI_MESSAGES = {
   pipelineAddStep: '添加步骤',
   pipelineMaxRetries: '最大重试次数',
   pipelineStepRequired: '流水线模板至少需要 1 个步骤',
+  // 导入导出
+  importTemplate: '导入模板',
+  importSuccess: (name: string) => `已导入流水线模板「${name}」`,
+  importFailed: '导入失败',
+  importInvalidFormat: '无效的流水线配置文件',
+  importUnknownAgent: (id: string) => `导入失败：智能体「${id}」不存在，请先创建或调整配置`,
+  exportTemplate: '导出',
   fields: {
     name: '模板名称',
     namePlaceholder: '例如：缺陷修复模板',
@@ -344,6 +351,11 @@ export const AGENT_SESSION_UI_MESSAGES = {
     saveConfirm: '保存',
     saveFailed: '保存失败',
     saveSuccess: '已保存为流水线模板',
+    // 导入导出
+    exportConfig: '导出配置',
+    importConfig: '导入配置',
+    importParseError: '文件格式无效，请检查 JSON 内容',
+    importUnknownAgent: (id: string) => `导入失败：智能体「${id}」不存在，请先创建或修改配置`,
     // 暂停/恢复
     pausePipeline: '暂停',
     resumePipeline: '继续',

@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Bot, FolderOpen, Plus, Trash2, Play, Save, Layers,
+  Bot, FolderOpen, Plus, Trash2, Play, Save, Layers, Download, Upload,
 } from 'lucide-react';
 import {
   Dialog,
@@ -19,6 +19,14 @@ import {
 } from '@/components/ui/dialog';
 import { AGENT_SESSION_UI_MESSAGES as MSG } from '@/lib/i18n/ui-messages';
 import type { ClientMessage } from '@/lib/terminal/protocol';
+import {
+  buildExportDataFromForm,
+  downloadPipelineJson,
+  findMissingPipelineAgentIds,
+  openPipelineFile,
+  parsePipelineImport,
+} from '@/lib/pipeline-io';
+import { resolveKnownAgentIdsForImport } from '@/lib/agents/known-agent-ids';
 
 // ---- 类型 ----
 
@@ -221,6 +229,55 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       setSaving(false);
     }
   }, [saveName, steps, defaultAgent, repoUrl, baseBranch, workDir]);
+
+  // ---- 导出当前配置 ----
+  const handleExportConfig = useCallback(() => {
+    const data = buildExportDataFromForm({
+      defaultAgent,
+      repoUrl,
+      baseBranch,
+      workDir,
+      steps,
+    });
+    downloadPipelineJson(data);
+  }, [defaultAgent, repoUrl, baseBranch, workDir, steps]);
+
+  // ---- 导入配置 ----
+  const handleImportConfig = useCallback(async () => {
+    const fileResult = await openPipelineFile();
+    if (!fileResult.ok) {
+      if ('error' in fileResult) setError(fileResult.error);
+      return;
+    }
+
+    const result = parsePipelineImport(fileResult.content);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    const { data } = result;
+    const knownAgentIds = await resolveKnownAgentIdsForImport(agents.map((a) => a.id));
+    if (knownAgentIds.length > 0) {
+      const missingAgentIds = findMissingPipelineAgentIds(data, knownAgentIds);
+      if (missingAgentIds.length > 0) {
+        setError(MSG.pipeline.importUnknownAgent(missingAgentIds[0]));
+        return;
+      }
+    }
+
+    // 填充表单
+    if (data.agentDefinitionId) setDefaultAgent(data.agentDefinitionId);
+    if (data.repoUrl) setRepoUrl(data.repoUrl);
+    if (data.baseBranch) setBaseBranch(data.baseBranch);
+    if (data.workDir) setWorkDir(data.workDir);
+    setSteps(data.steps.map((s) => ({
+      title: s.title,
+      prompt: s.description,
+      agentDefinitionId: s.agentDefinitionId || '',
+    })));
+    setError('');
+  }, [agents]);
 
   // ---- 启动流水线 ----
   const canLaunch = useMemo(() => {
@@ -449,6 +506,27 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
             >
               <Save size={14} />
               {MSG.pipeline.saveAsTemplate}
+            </button>
+
+            {/* 导出配置 */}
+            <button
+              type="button"
+              onClick={handleExportConfig}
+              disabled={steps.length < 2 || !steps.every((s) => s.title.trim() && s.prompt.trim())}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors disabled:opacity-50"
+            >
+              <Download size={14} />
+              {MSG.pipeline.exportConfig}
+            </button>
+
+            {/* 导入配置 */}
+            <button
+              type="button"
+              onClick={handleImportConfig}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors"
+            >
+              <Upload size={14} />
+              {MSG.pipeline.importConfig}
             </button>
           </div>
 

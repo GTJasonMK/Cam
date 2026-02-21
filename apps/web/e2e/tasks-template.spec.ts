@@ -49,3 +49,33 @@ test('任务创建页可套用任务模板', async ({ page, request }) => {
   });
   expect(deleteRes.ok()).toBeTruthy();
 });
+
+test('创建流水线模板时会校验步骤级智能体是否存在', async ({ request }) => {
+  const suffix = Date.now();
+  const invalidAgentId = `missing-agent-${suffix}`;
+  const res = await request.post('/api/task-templates', {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      'Content-Type': 'application/json',
+      'x-cam-actor': 'e2e-invalid-step-agent-test',
+    },
+    data: {
+      name: `E2E-非法步骤智能体-${suffix}`,
+      titleTemplate: '(流水线模板)',
+      promptTemplate: '(流水线模板)',
+      pipelineSteps: [
+        {
+          title: '步骤一',
+          description: '执行检查',
+          agentDefinitionId: invalidAgentId,
+        },
+      ],
+      maxRetries: 2,
+    },
+  });
+
+  expect(res.status()).toBe(404);
+  const body = (await res.json()) as { success?: boolean; error?: { message?: string } };
+  expect(body.success).toBe(false);
+  expect(body.error?.message || '').toContain(invalidAgentId);
+});

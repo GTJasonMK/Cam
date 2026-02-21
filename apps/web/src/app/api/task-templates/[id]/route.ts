@@ -6,13 +6,14 @@
 
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { agentDefinitions, repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
+import { repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_TEMPLATE_MESSAGES } from '@/lib/i18n/messages';
 import { parsePatchTaskTemplatePayload } from '@/lib/validation/task-template-input';
 import { resolveAuditActor } from '@/lib/audit/actor';
 import { sseManager } from '@/lib/sse/manager';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { collectReferencedAgentIds, findMissingAgentIds } from '../_agent-validation';
 
 function hasOwn<T extends object>(input: T, key: keyof T): boolean {
   return Object.prototype.hasOwnProperty.call(input, key);
@@ -58,18 +59,13 @@ async function handlePut(request: AuthenticatedRequest, context: { params: Promi
       }
     }
 
-    if (hasOwn(patch, 'agentDefinitionId') && patch.agentDefinitionId) {
-      const agent = await db
-        .select({ id: agentDefinitions.id })
-        .from(agentDefinitions)
-        .where(eq(agentDefinitions.id, patch.agentDefinitionId))
-        .limit(1);
-      if (agent.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(patch.agentDefinitionId) } },
-          { status: 404 }
-        );
-      }
+    const referencedAgentIds = collectReferencedAgentIds(patch);
+    const missingAgentIds = await findMissingAgentIds(referencedAgentIds);
+    if (missingAgentIds.length > 0) {
+      return NextResponse.json(
+        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(missingAgentIds[0]) } },
+        { status: 404 }
+      );
     }
 
     const now = new Date().toISOString();

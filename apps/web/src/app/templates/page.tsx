@@ -16,7 +16,15 @@ import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { TEMPLATE_UI_MESSAGES } from '@/lib/i18n/ui-messages';
-import { Plus, Pencil, Trash2, Search, Layers } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, Layers, Download, Upload } from 'lucide-react';
+import {
+  buildExportData,
+  downloadPipelineJson,
+  findMissingPipelineAgentIds,
+  openPipelineFile,
+  parsePipelineImport,
+} from '@/lib/pipeline-io';
+import { resolveKnownAgentIdsForImport } from '@/lib/agents/known-agent-ids';
 
 // ---- 类型定义 ----
 
@@ -160,6 +168,82 @@ export default function TemplatesPage() {
     fetchTemplates();
   };
 
+  // 导出操作
+  const handleExport = (item: TaskTemplateItem) => {
+    const exportData = buildExportData({
+      name: item.name,
+      agentDefinitionId: item.agentDefinitionId,
+      repoUrl: item.repoUrl,
+      baseBranch: item.baseBranch,
+      workDir: item.workDir,
+      maxRetries: item.maxRetries,
+      pipelineSteps: item.pipelineSteps,
+    });
+    downloadPipelineJson(exportData);
+  };
+
+  // 导入操作
+  const handleImport = async () => {
+    const fileResult = await openPipelineFile();
+    if (!fileResult.ok) {
+      if ('error' in fileResult) {
+        notify({ type: 'error', title: TEMPLATE_UI_MESSAGES.importFailed, message: fileResult.error });
+      }
+      return;
+    }
+
+    const result = parsePipelineImport(fileResult.content);
+    if (!result.ok) {
+      notify({ type: 'error', title: TEMPLATE_UI_MESSAGES.importFailed, message: result.error });
+      return;
+    }
+
+    const { data } = result;
+    const knownAgentIds = await resolveKnownAgentIdsForImport(agents.map((a) => a.id));
+    if (knownAgentIds.length > 0) {
+      const missingAgentIds = findMissingPipelineAgentIds(data, knownAgentIds);
+      if (missingAgentIds.length > 0) {
+        notify({
+          type: 'error',
+          title: TEMPLATE_UI_MESSAGES.importFailed,
+          message: TEMPLATE_UI_MESSAGES.importUnknownAgent(missingAgentIds[0]),
+        });
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch('/api/task-templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: data.name,
+          titleTemplate: '(流水线模板)',
+          promptTemplate: '(流水线模板)',
+          agentDefinitionId: data.agentDefinitionId,
+          repoUrl: data.repoUrl,
+          baseBranch: data.baseBranch,
+          workDir: data.workDir,
+          pipelineSteps: data.steps.map((s) => ({
+            title: s.title,
+            description: s.description,
+            ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+          })),
+          maxRetries: data.maxRetries ?? 2,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!json?.success) {
+        notify({ type: 'error', title: TEMPLATE_UI_MESSAGES.importFailed, message: json?.error?.message || TEMPLATE_UI_MESSAGES.requestFailed });
+        return;
+      }
+      notify({ type: 'success', title: TEMPLATE_UI_MESSAGES.createSuccessTitle, message: TEMPLATE_UI_MESSAGES.importSuccess(data.name) });
+      fetchTemplates();
+    } catch (err) {
+      notify({ type: 'error', title: TEMPLATE_UI_MESSAGES.importFailed, message: (err as Error).message });
+    }
+  };
+
   // 表格列定义
   const columns: Column<TaskTemplateItem>[] = [
     {
@@ -219,6 +303,17 @@ export default function TemplatesPage() {
       className: 'w-[100px] text-right',
       cell: (row) => (
         <div className="flex items-center justify-end gap-1">
+          {row.pipelineSteps && row.pipelineSteps.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              onClick={() => handleExport(row)}
+              aria-label={TEMPLATE_UI_MESSAGES.exportTemplate}
+            >
+              <Download size={14} />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -251,6 +346,10 @@ export default function TemplatesPage() {
   return (
     <div className="space-y-12">
       <PageHeader title={TEMPLATE_UI_MESSAGES.pageTitle} subtitle={TEMPLATE_UI_MESSAGES.pageSubtitle}>
+        <Button variant="secondary" onClick={handleImport}>
+          <Upload size={15} className="mr-1" />
+          {TEMPLATE_UI_MESSAGES.importTemplate}
+        </Button>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus size={15} className="mr-1" />
           {TEMPLATE_UI_MESSAGES.newTemplate}

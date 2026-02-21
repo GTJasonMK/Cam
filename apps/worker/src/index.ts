@@ -15,6 +15,7 @@ const HEARTBEAT_INTERVAL_MS = 10_000; // 10 秒心跳
 
 let isRunning = true;
 let currentTaskId: string | null = null;
+let idleHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 function parseReportedEnvVarAllowlist(): string[] {
   const raw = (process.env.CAM_WORKER_REPORTED_ENV_VARS || '').trim();
@@ -103,7 +104,7 @@ async function main(): Promise<void> {
   }
 
   // 3. 启动空闲心跳（轮询模式）
-  startIdleHeartbeat();
+  idleHeartbeatTimer = startIdleHeartbeat();
 
   // 4. 任务轮询循环
   while (isRunning) {
@@ -131,12 +132,20 @@ async function main(): Promise<void> {
     await sleep(POLL_INTERVAL_MS);
   }
 
+  stopIdleHeartbeat();
+  // daemon 退出前补一条 offline 心跳，避免 UI 长时间显示 idle
+  try {
+    await sendHeartbeat(WORKER_ID, { status: 'offline', currentTaskId: null, logTail: getLogTail(20) });
+  } catch {
+    // ignore
+  }
+
   console.log('[Worker] 已停止');
 }
 
 /** 空闲时定期发送心跳 */
-function startIdleHeartbeat(): void {
-  setInterval(async () => {
+function startIdleHeartbeat(): ReturnType<typeof setInterval> {
+  return setInterval(async () => {
     if (currentTaskId) return; // 执行任务时由 executor 负责心跳
 
     try {
@@ -152,6 +161,12 @@ function startIdleHeartbeat(): void {
   }, HEARTBEAT_INTERVAL_MS);
 }
 
+function stopIdleHeartbeat(): void {
+  if (!idleHeartbeatTimer) return;
+  clearInterval(idleHeartbeatTimer);
+  idleHeartbeatTimer = null;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -160,10 +175,12 @@ function sleep(ms: number): Promise<void> {
 process.on('SIGTERM', () => {
   console.log('[Worker] 收到 SIGTERM，准备退出...');
   isRunning = false;
+  stopIdleHeartbeat();
 });
 process.on('SIGINT', () => {
   console.log('[Worker] 收到 SIGINT，准备退出...');
   isRunning = false;
+  stopIdleHeartbeat();
 });
 
 // 启动

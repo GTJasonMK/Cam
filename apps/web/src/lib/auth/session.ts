@@ -6,16 +6,18 @@ import crypto from 'crypto';
 import { db } from '@/lib/db';
 import { sessions, users } from '@/lib/db/schema';
 import { eq, lt } from 'drizzle-orm';
+import { normalizeSessionTtlHours } from './session-ttl';
 
-const SESSION_TTL_HOURS = parseInt(process.env.CAM_SESSION_TTL_HOURS || '24', 10);
+export { normalizeSessionTtlHours } from './session-ttl';
+
+const SESSION_TTL_HOURS = normalizeSessionTtlHours(process.env.CAM_SESSION_TTL_HOURS);
 const TOKEN_BYTES = 32; // 生成 64 字符 hex 令牌
 
 export const SESSION_COOKIE_NAME = 'cam_session';
 
 /** Session Cookie 的 maxAge（秒），与数据库中过期时间保持一致 */
 export function getSessionCookieMaxAgeSeconds(): number {
-  const hours = Number.isFinite(SESSION_TTL_HOURS) && SESSION_TTL_HOURS > 0 ? SESSION_TTL_HOURS : 24;
-  return Math.floor(hours * 3600);
+  return Math.floor(SESSION_TTL_HOURS * 3600);
 }
 
 export type SessionUser = {

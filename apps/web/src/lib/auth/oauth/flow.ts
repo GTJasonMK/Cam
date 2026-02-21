@@ -43,30 +43,36 @@ export function generateOAuthState(provider: string): string {
 
 /** 验证 state 签名和有效期 */
 export function verifyOAuthState(state: string, expectedProvider: string): boolean {
-  const parts = state.split(':');
-  if (parts.length !== 4) return false;
+  try {
+    const parts = state.split(':');
+    if (parts.length !== 4) return false;
 
-  const [provider, timestamp, random, hmac] = parts;
-  if (provider !== expectedProvider) return false;
+    const [provider, timestamp, random, hmac] = parts;
+    if (provider !== expectedProvider) return false;
 
-  // 验证 HMAC
-  const payload = `${provider}:${timestamp}:${random}`;
-  const expectedHmac = crypto.createHmac('sha256', getStateSecret())
-    .update(payload)
-    .digest('hex')
-    .slice(0, 32);
+    // 验证 HMAC
+    const payload = `${provider}:${timestamp}:${random}`;
+    const expectedHmac = crypto.createHmac('sha256', getStateSecret())
+      .update(payload)
+      .digest('hex')
+      .slice(0, 32);
 
-  if (!crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(expectedHmac))) {
+    // timingSafeEqual 要求输入长度一致，否则会抛异常
+    if (hmac.length !== expectedHmac.length) return false;
+    if (!crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(expectedHmac))) {
+      return false;
+    }
+
+    // 验证时效
+    const ts = parseInt(timestamp, 36);
+    if (isNaN(ts) || Date.now() - ts > STATE_TTL_MS) {
+      return false;
+    }
+
+    return true;
+  } catch {
     return false;
   }
-
-  // 验证时效
-  const ts = parseInt(timestamp, 36);
-  if (isNaN(ts) || Date.now() - ts > STATE_TTL_MS) {
-    return false;
-  }
-
-  return true;
 }
 
 // ---- 授权 URL ----

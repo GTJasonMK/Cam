@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 3210);
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${port}`;
+const useExternalServer = process.env.PLAYWRIGHT_EXTERNAL_SERVER === '1';
 
 export default defineConfig({
   testDir: './e2e',
@@ -15,14 +16,16 @@ export default defineConfig({
     baseURL,
     trace: 'on-first-retry',
   },
-  webServer: {
-    command: `pnpm dev --port ${port}`,
-    url: `${baseURL}/api/health`,
-    timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
-    env: {
-      ...process.env,
-      CAM_AUTH_TOKEN: process.env.CAM_AUTH_TOKEN || 'playwright-token',
+  webServer: useExternalServer
+    ? undefined
+    : {
+      command: `pnpm dev --port ${port}`,
+      url: `${baseURL}/api/health`,
+      timeout: 120_000,
+      reuseExistingServer: !process.env.CI,
+      env: {
+        ...process.env,
+        CAM_AUTH_TOKEN: process.env.CAM_AUTH_TOKEN || 'playwright-token',
+      },
     },
-  },
 });

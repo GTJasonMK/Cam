@@ -29,6 +29,34 @@ test('parseCreateTaskTemplatePayload: 缺少必填字段返回失败', () => {
   assert.equal(result.success, false);
 });
 
+test('parseCreateTaskTemplatePayload: 流水线模板允许缺省标题和提示词', () => {
+  const result = parseCreateTaskTemplatePayload({
+    name: '流水线模板',
+    pipelineSteps: [
+      { title: '步骤一', description: '执行检查' },
+    ],
+  });
+  assert.equal(result.success, true);
+  if (!result.success) return;
+  assert.equal(result.data.titleTemplate, '(流水线模板)');
+  assert.equal(result.data.promptTemplate, '(流水线模板)');
+  assert.equal(result.data.pipelineSteps?.length, 1);
+});
+
+test('parseCreateTaskTemplatePayload: 非法 pipelineSteps 返回失败', () => {
+  const result = parseCreateTaskTemplatePayload({
+    name: '非法流水线',
+    titleTemplate: '(流水线模板)',
+    promptTemplate: '(流水线模板)',
+    pipelineSteps: [
+      { title: '', description: '执行检查' },
+    ],
+  });
+  assert.equal(result.success, false);
+  if (result.success) return;
+  assert.match(result.errorMessage, /pipelineSteps\[0\]/);
+});
+
 test('parsePatchTaskTemplatePayload: 允许可空字段', () => {
   const result = parsePatchTaskTemplatePayload({
     repositoryId: null,
@@ -43,4 +71,13 @@ test('parsePatchTaskTemplatePayload: 允许可空字段', () => {
 test('parsePatchTaskTemplatePayload: 空更新返回失败', () => {
   const result = parsePatchTaskTemplatePayload({});
   assert.equal(result.success, false);
+});
+
+test('parsePatchTaskTemplatePayload: 非法 pipelineSteps 返回失败', () => {
+  const result = parsePatchTaskTemplatePayload({
+    pipelineSteps: [],
+  });
+  assert.equal(result.success, false);
+  if (result.success) return;
+  assert.match(result.errorMessage, /至少需要 1 个步骤/);
 });
