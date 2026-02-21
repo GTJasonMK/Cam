@@ -53,7 +53,7 @@ export function AgentSessionCard({
         'rounded-lg border p-3 transition-all',
         isActive
           ? 'border-primary/40 bg-primary/5'
-          : 'border-white/8 bg-white/[0.02] hover:border-white/12 hover:bg-white/[0.04]',
+          : 'border-border bg-card/65 hover:border-border-light hover:bg-card-elevated/70',
       )}
     >
       {/* 头部：Agent 名 + 状态 */}
@@ -82,7 +82,7 @@ export function AgentSessionCard({
           <button
             type="button"
             onClick={() => onView(sessionId)}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
           >
             <Eye size={12} />
             {MSG.statusPanel.view}

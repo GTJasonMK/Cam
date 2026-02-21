@@ -7,9 +7,23 @@ type ParseFailure = { success: false; errorMessage: string };
 type ParseResult<T> = ParseSuccess<T> | ParseFailure;
 
 type NullableString = string | null;
-type PipelineStep = { title: string; description: string; agentDefinitionId?: string };
+type PipelineParallelAgent = {
+  title?: string;
+  description: string;
+  agentDefinitionId?: string;
+};
+type PipelineStep = {
+  title: string;
+  description: string;
+  agentDefinitionId?: string;
+  inputFiles?: string[];
+  inputCondition?: string;
+  parallelAgents?: PipelineParallelAgent[];
+};
 
 const MAX_PIPELINE_TEMPLATE_STEPS = 50;
+const MAX_PARALLEL_AGENTS_PER_STEP = 8;
+const MAX_STEP_INPUT_FILES = 50;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -134,7 +148,89 @@ function parsePipelineStepsField(
       return { steps: null, errorMessage: `pipelineSteps[${i}] 缺少有效的 title/description` };
     }
     const agentDefinitionId = toTrimmedString(item.agentDefinitionId);
-    steps.push({ title, description, ...(agentDefinitionId ? { agentDefinitionId } : {}) });
+
+    let inputCondition: string | undefined;
+    if (Object.prototype.hasOwnProperty.call(item, 'inputCondition')) {
+      if (item.inputCondition === null || item.inputCondition === undefined) {
+        inputCondition = undefined;
+      } else {
+        const parsed = toTrimmedString(item.inputCondition);
+        if (!parsed) {
+          return { steps: null, errorMessage: `pipelineSteps[${i}].inputCondition 必须是非空字符串或 null` };
+        }
+        inputCondition = parsed;
+      }
+    }
+
+    let inputFiles: string[] | undefined;
+    if (Object.prototype.hasOwnProperty.call(item, 'inputFiles')) {
+      if (item.inputFiles === null || item.inputFiles === undefined) {
+        inputFiles = undefined;
+      } else if (!Array.isArray(item.inputFiles)) {
+        return { steps: null, errorMessage: `pipelineSteps[${i}].inputFiles 必须是字符串数组或 null` };
+      } else {
+        const files = new Set<string>();
+        for (let j = 0; j < item.inputFiles.length; j++) {
+          const raw = item.inputFiles[j];
+          const path = toTrimmedString(raw);
+          if (!path) {
+            return { steps: null, errorMessage: `pipelineSteps[${i}].inputFiles[${j}] 必须是非空字符串` };
+          }
+          files.add(path);
+          if (files.size > MAX_STEP_INPUT_FILES) {
+            return { steps: null, errorMessage: `pipelineSteps[${i}].inputFiles 最多允许 ${MAX_STEP_INPUT_FILES} 个` };
+          }
+        }
+        inputFiles = Array.from(files);
+      }
+    }
+
+    let parallelAgents: PipelineParallelAgent[] | undefined;
+    if (Object.prototype.hasOwnProperty.call(item, 'parallelAgents')) {
+      if (item.parallelAgents === null || item.parallelAgents === undefined) {
+        parallelAgents = undefined;
+      } else if (!Array.isArray(item.parallelAgents)) {
+        return { steps: null, errorMessage: `pipelineSteps[${i}].parallelAgents 必须是数组或 null` };
+      } else {
+        if (item.parallelAgents.length > MAX_PARALLEL_AGENTS_PER_STEP) {
+          return {
+            steps: null,
+            errorMessage: `pipelineSteps[${i}].parallelAgents 最多允许 ${MAX_PARALLEL_AGENTS_PER_STEP} 个`,
+          };
+        }
+        const nodes: PipelineParallelAgent[] = [];
+        for (let j = 0; j < item.parallelAgents.length; j++) {
+          const rawNode = item.parallelAgents[j];
+          if (!isPlainObject(rawNode)) {
+            return { steps: null, errorMessage: `pipelineSteps[${i}].parallelAgents[${j}] 必须是对象` };
+          }
+          const nodeDescription = toTrimmedString(rawNode.description);
+          if (!nodeDescription) {
+            return {
+              steps: null,
+              errorMessage: `pipelineSteps[${i}].parallelAgents[${j}] 缺少有效的 description`,
+            };
+          }
+          const nodeTitle = toTrimmedString(rawNode.title);
+          const nodeAgentDefinitionId = toTrimmedString(rawNode.agentDefinitionId);
+          nodes.push({
+            description: nodeDescription,
+            ...(nodeTitle ? { title: nodeTitle } : {}),
+            ...(nodeAgentDefinitionId ? { agentDefinitionId: nodeAgentDefinitionId } : {}),
+          });
+        }
+        parallelAgents = nodes.length > 0 ? nodes : undefined;
+      }
+    }
+
+    steps.push({
+      title,
+      description,
+      ...(agentDefinitionId ? { agentDefinitionId } : {}),
+      ...(inputFiles && inputFiles.length > 0 ? { inputFiles } : {}),
+      ...(inputCondition ? { inputCondition } : {}),
+      ...(parallelAgents && parallelAgents.length > 0 ? { parallelAgents } : {}),
+    });
   }
 
   return { steps, errorMessage: null };

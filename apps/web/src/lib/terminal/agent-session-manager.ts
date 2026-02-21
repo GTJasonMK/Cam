@@ -8,9 +8,11 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db';
-import { agentDefinitions, repositories, tasks } from '@/lib/db/schema';
+import { agentDefinitions, repositories, taskLogs, tasks } from '@/lib/db/schema';
 import { resolveEnvVarValue, type SecretScope } from '@/lib/secrets/resolve';
 import { sseManager } from '@/lib/sse/manager';
 import { ptyManager } from './pty-manager';
@@ -24,6 +26,11 @@ const execFileAsync = promisify(execFile);
 const AGENT_IDLE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 // 取消等待超时：3 秒
 const CANCEL_TIMEOUT_MS = 3000;
+// terminal 任务日志持久化：1s 刷盘，单批 100 行
+const TERMINAL_LOG_FLUSH_INTERVAL_MS = 1000;
+const TERMINAL_LOG_BATCH_SIZE = 100;
+const TERMINAL_LOG_MAX_PENDING_LINES = 5000;
+const TERMINAL_LOG_MAX_LINE_LENGTH = 8000;
 
 /** Agent 会话元数据（内存中跟踪） */
 interface AgentSessionMeta {
@@ -70,13 +77,31 @@ export interface CreateAgentSessionOpts {
 }
 
 /** 流水线步骤 */
-interface PipelineStep {
+interface PipelineStepNode {
   taskId: string;
+  /** 节点标题（用于 UI 展示） */
   title: string;
+  /** 节点提示词 */
   prompt: string;
-  /** 该步骤使用的 Agent（可覆盖流水线默认值） */
+  /** 节点 Agent（可选，回退到步骤/流水线默认） */
   agentDefinitionId?: string;
   sessionId?: string;
+  status: 'draft' | 'running' | 'completed' | 'failed' | 'cancelled';
+}
+
+/** 流水线步骤（步骤内允许多个并行节点） */
+interface PipelineStep {
+  stepId: string;
+  title: string;
+  prompt: string;
+  /** 步骤默认 Agent（可覆盖流水线默认值） */
+  agentDefinitionId?: string;
+  /** 从上一步读取的输入文件（相对 .conversations/stepN） */
+  inputFiles?: string[];
+  /** 输入条件描述 */
+  inputCondition?: string;
+  /** 步骤内并行节点 */
+  nodes: PipelineStepNode[];
   status: 'draft' | 'running' | 'completed' | 'failed' | 'cancelled';
 }
 
@@ -105,6 +130,16 @@ export interface PipelineStepCompletedEvent {
   sessionId?: string;
 }
 
+interface TerminalLogPersistState {
+  taskId: string;
+  tapId: string;
+  timer: ReturnType<typeof setInterval>;
+  pendingLines: string[];
+  partialLine: string;
+  droppedLines: number;
+  flushInFlight: boolean;
+}
+
 class AgentSessionManager {
   /** sessionId → AgentSessionMeta */
   private sessions: Map<string, AgentSessionMeta> = new Map();
@@ -117,6 +152,9 @@ class AgentSessionManager {
 
   /** pipelineId:stepIndex → cleanup 函数（hook 注入的清理回调） */
   private hookCleanups: Map<string, () => Promise<void>> = new Map();
+
+  /** sessionId → terminal 任务日志持久化状态 */
+  private terminalLogPersisters: Map<string, TerminalLogPersistState> = new Map();
 
   /** 创建 Agent 会话 */
   async createAgentSession(
@@ -246,11 +284,16 @@ class AgentSessionManager {
       }
     }
 
+    if (meta.taskId) {
+      this.startTerminalTaskLogPersistence(sessionId, meta.taskId);
+    }
+
     return { ...meta, sessionId, shell };
   }
 
   /** 处理 Agent PTY 退出 */
   handleAgentExit(sessionId: string, exitCode: number): void {
+    this.stopTerminalTaskLogPersistence(sessionId);
     const meta = this.sessions.get(sessionId);
     if (!meta || meta.status !== 'running') return;
 
@@ -395,6 +438,7 @@ class AgentSessionManager {
   cleanupFinished(): void {
     for (const [id, meta] of this.sessions) {
       if (meta.status !== 'running' && !ptyManager.has(id)) {
+        this.stopTerminalTaskLogPersistence(id);
         this.sessions.delete(id);
       }
     }
@@ -461,18 +505,60 @@ class AgentSessionManager {
       baseBranch?: string;
       cols: number;
       rows: number;
-      steps: Array<{ title: string; prompt: string; agentDefinitionId?: string }>;
+      steps: Array<{
+        title: string;
+        prompt: string;
+        agentDefinitionId?: string;
+        inputFiles?: string[];
+        inputCondition?: string;
+        parallelAgents?: Array<{ title?: string; prompt: string; agentDefinitionId?: string }>;
+      }>;
     },
     user: { id: string; username: string },
-  ): Promise<{ pipeline: TerminalPipeline; firstSessionMeta: AgentSessionMeta & { shell: string } }> {
+  ): Promise<{ pipeline: TerminalPipeline; startedSessionMetas: Array<AgentSessionMeta & { shell: string }> }> {
     if (opts.steps.length < 2) {
       throw new Error('流水线至少需要 2 个步骤');
     }
 
+    const normalizedSteps: PipelineStep[] = opts.steps.map((step, stepIndex) => {
+      const inputFiles = Array.isArray(step.inputFiles)
+        ? Array.from(new Set(step.inputFiles.map((file) => file.trim()).filter(Boolean)))
+        : undefined;
+      const inputCondition = step.inputCondition?.trim() || undefined;
+      const parallelNodes = step.parallelAgents && step.parallelAgents.length > 0
+        ? step.parallelAgents
+        : [{ title: step.title, prompt: step.prompt, agentDefinitionId: step.agentDefinitionId }];
+
+      const nodes: PipelineStepNode[] = parallelNodes.map((node, nodeIndex) => {
+        const nodeTitle = node.title?.trim()
+          || (parallelNodes.length > 1 ? `${step.title}#${nodeIndex + 1}` : step.title);
+        return {
+          taskId: crypto.randomUUID(),
+          title: nodeTitle,
+          prompt: node.prompt,
+          agentDefinitionId: node.agentDefinitionId || step.agentDefinitionId || undefined,
+          status: stepIndex === 0 ? 'running' : 'draft',
+        };
+      });
+
+      return {
+        stepId: `step-${stepIndex + 1}`,
+        title: step.title,
+        prompt: step.prompt,
+        agentDefinitionId: step.agentDefinitionId || undefined,
+        ...(inputFiles && inputFiles.length > 0 ? { inputFiles } : {}),
+        ...(inputCondition ? { inputCondition } : {}),
+        nodes,
+        status: stepIndex === 0 ? 'running' : 'draft',
+      };
+    });
+
     // 收集所有涉及的 Agent ID（去重）
     const allAgentIds = new Set<string>();
-    for (const step of opts.steps) {
-      allAgentIds.add(step.agentDefinitionId || opts.agentDefinitionId);
+    for (const step of normalizedSteps) {
+      for (const node of step.nodes) {
+        allAgentIds.add(node.agentDefinitionId || step.agentDefinitionId || opts.agentDefinitionId);
+      }
     }
 
     // 批量查询所有 Agent 定义并缓存
@@ -495,39 +581,33 @@ class AgentSessionManager {
     const pipelineId = `pipeline/terminal-${crypto.randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
 
-    // 为所有步骤创建任务记录
-    const steps: PipelineStep[] = opts.steps.map((s, i) => ({
-      taskId: crypto.randomUUID(),
-      title: s.title,
-      prompt: s.prompt,
-      agentDefinitionId: s.agentDefinitionId || undefined,
-      status: i === 0 ? 'running' as const : 'draft' as const,
-    }));
-
-    // 批量 INSERT 任务
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const stepAgentId = step.agentDefinitionId || opts.agentDefinitionId;
-      await db.insert(tasks).values({
-        id: step.taskId,
-        title: `[流水线 ${i + 1}/${steps.length}] ${step.title}`,
-        description: step.prompt,
-        agentDefinitionId: stepAgentId,
-        repoUrl: opts.repoUrl || '',
-        baseBranch: opts.baseBranch || '',
-        workBranch: '',
-        workDir: repoPath,
-        status: i === 0 ? 'running' : 'draft',
-        source: 'terminal',
-        groupId: pipelineId,
-        createdAt: now,
-        startedAt: i === 0 ? now : null,
-        maxRetries: 0,
-      });
+    // 批量 INSERT 任务（步骤内每个并行节点一条记录）
+    for (let stepIndex = 0; stepIndex < normalizedSteps.length; stepIndex++) {
+      const step = normalizedSteps[stepIndex];
+      for (let nodeIndex = 0; nodeIndex < step.nodes.length; nodeIndex++) {
+        const node = step.nodes[nodeIndex];
+        const nodeAgentId = node.agentDefinitionId || step.agentDefinitionId || opts.agentDefinitionId;
+        const nodeTitle = step.nodes.length > 1
+          ? `[流水线 ${stepIndex + 1}/${normalizedSteps.length}] ${step.title} · 并行 ${nodeIndex + 1}/${step.nodes.length}`
+          : `[流水线 ${stepIndex + 1}/${normalizedSteps.length}] ${step.title}`;
+        await db.insert(tasks).values({
+          id: node.taskId,
+          title: nodeTitle,
+          description: node.prompt,
+          agentDefinitionId: nodeAgentId,
+          repoUrl: opts.repoUrl || '',
+          baseBranch: opts.baseBranch || '',
+          workBranch: '',
+          workDir: repoPath,
+          status: stepIndex === 0 ? 'running' : 'draft',
+          source: 'terminal',
+          groupId: pipelineId,
+          createdAt: now,
+          startedAt: stepIndex === 0 ? now : null,
+          maxRetries: 0,
+        });
+      }
     }
-
-    // 第一步使用的 Agent
-    const firstStepAgentId = steps[0].agentDefinitionId || opts.agentDefinitionId;
 
     // 创建流水线状态
     const pipeline: TerminalPipeline = {
@@ -541,40 +621,19 @@ class AgentSessionManager {
       baseBranch: opts.baseBranch,
       cols: opts.cols,
       rows: opts.rows,
-      steps,
+      steps: normalizedSteps,
       currentStepIndex: 0,
       status: 'running',
     };
     this.pipelines.set(pipelineId, pipeline);
 
-    // 启动第一步（跳过任务自动创建）
-    // Claude Code：注入 Stop hook，使用交互模式；其他 Agent：使用 autoExit
-    const firstStepHooked = await this.injectStepHook(
-      firstStepAgentId, repoPath, pipelineId, steps[0].taskId, 0,
-    );
-
-    const firstSessionMeta = await this.createAgentSession(
-      {
-        agentDefinitionId: firstStepAgentId,
-        prompt: steps[0].prompt,
-        repoUrl: opts.repoUrl,
-        baseBranch: opts.baseBranch,
-        workDir: opts.workDir,
-        cols: opts.cols,
-        rows: opts.rows,
-        autoExit: !firstStepHooked,
-        _pipelineTaskId: steps[0].taskId,
-        _pipelineId: pipelineId,
-      },
-      user,
-    );
-
-    steps[0].sessionId = firstSessionMeta.sessionId;
+    // 启动第一步（支持步骤内并行节点）
+    const startedSessionMetas = await this.startPipelineStepNodes(pipeline, 0, user);
 
     const agentNames = [...allAgentIds].map((id) => agentCache.get(id)!.displayName);
-    console.log(`[Pipeline] 已创建流水线: ${pipelineId} (${steps.length} 步, agents=[${agentNames.join(', ')}])`);
+    console.log(`[Pipeline] 已创建流水线: ${pipelineId} (${normalizedSteps.length} 步, agents=[${agentNames.join(', ')}])`);
 
-    return { pipeline, firstSessionMeta };
+    return { pipeline, startedSessionMetas };
   }
 
   /**
@@ -584,7 +643,7 @@ class AgentSessionManager {
   async advancePipeline(
     pipelineId: string,
     user: { id: string; username: string },
-  ): Promise<(AgentSessionMeta & { shell: string }) | null> {
+  ): Promise<Array<AgentSessionMeta & { shell: string }> | null> {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline || pipeline.status !== 'running') return null;
 
@@ -600,39 +659,12 @@ class AgentSessionManager {
       return null;
     }
 
-    // 启动下一步（使用步骤级 Agent 或流水线默认 Agent）
-    const nextStep = pipeline.steps[nextIndex];
-    pipeline.currentStepIndex = nextIndex;
-    nextStep.status = 'running';
-
-    const nextAgentId = nextStep.agentDefinitionId || pipeline.agentDefinitionId;
-
-    // 注入 hook（Claude Code 使用交互模式，其他 Agent 使用 autoExit）
-    const nextStepHooked = await this.injectStepHook(
-      nextAgentId, pipeline.repoPath, pipelineId, nextStep.taskId, nextIndex,
-    );
-
-    const sessionMeta = await this.createAgentSession(
-      {
-        agentDefinitionId: nextAgentId,
-        prompt: nextStep.prompt,
-        repoUrl: pipeline.repoUrl,
-        baseBranch: pipeline.baseBranch,
-        workDir: pipeline.workDir || pipeline.repoPath,
-        cols: pipeline.cols,
-        rows: pipeline.rows,
-        autoExit: !nextStepHooked,
-        _pipelineTaskId: nextStep.taskId,
-        _pipelineId: pipelineId,
-      },
-      user,
-    );
-
-    nextStep.sessionId = sessionMeta.sessionId;
+    // 启动下一步（步骤内并行）
+    const startedSessionMetas = await this.startPipelineStepNodes(pipeline, nextIndex, user);
 
     console.log(`[Pipeline] 推进到步骤 ${nextIndex + 1}/${pipeline.steps.length}: ${pipelineId}`);
 
-    return sessionMeta;
+    return startedSessionMetas;
   }
 
   /** 标记流水线当前步骤完成（由 handleAgentExit 或 hook 回调调用） */
@@ -640,37 +672,73 @@ class AgentSessionManager {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline) return;
 
-    const step = pipeline.steps.find((s) => s.sessionId === sessionId);
-    if (!step) return;
+    const stepIndex = pipeline.steps.findIndex((step) => step.nodes.some((node) => node.sessionId === sessionId));
+    if (stepIndex < 0) return;
+    const step = pipeline.steps[stepIndex];
+    const nodeIndex = step.nodes.findIndex((node) => node.sessionId === sessionId);
+    if (nodeIndex < 0) return;
+    const node = step.nodes[nodeIndex];
 
     // 幂等防护：防止 hook 回调和 onExit 竞争重复处理
-    if (step.status === 'completed' || step.status === 'failed' || step.status === 'cancelled') return;
+    if (node.status === 'completed' || node.status === 'failed' || node.status === 'cancelled') return;
 
-    step.status = success ? 'completed' : 'failed';
+    node.status = success ? 'completed' : 'failed';
 
-    // 清理该步骤的 hook
-    const cleanupKey = `${pipelineId}:${pipeline.steps.indexOf(step)}`;
+    // 清理该节点 hook
+    const cleanupKey = `${pipelineId}:${stepIndex}:${nodeIndex}`;
     const cleanup = this.hookCleanups.get(cleanupKey);
     if (cleanup) {
       cleanup().catch(() => {});
       this.hookCleanups.delete(cleanupKey);
     }
 
-    // 步骤失败 → 流水线失败（不自动推进）
+    // 节点失败：当前步骤失败，流水线失败
     if (!success) {
+      step.status = 'failed';
       pipeline.status = 'failed';
-      // 将剩余 draft 步骤标为 cancelled
-      for (const s of pipeline.steps) {
-        if (s.status === 'draft') {
-          s.status = 'cancelled';
+      const now = new Date().toISOString();
+
+      // 同步骤仍在运行的并行节点全部取消
+      for (const runningNode of step.nodes) {
+        if (runningNode.status === 'running' && runningNode.sessionId && runningNode.sessionId !== sessionId) {
+          this.cancelAgentSession(runningNode.sessionId);
+          runningNode.status = 'cancelled';
           db.update(tasks)
-            .set({ status: 'cancelled', completedAt: new Date().toISOString() })
-            .where(eq(tasks.id, s.taskId))
+            .set({ status: 'cancelled', completedAt: now })
+            .where(eq(tasks.id, runningNode.taskId))
             .catch(() => {});
         }
       }
-      console.log(`[Pipeline] 步骤失败，流水线终止: ${pipelineId}`);
+
+      // 后续 draft 步骤全部取消
+      for (let i = stepIndex + 1; i < pipeline.steps.length; i++) {
+        const nextStep = pipeline.steps[i];
+        if (nextStep.status === 'draft') {
+          nextStep.status = 'cancelled';
+        }
+        for (const nextNode of nextStep.nodes) {
+          if (nextNode.status === 'draft') {
+            nextNode.status = 'cancelled';
+            db.update(tasks)
+              .set({ status: 'cancelled', completedAt: now })
+              .where(eq(tasks.id, nextNode.taskId))
+              .catch(() => {});
+          }
+        }
+      }
+
+      console.log(`[Pipeline] 节点失败，流水线终止: ${pipelineId} (step=${stepIndex + 1})`);
+      return;
     }
+
+    const allCompleted = step.nodes.every((n) => n.status === 'completed');
+    if (allCompleted) {
+      step.status = 'completed';
+      return;
+    }
+
+    // 仍有并行节点运行中
+    step.status = 'running';
   }
 
   /** 取消流水线 */
@@ -683,24 +751,34 @@ class AgentSessionManager {
 
     // 取消当前运行的 Agent 会话
     const currentStep = pipeline.steps[pipeline.currentStepIndex];
-    if (currentStep?.sessionId && currentStep.status === 'running') {
-      this.cancelAgentSession(currentStep.sessionId);
+    if (currentStep && currentStep.status === 'running') {
       currentStep.status = 'cancelled';
+      for (const node of currentStep.nodes) {
+        if (node.status === 'running' && node.sessionId) {
+          this.cancelAgentSession(node.sessionId);
+          node.status = 'cancelled';
+        }
+      }
     }
 
-    // 将所有 draft 步骤标为 cancelled
+    // 将所有 draft 步骤/节点标为 cancelled
     for (const step of pipeline.steps) {
       if (step.status === 'draft') {
         step.status = 'cancelled';
-        db.update(tasks)
-          .set({ status: 'cancelled', completedAt: now })
-          .where(eq(tasks.id, step.taskId))
-          .catch(() => {});
+      }
+      for (const node of step.nodes) {
+        if (node.status === 'draft') {
+          node.status = 'cancelled';
+          db.update(tasks)
+            .set({ status: 'cancelled', completedAt: now })
+            .where(eq(tasks.id, node.taskId))
+            .catch(() => {});
+        }
       }
     }
 
     // 清理所有 hook
-    this.cleanupPipelineHooks(pipelineId, pipeline.steps.length);
+    this.cleanupPipelineHooks(pipelineId);
 
     // 清理所有关联的回调令牌
     for (const [token, info] of this.callbackTokens) {
@@ -733,7 +811,7 @@ class AgentSessionManager {
   async resumePipeline(
     pipelineId: string,
     user: { id: string; username: string },
-  ): Promise<{ advanced: boolean; sessionMeta?: AgentSessionMeta & { shell: string } }> {
+  ): Promise<{ advanced: boolean; sessionMetas?: Array<AgentSessionMeta & { shell: string }> }> {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline || pipeline.status !== 'paused') {
       return { advanced: false };
@@ -751,10 +829,10 @@ class AgentSessionManager {
 
     // 当前步骤已完成 → 立即推进到下一步
     if (currentStep && currentStep.status === 'completed') {
-      const nextMeta = await this.advancePipeline(pipelineId, user);
-      if (nextMeta) {
+      const nextMetas = await this.advancePipeline(pipelineId, user);
+      if (nextMetas && nextMetas.length > 0) {
         console.log(`[Pipeline] 已恢复并推进流水线: ${pipelineId}`);
-        return { advanced: true, sessionMeta: nextMeta };
+        return { advanced: true, sessionMetas: nextMetas };
       }
       // 没有下一步 → 流水线完成
       console.log(`[Pipeline] 恢复时发现已是最后一步，流水线完成: ${pipelineId}`);
@@ -783,24 +861,26 @@ class AgentSessionManager {
     const pipeline = this.pipelines.get(pipelineId);
     if (!pipeline) return false;
 
-    // 按 taskId 查找步骤
-    const step = pipeline.steps.find((s) => s.taskId === taskId);
-    if (!step || step.status !== 'running') return false;
+    // 按 taskId 查找步骤与节点
+    const stepIndex = pipeline.steps.findIndex((s) => s.nodes.some((node) => node.taskId === taskId));
+    if (stepIndex < 0) return false;
+    const step = pipeline.steps[stepIndex];
+    const nodeIndex = step.nodes.findIndex((node) => node.taskId === taskId);
+    if (nodeIndex < 0) return false;
+    const node = step.nodes[nodeIndex];
+    if (node.status !== 'running') return false;
 
-    // 标记步骤完成
-    step.status = 'completed';
+    // 标记节点完成
+    node.status = 'completed';
 
     // 更新 tasks 表
-    if (step.taskId) {
-      db.update(tasks)
-        .set({ status: 'completed', completedAt: new Date().toISOString() })
-        .where(eq(tasks.id, step.taskId))
-        .catch((err) => console.warn(`[Pipeline] hook 回调更新任务失败: ${(err as Error).message}`));
-    }
+    db.update(tasks)
+      .set({ status: 'completed', completedAt: new Date().toISOString() })
+      .where(eq(tasks.id, node.taskId))
+      .catch((err) => console.warn(`[Pipeline] hook 回调更新任务失败: ${(err as Error).message}`));
 
-    // 清理该步骤的 hook
-    const stepIndex = pipeline.steps.indexOf(step);
-    const cleanupKey = `${pipelineId}:${stepIndex}`;
+    // 清理该节点 hook
+    const cleanupKey = `${pipelineId}:${stepIndex}:${nodeIndex}`;
     const cleanup = this.hookCleanups.get(cleanupKey);
     if (cleanup) {
       cleanup().catch(() => {});
@@ -808,10 +888,17 @@ class AgentSessionManager {
     }
 
     // 终止 Agent PTY（交互模式下 Claude 仍在运行）
-    if (step.sessionId) {
-      this.terminateAgentSession(step.sessionId);
+    if (node.sessionId) {
+      this.terminateAgentSession(node.sessionId);
     }
 
+    const stepCompleted = step.nodes.every((n) => n.status === 'completed');
+    if (!stepCompleted) {
+      step.status = 'running';
+      return true;
+    }
+
+    step.status = 'completed';
     console.log(`[Pipeline] Hook 回调: 步骤 ${stepIndex + 1} 完成 (pipeline=${pipelineId})`);
 
     // 发射事件，WS handler 订阅后推进流水线
@@ -819,7 +906,7 @@ class AgentSessionManager {
       pipelineId,
       taskId,
       userId: pipeline.userId,
-      sessionId: step.sessionId,
+      sessionId: node.sessionId,
     };
     this.events.emit('pipeline-step-completed', event);
 
@@ -869,6 +956,289 @@ class AgentSessionManager {
 
   // ---- 内部方法 ----
 
+  /** 启动指定步骤的所有并行节点 */
+  private async startPipelineStepNodes(
+    pipeline: TerminalPipeline,
+    stepIndex: number,
+    user: { id: string; username: string },
+  ): Promise<Array<AgentSessionMeta & { shell: string }>> {
+    const step = pipeline.steps[stepIndex];
+    if (!step) return [];
+
+    pipeline.currentStepIndex = stepIndex;
+    step.status = 'running';
+
+    const stepDir = path.join(pipeline.repoPath, '.conversations', `step${stepIndex + 1}`);
+    const prevStepDir = stepIndex > 0
+      ? path.join(pipeline.repoPath, '.conversations', `step${stepIndex}`)
+      : null;
+
+    try {
+      await mkdir(stepDir, { recursive: true });
+      await writeFile(
+        path.join(stepDir, 'workspace.json'),
+        JSON.stringify({
+          pipelineId: pipeline.pipelineId,
+          stepIndex,
+          stepTitle: step.title,
+          stepPrompt: step.prompt,
+          inputFiles: step.inputFiles ?? [],
+          inputCondition: step.inputCondition ?? null,
+          previousStepDir: prevStepDir ? path.relative(pipeline.repoPath, prevStepDir) : null,
+          generatedAt: new Date().toISOString(),
+        }, null, 2),
+        'utf-8',
+      );
+    } catch (err) {
+      console.warn(`[Pipeline] 初始化步骤目录失败(step=${stepIndex + 1}): ${(err as Error).message}`);
+    }
+
+    const started: Array<AgentSessionMeta & { shell: string }> = [];
+    for (let nodeIndex = 0; nodeIndex < step.nodes.length; nodeIndex++) {
+      const node = step.nodes[nodeIndex];
+      const nodeAgentId = node.agentDefinitionId || step.agentDefinitionId || pipeline.agentDefinitionId;
+      const renderedPrompt = this.buildPipelineNodePrompt({
+        pipeline,
+        step,
+        node,
+        stepIndex,
+        nodeIndex,
+        stepDir,
+        prevStepDir,
+      });
+
+      // Claude Code：注入 Stop hook，使用交互模式；其他 Agent：使用 autoExit
+      const nodeHooked = await this.injectStepHook(
+        nodeAgentId,
+        pipeline.repoPath,
+        pipeline.pipelineId,
+        node.taskId,
+        stepIndex,
+        nodeIndex,
+      );
+
+      const sessionMeta = await this.createAgentSession(
+        {
+          agentDefinitionId: nodeAgentId,
+          prompt: renderedPrompt,
+          repoUrl: pipeline.repoUrl,
+          baseBranch: pipeline.baseBranch,
+          workDir: pipeline.workDir || pipeline.repoPath,
+          cols: pipeline.cols,
+          rows: pipeline.rows,
+          autoExit: !nodeHooked,
+          _pipelineTaskId: node.taskId,
+          _pipelineId: pipeline.pipelineId,
+        },
+        user,
+      );
+
+      node.sessionId = sessionMeta.sessionId;
+      node.status = 'running';
+      started.push(sessionMeta);
+
+      try {
+        await writeFile(path.join(stepDir, `agent-${nodeIndex + 1}-task.md`), renderedPrompt, 'utf-8');
+      } catch (err) {
+        console.warn(`[Pipeline] 写入并行节点任务文件失败(step=${stepIndex + 1}, node=${nodeIndex + 1}): ${(err as Error).message}`);
+      }
+    }
+
+    return started;
+  }
+
+  private buildPipelineNodePrompt(input: {
+    pipeline: TerminalPipeline;
+    step: PipelineStep;
+    node: PipelineStepNode;
+    stepIndex: number;
+    nodeIndex: number;
+    stepDir: string;
+    prevStepDir: string | null;
+  }): string {
+    const stepDirRelative = path.relative(input.pipeline.repoPath, input.stepDir) || '.';
+    const prevStepDirRelative = input.prevStepDir
+      ? path.relative(input.pipeline.repoPath, input.prevStepDir)
+      : null;
+    const nodeOutputRelative = path.join(stepDirRelative, `agent-${input.nodeIndex + 1}-output.md`);
+    const stepSummaryRelative = path.join(stepDirRelative, 'summary.md');
+    const lines: string[] = [];
+    lines.push(input.node.prompt.trim());
+    lines.push('');
+    lines.push('## 流水线协作约束（必须遵守）');
+    lines.push(`- 流水线 ID: ${input.pipeline.pipelineId}`);
+    lines.push(`- 当前步骤: ${input.stepIndex + 1}/${input.pipeline.steps.length} (${input.step.title})`);
+    lines.push(`- 当前并行子任务: ${input.nodeIndex + 1}/${input.step.nodes.length} (${input.node.title})`);
+    lines.push(`- 本步骤协作目录: ${stepDirRelative}`);
+    if (prevStepDirRelative) {
+      lines.push(`- 上一步输出目录: ${prevStepDirRelative}`);
+    } else {
+      lines.push('- 当前为第一步，没有上一步输出');
+    }
+    if (input.step.inputCondition) {
+      lines.push(`- 输入条件: ${input.step.inputCondition}`);
+    }
+    if (input.step.inputFiles && input.step.inputFiles.length > 0) {
+      lines.push(`- 优先输入文件: ${input.step.inputFiles.join(', ')}`);
+    } else if (prevStepDirRelative) {
+      lines.push(`- 默认输入建议: ${path.join(prevStepDirRelative, 'summary.md')}`);
+    }
+    lines.push(`- 请将本子任务输出写入: ${nodeOutputRelative}`);
+    lines.push(`- 并维护步骤汇总文件: ${stepSummaryRelative}`);
+    lines.push('- 步骤内 Agent 通过共享目录文件协作，不要仅在终端输出。');
+
+    if (input.step.nodes.length > 1) {
+      lines.push('');
+      lines.push('## 步骤共享目标');
+      lines.push(input.step.prompt.trim());
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * 启动 terminal 任务日志持久化：
+   * - 使用 pty data tap 捕获输出（与 WebSocket attach/detach 解耦）
+   * - 按行缓冲并定时批量落库，避免逐字符写 DB
+   */
+  private startTerminalTaskLogPersistence(sessionId: string, taskId: string): void {
+    // 幂等防护：重复启动时先清理旧状态
+    this.stopTerminalTaskLogPersistence(sessionId);
+
+    const timer = setInterval(() => {
+      void this.flushTerminalTaskLogs(sessionId);
+    }, TERMINAL_LOG_FLUSH_INTERVAL_MS);
+
+    const state: TerminalLogPersistState = {
+      taskId,
+      tapId: '',
+      timer,
+      pendingLines: [],
+      partialLine: '',
+      droppedLines: 0,
+      flushInFlight: false,
+    };
+    this.terminalLogPersisters.set(sessionId, state);
+
+    const tapId = ptyManager.addDataTap(sessionId, (chunk) => {
+      this.enqueueTerminalTaskLogChunk(sessionId, chunk);
+    });
+
+    if (!tapId) {
+      clearInterval(timer);
+      this.terminalLogPersisters.delete(sessionId);
+      console.warn(`[AgentSession] 无法为会话绑定日志持久化: ${sessionId}`);
+      return;
+    }
+
+    state.tapId = tapId;
+  }
+
+  /** 写入 PTY chunk 到行缓冲，处理分片行与 CRLF */
+  private enqueueTerminalTaskLogChunk(sessionId: string, chunk: string): void {
+    const state = this.terminalLogPersisters.get(sessionId);
+    if (!state) return;
+
+    const normalizedChunk = chunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const merged = state.partialLine + normalizedChunk;
+    const lines = merged.split('\n');
+    state.partialLine = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line) continue;
+      this.enqueueTerminalTaskLogLine(state, line);
+    }
+  }
+
+  /** 停止并清理 terminal 日志持久化，退出时强制 flush 一次 */
+  private stopTerminalTaskLogPersistence(sessionId: string): void {
+    const state = this.terminalLogPersisters.get(sessionId);
+    if (!state) return;
+
+    clearInterval(state.timer);
+    ptyManager.removeDataTap(sessionId, state.tapId);
+    this.terminalLogPersisters.delete(sessionId);
+    if (state.flushInFlight) {
+      const waitAndFlush = (): void => {
+        if (state.flushInFlight) {
+          setTimeout(waitAndFlush, 50);
+          return;
+        }
+        void this.flushTerminalTaskLogsForState(state, true);
+      };
+      waitAndFlush();
+      return;
+    }
+    void this.flushTerminalTaskLogsForState(state, true);
+  }
+
+  private enqueueTerminalTaskLogLine(state: TerminalLogPersistState, line: string): void {
+    const normalizedLine = line.length > TERMINAL_LOG_MAX_LINE_LENGTH
+      ? line.slice(0, TERMINAL_LOG_MAX_LINE_LENGTH)
+      : line;
+    state.pendingLines.push(normalizedLine);
+
+    if (state.pendingLines.length > TERMINAL_LOG_MAX_PENDING_LINES) {
+      const overflow = state.pendingLines.length - TERMINAL_LOG_MAX_PENDING_LINES;
+      state.pendingLines.splice(0, overflow);
+      state.droppedLines += overflow;
+    }
+  }
+
+  private async flushTerminalTaskLogs(sessionId: string, force = false): Promise<void> {
+    const state = this.terminalLogPersisters.get(sessionId);
+    if (!state) return;
+    await this.flushTerminalTaskLogsForState(state, force);
+  }
+
+  private async flushTerminalTaskLogsForState(state: TerminalLogPersistState, force: boolean): Promise<void> {
+    if (state.flushInFlight) return;
+
+    if (force && state.partialLine) {
+      this.enqueueTerminalTaskLogLine(state, state.partialLine);
+      state.partialLine = '';
+    }
+
+    if (state.pendingLines.length === 0) {
+      if (state.droppedLines > 0) {
+        console.warn(
+          `[AgentSession] 警告: terminal 日志队列达到上限，已丢弃 ${state.droppedLines} 行旧日志(task=${state.taskId.slice(0, 8)})`
+        );
+        state.droppedLines = 0;
+      }
+      return;
+    }
+
+    state.flushInFlight = true;
+    try {
+      while (state.pendingLines.length > 0) {
+        const batchSize = Math.min(TERMINAL_LOG_BATCH_SIZE, state.pendingLines.length);
+        const batch = state.pendingLines.slice(0, batchSize);
+        const createdAt = new Date().toISOString();
+        await db.insert(taskLogs).values(
+          batch.map((line) => ({
+            taskId: state.taskId,
+            line,
+            createdAt,
+          }))
+        );
+        state.pendingLines = state.pendingLines.slice(batchSize);
+        if (!force) break;
+      }
+
+      if (state.droppedLines > 0) {
+        console.warn(
+          `[AgentSession] 警告: terminal 日志队列达到上限，已丢弃 ${state.droppedLines} 行旧日志(task=${state.taskId.slice(0, 8)})`
+        );
+        state.droppedLines = 0;
+      }
+    } catch (err) {
+      console.warn(`[AgentSession] terminal 日志持久化失败: ${(err as Error).message}`);
+    } finally {
+      state.flushInFlight = false;
+    }
+  }
+
   /**
    * 为流水线步骤注入完成检测 hook
    * 返回 true 表示注入成功（使用交互模式），false 表示回退到 autoExit
@@ -879,6 +1249,7 @@ class AgentSessionManager {
     pipelineId: string,
     taskId: string,
     stepIndex: number,
+    nodeIndex: number,
   ): Promise<boolean> {
     const callbackToken = crypto.randomUUID();
     const serverPort = parseInt(process.env.PORT || '3000', 10);
@@ -897,8 +1268,8 @@ class AgentSessionManager {
         // 注册回调令牌
         this.callbackTokens.set(callbackToken, { pipelineId, taskId });
         // 保存清理函数
-        this.hookCleanups.set(`${pipelineId}:${stepIndex}`, result.cleanup);
-        console.log(`[Pipeline] 已注入 hook: 步骤 ${stepIndex + 1} (agent=${agentDefinitionId})`);
+        this.hookCleanups.set(`${pipelineId}:${stepIndex}:${nodeIndex}`, result.cleanup);
+        console.log(`[Pipeline] 已注入 hook: 步骤 ${stepIndex + 1} / 节点 ${nodeIndex + 1} (agent=${agentDefinitionId})`);
         return true;
       }
     } catch (err) {
@@ -908,15 +1279,12 @@ class AgentSessionManager {
     return false;
   }
 
-  /** 批量清理流水线所有步骤的 hook */
-  private cleanupPipelineHooks(pipelineId: string, stepCount: number): void {
-    for (let i = 0; i < stepCount; i++) {
-      const key = `${pipelineId}:${i}`;
-      const cleanup = this.hookCleanups.get(key);
-      if (cleanup) {
-        cleanup().catch(() => {});
-        this.hookCleanups.delete(key);
-      }
+  /** 批量清理流水线所有步骤/节点 hook */
+  private cleanupPipelineHooks(pipelineId: string): void {
+    for (const [key, cleanup] of Array.from(this.hookCleanups.entries())) {
+      if (!key.startsWith(`${pipelineId}:`)) continue;
+      cleanup().catch(() => {});
+      this.hookCleanups.delete(key);
     }
   }
 

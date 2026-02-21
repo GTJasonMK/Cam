@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { Plus_Jakarta_Sans, Noto_Sans_SC } from 'next/font/google';
 import './globals.css';
 import { Sidebar } from '@/components/layout/sidebar';
 import { RouteTransition } from '@/components/layout/route-transition';
@@ -9,7 +9,17 @@ import { AuthProvider } from '@/components/providers/auth-provider';
 import { SSEListener } from '@/components/providers/sse-provider';
 import { LazyToaster } from '@/components/providers/lazy-toaster';
 
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+const plusJakartaSans = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  variable: '--font-heading',
+  display: 'swap',
+});
+
+const notoSansSc = Noto_Sans_SC({
+  subsets: ['latin'],
+  variable: '--font-body',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'CodingAgentsManager',
@@ -18,7 +28,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" className={inter.variable}>
+    <html lang="zh-CN" className={`${plusJakartaSans.variable} ${notoSansSc.variable}`}>
       <body className="relative min-h-screen overflow-hidden antialiased">
         <div className="ambient-blobs" aria-hidden="true">
           <div className="ambient-blob ambient-blob-primary" />

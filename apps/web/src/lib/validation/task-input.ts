@@ -105,7 +105,14 @@ export type CreatePipelinePayload = {
   workDir: string | null;
   maxRetries: number;
   groupId: string | null;
-  steps: Array<{ title: string; description: string; agentDefinitionId?: string }>;
+  steps: Array<{
+    title: string;
+    description: string;
+    agentDefinitionId?: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+  }>;
 };
 
 export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePipelinePayload> {
@@ -129,7 +136,14 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
     };
   }
 
-  const steps: Array<{ title: string; description: string; agentDefinitionId?: string }> = [];
+  const steps: Array<{
+    title: string;
+    description: string;
+    agentDefinitionId?: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+  }> = [];
   for (const rawStep of input.steps) {
     if (!isPlainObject(rawStep)) {
       return {
@@ -147,21 +161,125 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
       };
     }
     const stepAgent = asTrimmedString(rawStep.agentDefinitionId);
-    steps.push({ title, description, ...(stepAgent ? { agentDefinitionId: stepAgent } : {}) });
+
+    let inputFiles: string[] | undefined;
+    if (Object.prototype.hasOwnProperty.call(rawStep, 'inputFiles')) {
+      const rawInputFiles = rawStep.inputFiles;
+      if (rawInputFiles !== undefined && rawInputFiles !== null) {
+        if (!Array.isArray(rawInputFiles)) {
+          return {
+            success: false,
+            errorMessage: 'steps[].inputFiles 必须是字符串数组',
+          };
+        }
+        const normalized = new Set<string>();
+        for (const rawFile of rawInputFiles) {
+          const filePath = asTrimmedString(rawFile);
+          if (!filePath) {
+            return {
+              success: false,
+              errorMessage: 'steps[].inputFiles 中存在非法路径',
+            };
+          }
+          normalized.add(filePath);
+        }
+        inputFiles = Array.from(normalized);
+      }
+    }
+
+    let inputCondition: string | undefined;
+    if (Object.prototype.hasOwnProperty.call(rawStep, 'inputCondition')) {
+      const rawInputCondition = rawStep.inputCondition;
+      if (rawInputCondition !== undefined && rawInputCondition !== null) {
+        const parsedInputCondition = asTrimmedString(rawInputCondition);
+        if (!parsedInputCondition) {
+          return {
+            success: false,
+            errorMessage: 'steps[].inputCondition 必须是非空字符串',
+          };
+        }
+        inputCondition = parsedInputCondition;
+      }
+    }
+
+    let parallelAgents: Array<{ title?: string; description: string; agentDefinitionId?: string }> | undefined;
+    if (Object.prototype.hasOwnProperty.call(rawStep, 'parallelAgents')) {
+      const rawParallelAgents = rawStep.parallelAgents;
+      if (rawParallelAgents !== undefined && rawParallelAgents !== null) {
+        if (!Array.isArray(rawParallelAgents)) {
+          return {
+            success: false,
+            errorMessage: 'steps[].parallelAgents 必须是数组',
+          };
+        }
+        const nodes: Array<{ title?: string; description: string; agentDefinitionId?: string }> = [];
+        for (const rawNode of rawParallelAgents) {
+          if (!isPlainObject(rawNode)) {
+            return {
+              success: false,
+              errorMessage: 'steps[].parallelAgents[] 必须是对象',
+            };
+          }
+          const nodeDescription = asTrimmedString(rawNode.description);
+          if (!nodeDescription) {
+            return {
+              success: false,
+              errorMessage: 'steps[].parallelAgents[] 缺少 description',
+            };
+          }
+          const nodeTitle = asTrimmedString(rawNode.title);
+          const nodeAgent = asTrimmedString(rawNode.agentDefinitionId);
+          nodes.push({
+            description: nodeDescription,
+            ...(nodeTitle ? { title: nodeTitle } : {}),
+            ...(nodeAgent ? { agentDefinitionId: nodeAgent } : {}),
+          });
+        }
+        parallelAgents = nodes.length > 0 ? nodes : undefined;
+      }
+    }
+
+    steps.push({
+      title,
+      description,
+      ...(stepAgent ? { agentDefinitionId: stepAgent } : {}),
+      ...(inputFiles && inputFiles.length > 0 ? { inputFiles } : {}),
+      ...(inputCondition ? { inputCondition } : {}),
+      ...(parallelAgents && parallelAgents.length > 0 ? { parallelAgents } : {}),
+    });
   }
 
-  // 每个步骤必须有 agent：要么步骤自带，要么有顶层默认
-  if (!agentDefinitionId && steps.some((s) => !s.agentDefinitionId)) {
+  // 每个可执行节点必须有 agent：节点级 > 步骤级 > 顶层默认
+  for (const step of steps) {
+    const stepDefaultAgent = step.agentDefinitionId || agentDefinitionId;
+    const nodes = step.parallelAgents && step.parallelAgents.length > 0
+      ? step.parallelAgents
+      : [{ description: step.description, agentDefinitionId: step.agentDefinitionId }];
+    for (const node of nodes) {
+      if (!node.agentDefinitionId && !stepDefaultAgent) {
+        return {
+          success: false,
+          errorMessage: '缺少 agentDefinitionId：每个步骤/并行子任务必须指定智能体，或设置顶层默认智能体',
+        };
+      }
+    }
+  }
+
+  const resolvedDefaultAgentId = agentDefinitionId
+    || steps.find((s) => s.agentDefinitionId)?.agentDefinitionId
+    || steps.flatMap((s) => s.parallelAgents ?? []).find((n) => n.agentDefinitionId)?.agentDefinitionId;
+
+  if (!resolvedDefaultAgentId) {
     return {
       success: false,
-      errorMessage: '缺少 agentDefinitionId：每个步骤必须指定智能体，或设置顶层默认智能体',
+      errorMessage: '缺少 agentDefinitionId：无法推断默认智能体',
     };
   }
 
   return {
     success: true,
     data: {
-      agentDefinitionId: agentDefinitionId || steps[0].agentDefinitionId!,
+      agentDefinitionId: resolvedDefaultAgentId,
       repositoryId: parseOptionalString(input.repositoryId),
       repoUrl,
       baseBranch: asTrimmedString(input.baseBranch) || 'main',

@@ -11,10 +11,10 @@ export type TerminalViewMode = 'terminal' | 'agent';
 
 /** 流水线步骤状态 */
 export interface TerminalPipelineStep {
-  taskId: string;
+  taskIds: string[];
   title: string;
   status: string;
-  sessionId?: string;
+  sessionIds?: string[];
 }
 
 /** 流水线状态 */
@@ -91,10 +91,16 @@ interface TerminalState {
   setAgentSessions: (sessions: AgentSessionInfo[]) => void;
   // 流水线相关
   addPipeline: (pipeline: TerminalPipelineState) => void;
-  updatePipelineStep: (pipelineId: string, stepIndex: number, status: string, sessionId?: string) => void;
+  updatePipelineStep: (
+    pipelineId: string,
+    stepIndex: number,
+    status: string,
+    sessionIds?: string[],
+    taskIds?: string[],
+  ) => void;
   completePipeline: (pipelineId: string, finalStatus: 'completed' | 'failed' | 'cancelled') => void;
   pausePipeline: (pipelineId: string) => void;
-  resumePipeline: (pipelineId: string) => void;
+  resumePipeline: (pipelineId: string, currentStep?: number, sessionIds?: string[]) => void;
 }
 
 let sessionCounter = 0;
@@ -235,12 +241,19 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }));
   },
 
-  updatePipelineStep: (pipelineId, stepIndex, status, sessionId) => {
+  updatePipelineStep: (pipelineId, stepIndex, status, sessionIds, taskIds) => {
     set((state) => ({
       pipelines: state.pipelines.map((p) => {
         if (p.pipelineId !== pipelineId) return p;
         const newSteps = p.steps.map((s, i) =>
-          i === stepIndex ? { ...s, status, sessionId: sessionId ?? s.sessionId } : s,
+          i === stepIndex
+            ? {
+                ...s,
+                status,
+                ...(taskIds ? { taskIds } : {}),
+                ...(sessionIds ? { sessionIds } : {}),
+              }
+            : s,
         );
         return {
           ...p,
@@ -267,10 +280,25 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }));
   },
 
-  resumePipeline: (pipelineId) => {
+  resumePipeline: (pipelineId, currentStep, sessionIds) => {
     set((state) => ({
       pipelines: state.pipelines.map((p) =>
-        p.pipelineId === pipelineId ? { ...p, status: 'running' as const } : p,
+        p.pipelineId === pipelineId
+          ? {
+              ...p,
+              status: 'running' as const,
+              ...(typeof currentStep === 'number' ? { currentStep } : {}),
+              steps: p.steps.map((step, index) =>
+                typeof currentStep === 'number' && index === currentStep
+                  ? {
+                      ...step,
+                      status: 'running',
+                      ...(sessionIds && sessionIds.length > 0 ? { sessionIds } : {}),
+                    }
+                  : step,
+              ),
+            }
+          : p,
       ),
     }));
   },

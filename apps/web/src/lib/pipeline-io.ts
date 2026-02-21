@@ -14,7 +14,14 @@ export interface PipelineExportData {
   baseBranch: string | null;
   workDir: string | null;
   maxRetries: number | null;
-  steps: Array<{ title: string; description: string; agentDefinitionId?: string }>;
+  steps: Array<{
+    title: string;
+    description: string;
+    agentDefinitionId?: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+  }>;
 }
 
 /** 导入时用于校验 Agent 引用的最小字段 */
@@ -30,7 +37,14 @@ interface TemplateInput {
   baseBranch?: string | null;
   workDir?: string | null;
   maxRetries?: number | null;
-  pipelineSteps?: Array<{ title: string; description: string; agentDefinitionId?: string }> | null;
+  pipelineSteps?: Array<{
+    title: string;
+    description: string;
+    agentDefinitionId?: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+  }> | null;
 }
 
 /** 从模板数据构造导出对象 */
@@ -49,6 +63,9 @@ export function buildExportData(template: TemplateInput): PipelineExportData {
       title: s.title,
       description: s.description,
       ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+      ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0 ? { inputFiles: s.inputFiles } : {}),
+      ...(s.inputCondition ? { inputCondition: s.inputCondition } : {}),
+      ...(Array.isArray(s.parallelAgents) && s.parallelAgents.length > 0 ? { parallelAgents: s.parallelAgents } : {}),
     })),
   };
 }
@@ -60,7 +77,14 @@ export function buildExportDataFromForm(form: {
   repoUrl: string;
   baseBranch: string;
   workDir: string;
-  steps: Array<{ title: string; prompt: string; agentDefinitionId: string }>;
+  steps: Array<{
+    title: string;
+    prompt: string;
+    agentDefinitionId: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; prompt: string; agentDefinitionId?: string }>;
+  }>;
 }): PipelineExportData {
   return {
     version: 1,
@@ -76,6 +100,24 @@ export function buildExportDataFromForm(form: {
       title: s.title.trim(),
       description: s.prompt.trim(),
       ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+      ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0
+        ? { inputFiles: s.inputFiles }
+        : {}),
+      ...(typeof s.inputCondition === 'string'
+        && s.inputCondition.trim().length > 0
+        ? { inputCondition: s.inputCondition.trim() }
+        : {}),
+      ...(Array.isArray(s.parallelAgents) && s.parallelAgents.length > 0
+        ? {
+            parallelAgents: s.parallelAgents
+              .map((node) => ({
+                ...(node.title ? { title: node.title.trim() } : {}),
+                description: node.prompt.trim(),
+                ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId.trim() } : {}),
+              }))
+              .filter((node) => node.description.length > 0),
+          }
+        : {}),
     })),
   };
 }
@@ -89,6 +131,10 @@ export function collectPipelineReferencedAgentIds(data: PipelineAgentRefSource):
   for (const step of data.steps) {
     const stepAgentId = step.agentDefinitionId?.trim();
     if (stepAgentId) ids.add(stepAgentId);
+    for (const node of step.parallelAgents ?? []) {
+      const nodeAgentId = node.agentDefinitionId?.trim();
+      if (nodeAgentId) ids.add(nodeAgentId);
+    }
   }
 
   return Array.from(ids);
@@ -192,6 +238,36 @@ export function parsePipelineImport(jsonString: string): ParseResult {
     if (typeof step.description !== 'string' || !step.description.trim()) {
       return { ok: false, error: `步骤 ${i + 1} 缺少有效的 description 字段` };
     }
+    if (step.inputCondition !== undefined && step.inputCondition !== null) {
+      if (typeof step.inputCondition !== 'string' || !step.inputCondition.trim()) {
+        return { ok: false, error: `步骤 ${i + 1} 的 inputCondition 必须是非空字符串` };
+      }
+    }
+    if (step.inputFiles !== undefined && step.inputFiles !== null) {
+      if (!Array.isArray(step.inputFiles)) {
+        return { ok: false, error: `步骤 ${i + 1} 的 inputFiles 必须是数组` };
+      }
+      for (let j = 0; j < step.inputFiles.length; j++) {
+        if (typeof step.inputFiles[j] !== 'string' || !String(step.inputFiles[j]).trim()) {
+          return { ok: false, error: `步骤 ${i + 1} 的 inputFiles[${j + 1}] 无效` };
+        }
+      }
+    }
+    if (step.parallelAgents !== undefined && step.parallelAgents !== null) {
+      if (!Array.isArray(step.parallelAgents)) {
+        return { ok: false, error: `步骤 ${i + 1} 的 parallelAgents 必须是数组` };
+      }
+      for (let j = 0; j < step.parallelAgents.length; j++) {
+        const node = step.parallelAgents[j];
+        if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+          return { ok: false, error: `步骤 ${i + 1} 的 parallelAgents[${j + 1}] 必须是对象` };
+        }
+        const nodeObj = node as Record<string, unknown>;
+        if (typeof nodeObj.description !== 'string' || !nodeObj.description.trim()) {
+          return { ok: false, error: `步骤 ${i + 1} 的 parallelAgents[${j + 1}] 缺少 description` };
+        }
+      }
+    }
   }
 
   const data: PipelineExportData = {
@@ -215,6 +291,35 @@ export function parsePipelineImport(jsonString: string): ParseResult {
       description: String(s.description).trim(),
       ...(typeof s.agentDefinitionId === 'string' && s.agentDefinitionId.trim()
         ? { agentDefinitionId: s.agentDefinitionId.trim() }
+        : {}),
+      ...(Array.isArray(s.inputFiles)
+        ? {
+            inputFiles: s.inputFiles
+              .map((v) => (typeof v === 'string' ? v.trim() : ''))
+              .filter((v) => v.length > 0),
+          }
+        : {}),
+      ...(typeof s.inputCondition === 'string' && s.inputCondition.trim()
+        ? { inputCondition: s.inputCondition.trim() }
+        : {}),
+      ...(Array.isArray(s.parallelAgents)
+        ? {
+            parallelAgents: (s.parallelAgents as Array<Record<string, unknown>>)
+              .map((node) => {
+                const description = typeof node.description === 'string' ? node.description.trim() : '';
+                if (!description) return null;
+                const title = typeof node.title === 'string' ? node.title.trim() : '';
+                const agentDefinitionId = typeof node.agentDefinitionId === 'string'
+                  ? node.agentDefinitionId.trim()
+                  : '';
+                return {
+                  ...(title ? { title } : {}),
+                  description,
+                  ...(agentDefinitionId ? { agentDefinitionId } : {}),
+                };
+              })
+              .filter((node): node is { title?: string; description: string; agentDefinitionId?: string } => Boolean(node)),
+          }
         : {}),
     })),
   };

@@ -29,17 +29,17 @@ export function TerminalToolbar({
   onNewPipeline,
 }: TerminalToolbarProps) {
   return (
-    <div className="flex items-center justify-between border-b border-white/8 bg-[#080a0e] px-3 py-1.5">
+    <div className="flex items-center justify-between border-b border-border bg-card/70 px-3 py-1.5">
       <div className="flex items-center gap-3">
         {/* 视图切换 */}
-        <div className="flex rounded-lg border border-white/10 bg-white/[0.03] p-0.5">
+        <div className="flex rounded-lg border border-border bg-input-bg/80 p-0.5">
           <button
             type="button"
             onClick={() => onViewModeChange('terminal')}
             className={cn(
               'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all',
               viewMode === 'terminal'
-                ? 'bg-white/[0.1] text-foreground shadow-sm'
+                ? 'bg-card-elevated text-foreground shadow-[0_1px_0_rgba(255,255,255,0.05)]'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -52,7 +52,7 @@ export function TerminalToolbar({
             className={cn(
               'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-all',
               viewMode === 'agent'
-                ? 'bg-white/[0.1] text-foreground shadow-sm'
+                ? 'bg-card-elevated text-foreground shadow-[0_1px_0_rgba(255,255,255,0.05)]'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -81,7 +81,7 @@ export function TerminalToolbar({
           type="button"
           onClick={onNewPipeline}
           disabled={!connected}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-foreground transition-all hover:border-white/20 hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-all hover:border-border-light hover:bg-card-elevated disabled:cursor-not-allowed disabled:opacity-40"
         >
           <GitBranch size={14} />
           {MSG.pipeline.newPipeline}
@@ -103,7 +103,7 @@ export function TerminalToolbar({
           type="button"
           onClick={onNewTerminal}
           disabled={!connected}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-foreground transition-all hover:border-white/20 hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-all hover:border-border-light hover:bg-card-elevated disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={14} />
           {MSG.newTerminal}

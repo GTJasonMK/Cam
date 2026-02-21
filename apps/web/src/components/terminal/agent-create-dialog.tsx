@@ -112,7 +112,7 @@ function pathToBreadcrumbs(p: string): Array<{ label: string; path: string }> {
 }
 
 // ---- 样式 ----
-const inputCls = 'w-full rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
+const inputCls = 'w-full rounded-lg border border-border bg-input-bg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
 const actionBtnCls = 'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors';
 
 // ============================================================
@@ -383,7 +383,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                 type="button"
                 onClick={() => browse(workDir.trim() || undefined)}
                 disabled={browseLoading}
-                className="shrink-0 rounded-lg border border-white/12 bg-white/[0.06] px-3 py-2 text-sm text-foreground transition-colors hover:bg-white/[0.1] disabled:opacity-50"
+                className="shrink-0 rounded-lg border border-border bg-card-elevated/70 px-3 py-2 text-sm text-foreground transition-colors hover:bg-card-elevated disabled:opacity-50"
                 title="浏览目录"
               >
                 <FolderOpen size={16} />
@@ -437,7 +437,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     <div className="flex flex-wrap gap-1.5">
                       {repos.map((r) => (
                         <button key={r.id} type="button" onClick={() => selectDir(r.defaultWorkDir!)}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-white/[0.08] hover:border-primary/30">
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-card-elevated hover:border-primary/30">
                           <FolderOpen size={11} className="text-muted-foreground" />{r.name}
                         </button>
                       ))}
@@ -452,7 +452,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     <div className="flex flex-wrap gap-1.5">
                       {recentDirs.map((d) => (
                         <button key={d} type="button" onClick={() => selectDir(d)} title={d}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-white/[0.08] hover:border-primary/30">
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-card-elevated hover:border-primary/30">
                           <FolderOpen size={11} className="text-muted-foreground" />{d.split(/[\\/]/).pop() || d}
                         </button>
                       ))}
@@ -465,8 +465,8 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
 
           {/* ---- 目录浏览面板 ---- */}
           {browsing && browseResult && (
-            <div className="rounded-lg border border-white/12 bg-white/[0.02] flex flex-col" style={{ maxHeight: '280px' }}>
-              <div className="sticky top-0 z-10 border-b border-white/8 bg-background/90 backdrop-blur px-3 py-2 space-y-1.5">
+            <div className="rounded-lg border border-border bg-card/70 flex flex-col" style={{ maxHeight: '280px' }}>
+              <div className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur px-3 py-2 space-y-1.5">
                 <div className="flex items-center gap-0.5 overflow-x-auto text-xs">
                   <button type="button" onClick={() => browse(undefined)}
                     className="shrink-0 text-muted-foreground hover:text-primary transition-colors">
@@ -508,10 +508,10 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     {MSG.browse?.emptyDirectory ?? '空目录'}
                   </div>
                 ) : (
-                  <div className="divide-y divide-white/4">
+                  <div className="divide-y divide-border-subtle">
                     {browseResult.entries.map((entry) => (
                       <button key={entry.path} type="button" onClick={() => browse(entry.path)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-white/[0.04] transition-colors group">
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-input-bg transition-colors group">
                         <FolderOpen size={14} className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
                         <span className="flex-1 truncate">{entry.name}</span>
                         {entry.isGitRepo && <span className="shrink-0 rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] text-green-400">git</span>}
@@ -527,13 +527,13 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
 
           {/* ---- 模板选择（可折叠） ---- */}
           {templates.length > 0 && (
-            <details className="group rounded-lg border border-white/12 bg-white/[0.02]">
-              <summary className="cursor-pointer flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-white/[0.04] transition-colors">
+            <details className="group rounded-lg border border-border bg-card/70">
+              <summary className="cursor-pointer flex items-center gap-2 px-3 py-2.5 text-sm font-medium text-foreground hover:bg-input-bg transition-colors">
                 <FileText size={14} className="text-primary/70" />
                 {MSG.template.sectionLabel}
                 <span className="ml-auto text-xs text-muted-foreground">{templates.length} 个模板</span>
               </summary>
-              <div className="border-t border-white/8 px-3 py-3 space-y-3">
+              <div className="border-t border-border px-3 py-3 space-y-3">
                 {/* 模板下拉 */}
                 <select
                   value={selectedTemplate?.id ?? ''}
@@ -579,7 +579,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                       readOnly
                       value={renderedPrompt}
                       rows={3}
-                      className={`resize-none ${inputCls} bg-white/[0.02] text-muted-foreground`}
+                      className={`resize-none ${inputCls} bg-card/70 text-muted-foreground`}
                     />
                   </div>
                 )}
@@ -606,11 +606,11 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
               <label className="text-sm font-medium text-foreground">
                 {isCodex ? '已有 Codex 会话' : (MSG.browse?.sessionListLabel ?? '已有 Claude Code 会话')}
               </label>
-              <div className="rounded-lg border border-white/12 bg-white/[0.02] divide-y divide-white/4">
+              <div className="rounded-lg border border-border bg-card/70 divide-y divide-border-subtle">
                 {sessions.map((s, idx) => (
                   <div
                     key={s.sessionId}
-                    className="flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.04] transition-colors"
+                    className="flex items-center gap-3 px-3 py-2.5 hover:bg-input-bg transition-colors"
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">

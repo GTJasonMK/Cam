@@ -31,6 +31,30 @@ export interface AgentSessionInfo extends SessionInfo {
   elapsedMs: number;
 }
 
+export interface PipelineStepParallelAgentInput {
+  /** 并行子任务标题（可选） */
+  title?: string;
+  /** 并行子任务提示词 */
+  prompt: string;
+  /** 子任务专用 Agent（不填则回退到步骤/流水线默认 Agent） */
+  agentDefinitionId?: string;
+}
+
+export interface PipelineStepInput {
+  /** 步骤标题 */
+  title: string;
+  /** 步骤主提示词（步骤级共享目标） */
+  prompt: string;
+  /** 步骤默认 Agent（不填则回退到流水线默认 Agent） */
+  agentDefinitionId?: string;
+  /** 从上一步读取的输入文件（相对 .conversations/step{N-1}） */
+  inputFiles?: string[];
+  /** 输入条件描述（例如：当 summary.md 存在时） */
+  inputCondition?: string;
+  /** 并行子任务列表（为空时按单 Agent 步骤执行） */
+  parallelAgents?: PipelineStepParallelAgentInput[];
+}
+
 // ---- 客户端 → 服务器 ----
 
 export type ClientMessage =
@@ -69,7 +93,7 @@ export type ClientMessage =
       baseBranch?: string;
       cols: number;
       rows: number;
-      steps: Array<{ title: string; prompt: string; agentDefinitionId?: string }>;
+      steps: PipelineStepInput[];
     }
   | { type: 'pipeline-cancel'; pipelineId: string }
   | { type: 'pipeline-pause'; pipelineId: string }
@@ -113,23 +137,27 @@ export type ServerMessage =
   | {
       type: 'pipeline-created';
       pipelineId: string;
-      steps: Array<{ taskId: string; title: string; status: string }>;
+      steps: Array<{
+        stepId: string;
+        title: string;
+        status: string;
+        taskIds: string[];
+        sessionIds?: string[];
+      }>;
       currentStep: number;
-      /** 第一步的 Agent 会话信息 */
-      sessionId: string;
-      shell: string;
-      agentDisplayName: string;
-      workBranch: string;
+      /** 第一步启动的 Agent 会话 ID 列表 */
+      sessionIds: string[];
+      /** 项目绝对路径 */
       repoPath: string;
     }
   | {
       type: 'pipeline-step-status';
       pipelineId: string;
       stepIndex: number;
-      taskId: string;
+      taskIds: string[];
       status: string;
-      /** 新启动的 Agent 会话 ID（当步骤开始运行时） */
-      sessionId?: string;
+      /** 新启动的 Agent 会话 ID 列表（当步骤开始运行时） */
+      sessionIds?: string[];
     }
   | {
       type: 'pipeline-completed';
@@ -147,6 +175,6 @@ export type ServerMessage =
       pipelineId: string;
       /** 恢复后正在运行的步骤索引 */
       currentStep: number;
-      /** 恢复后启动的 Agent 会话 ID（如有新步骤启动） */
-      sessionId?: string;
+      /** 恢复后启动的 Agent 会话 ID 列表（如有新步骤启动） */
+      sessionIds?: string[];
     };

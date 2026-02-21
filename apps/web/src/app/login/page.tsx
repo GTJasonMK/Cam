@@ -27,12 +27,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       {/* 右上角主光晕 — 使用自然柔和渐变代替高开销 blur(130px) */}
       <div
         className="pointer-events-none fixed right-[-22%] top-[-16%] h-[680px] w-[680px] rounded-full opacity-18"
-        style={{ background: 'radial-gradient(circle, rgba(94,106,210,0.55) 0%, rgba(94,106,210,0.12) 50%, transparent 85%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(47,111,237,0.5) 0%, rgba(47,111,237,0.12) 50%, transparent 85%)' }}
       />
       {/* 左下角次级光晕 */}
       <div
         className="pointer-events-none fixed bottom-[-20%] left-[-18%] h-[560px] w-[560px] rounded-full opacity-14"
-        style={{ background: 'radial-gradient(circle, rgba(104,114,217,0.45) 0%, rgba(104,114,217,0.08) 50%, transparent 85%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(31,155,135,0.42) 0%, rgba(31,155,135,0.08) 50%, transparent 85%)' }}
       />
       {/* 网格背景 */}
       <div
@@ -46,12 +46,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       {/* 中心辐射光效 */}
       <div
         className="pointer-events-none fixed left-1/2 top-1/3 h-[440px] w-[860px] -translate-x-1/2 -translate-y-1/2 opacity-12"
-        style={{ background: 'radial-gradient(ellipse, rgba(94,106,210,0.4) 0%, rgba(94,106,210,0.06) 50%, transparent 85%)' }}
+        style={{ background: 'radial-gradient(ellipse, rgba(47,111,237,0.36) 0%, rgba(47,111,237,0.06) 50%, transparent 85%)' }}
       />
 
       <div className="relative z-10 w-full animate-fade-in-up">
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/45 bg-[linear-gradient(150deg,rgba(104,114,217,0.95)_0%,rgba(94,106,210,0.9)_58%,rgba(75,84,168,0.9)_100%)] shadow-[0_0_0_1px_rgba(94,106,210,0.42),0_10px_32px_rgba(94,106,210,0.35)] animate-glow-pulse">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/45 bg-[linear-gradient(150deg,rgba(47,111,237,0.96)_0%,rgba(47,111,237,0.9)_58%,rgba(31,155,135,0.86)_100%)] shadow-[0_0_0_1px_rgba(47,111,237,0.4),0_10px_32px_rgba(47,111,237,0.33)] animate-glow-pulse">
             <span className="text-xl font-bold text-white">C</span>
           </div>
           <span className="bg-gradient-to-b from-white via-white/95 to-white/70 bg-clip-text text-2xl font-semibold tracking-tight text-transparent">CAM</span>
@@ -59,7 +59,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         </div>
         <Card
           padding="lg"
-          className="w-full border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.09)_0%,rgba(255,255,255,0.035)_100%)] shadow-[var(--shadow-card-hover)]"
+          className="w-full border-border bg-card/90 shadow-[var(--shadow-card-hover)]"
         >
           <LoginScreen nextPath={nextPath} initialError={initialError} />
         </Card>

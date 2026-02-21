@@ -31,6 +31,8 @@ interface PtySession {
   idleTimeoutMs: number;
   /** 输出监听器（WebSocket 推送回调） */
   onData: ((data: string) => void) | null;
+  /** 附加输出监听器（用于日志持久化等非 WS 场景） */
+  dataTaps: Map<string, (data: string) => void>;
   /** 退出监听器 */
   onExit: ((exitCode: number) => void) | null;
 }
@@ -138,6 +140,7 @@ class PtyManager {
       idleTimer: null,
       idleTimeoutMs: opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
       onData: null,
+      dataTaps: new Map(),
       onExit: null,
     };
 
@@ -154,6 +157,13 @@ class PtyManager {
 
       // 推送到 WebSocket
       session.onData?.(data);
+      for (const listener of session.dataTaps.values()) {
+        try {
+          listener(data);
+        } catch (err) {
+          console.warn(`[Terminal] 输出监听器执行失败: ${(err as Error).message}`);
+        }
+      }
     });
 
     // 监听 PTY 退出
@@ -186,6 +196,22 @@ class PtyManager {
 
     // 回放滚动缓冲
     return session.scrollback;
+  }
+
+  /** 添加额外输出监听器（与 WebSocket attach 解耦） */
+  addDataTap(sessionId: string, listener: (data: string) => void): string | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const tapId = crypto.randomUUID();
+    session.dataTaps.set(tapId, listener);
+    return tapId;
+  }
+
+  /** 移除额外输出监听器 */
+  removeDataTap(sessionId: string, tapId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.dataTaps.delete(tapId);
   }
 
   /** 分离监听器（WebSocket 断开时调用，但不销毁 PTY） */
@@ -293,6 +319,7 @@ class PtyManager {
       session.idleTimer = null;
     }
     session.onData = null;
+    session.dataTaps.clear();
     session.onExit = null;
     this.sessions.delete(sessionId);
   }

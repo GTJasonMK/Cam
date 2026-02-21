@@ -38,11 +38,11 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
 
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center border-l border-white/8 bg-[#080a0e] px-1 py-3">
+      <div className="flex flex-col items-center border-l border-border bg-card/70 px-1 py-3">
         <button
           type="button"
           onClick={() => setCollapsed(false)}
-          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground"
+          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
           title={MSG.statusPanel.title}
         >
           <ChevronLeft size={14} />
@@ -56,9 +56,9 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
   }
 
   return (
-    <div className="flex w-64 flex-col border-l border-white/8 bg-[#080a0e]">
+    <div className="flex w-64 flex-col border-l border-border bg-card/70">
       {/* 头部 */}
-      <div className="flex items-center justify-between border-b border-white/8 px-3 py-2">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <div className="flex items-center gap-2">
           <Bot size={14} className="text-muted-foreground" />
           <span className="text-sm font-medium text-foreground">{MSG.statusPanel.title}</span>
@@ -67,7 +67,7 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
         <button
           type="button"
           onClick={() => setCollapsed(true)}
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground"
+          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
         >
           <ChevronRight size={14} />
         </button>
@@ -75,7 +75,7 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
 
       {/* 流水线进度 */}
       {activePipelines.length > 0 && (
-        <div className="border-b border-white/8 p-2 space-y-2">
+        <div className="space-y-2 border-b border-border p-2">
           {activePipelines.map((pipeline) => (
             <div key={pipeline.pipelineId} className={`rounded-lg border p-2 space-y-1.5 ${
               pipeline.status === 'paused'
@@ -132,16 +132,19 @@ export function AgentStatusPanel({ send }: AgentStatusPanelProps) {
                   const icon = step.status === 'completed' ? <CheckCircle2 size={11} className="text-green-400" />
                     : step.status === 'running' ? <Loader2 size={11} className="text-primary animate-spin" />
                     : step.status === 'failed' ? <XCircle size={11} className="text-destructive" />
-                    : <Circle size={11} className="text-white/20" />;
+                    : <Circle size={11} className="text-border-light" />;
                   return (
                     <div
-                      key={step.taskId}
+                      key={`${pipeline.pipelineId}-${step.taskIds.join(',')}-${i}`}
                       className={`flex items-center gap-1.5 text-[11px] ${
                         step.status === 'running' ? 'text-foreground font-medium' : 'text-muted-foreground'
                       }`}
                     >
                       {icon}
-                      <span className="truncate">{i + 1}. {step.title || `步骤 ${i + 1}`}</span>
+                      <span className="truncate">
+                        {i + 1}. {step.title || `步骤 ${i + 1}`}
+                        {step.taskIds.length > 1 ? ` (${step.taskIds.length} 并行)` : ''}
+                      </span>
                     </div>
                   );
                 })}

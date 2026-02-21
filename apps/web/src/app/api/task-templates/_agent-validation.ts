@@ -4,7 +4,10 @@ import { inArray } from 'drizzle-orm';
 
 type AgentReferenceSource = {
   agentDefinitionId?: string | null;
-  pipelineSteps?: Array<{ agentDefinitionId?: string }> | null;
+  pipelineSteps?: Array<{
+    agentDefinitionId?: string;
+    parallelAgents?: Array<{ agentDefinitionId?: string }>;
+  }> | null;
 };
 
 /** 收集模板/流水线里引用到的全部 Agent ID（去重 + 去空白） */
@@ -16,6 +19,10 @@ export function collectReferencedAgentIds(source: AgentReferenceSource): string[
   for (const step of source.pipelineSteps ?? []) {
     const stepAgentId = step.agentDefinitionId?.trim();
     if (stepAgentId) ids.add(stepAgentId);
+    for (const node of step.parallelAgents ?? []) {
+      const nodeAgentId = node.agentDefinitionId?.trim();
+      if (nodeAgentId) ids.add(nodeAgentId);
+    }
   }
 
   return Array.from(ids);

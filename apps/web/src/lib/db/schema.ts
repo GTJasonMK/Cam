@@ -74,7 +74,14 @@ export const taskTemplates = sqliteTable(
     baseBranch: text('base_branch'),
     workDir: text('work_dir'),
     /** 流水线步骤（JSON 数组），null 表示单任务模板 */
-    pipelineSteps: text('pipeline_steps', { mode: 'json' }).$type<Array<{ title: string; description: string; agentDefinitionId?: string }> | null>(),
+    pipelineSteps: text('pipeline_steps', { mode: 'json' }).$type<Array<{
+      title: string;
+      description: string;
+      agentDefinitionId?: string;
+      inputFiles?: string[];
+      inputCondition?: string;
+      parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+    }> | null>(),
     /** 流水线默认最大重试次数 */
     maxRetries: integer('max_retries').default(2),
     createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),

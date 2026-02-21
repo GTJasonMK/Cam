@@ -1,47 +1,27 @@
-// shadcn/ui Button — CVA variants + Radix Slot + loading 状态
+// shadcn/ui Button — CVA variants + loading 状态
 
 import * as React from 'react';
-import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg font-medium leading-none transition-[transform,box-shadow,background-color,border-color,color,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 focus-visible:ring-offset-2 focus-visible:ring-offset-[#050506] disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg:not([class*=size-])]:size-4',
+  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border font-medium leading-none transition-[transform,box-shadow,background-color,border-color,color,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg:not([class*=size-])]:size-4',
   {
     variants: {
       variant: {
-        default: [
-          'border border-primary/75 text-white',
-          'bg-[linear-gradient(180deg,#6872D9_0%,#5E6AD2_56%,#4D58B8_100%)]',
-          'shadow-[0_0_0_1px_rgba(94,106,210,0.5),0_4px_12px_rgba(94,106,210,0.34),inset_0_1px_0_0_rgba(255,255,255,0.24)]',
-          'hover:-translate-y-[1px] hover:bg-[linear-gradient(180deg,#7480E2_0%,#6872D9_56%,#5561C4_100%)]',
-          'hover:shadow-[0_0_0_1px_rgba(104,114,217,0.66),0_8px_24px_rgba(94,106,210,0.36),inset_0_1px_0_0_rgba(255,255,255,0.22)]',
-          'active:translate-y-0 active:scale-[0.98]',
-          'active:shadow-[0_0_0_1px_rgba(94,106,210,0.45),0_2px_8px_rgba(94,106,210,0.24),inset_0_1px_0_0_rgba(255,255,255,0.18)]',
-        ].join(' '),
+        default:
+          'border-primary/65 bg-primary text-primary-foreground shadow-[0_1px_0_rgba(255,255,255,0.15),0_8px_20px_rgba(47,111,237,0.28)] hover:-translate-y-px hover:border-primary/80 hover:bg-[#3b78ef] hover:shadow-[0_1px_0_rgba(255,255,255,0.18),0_12px_24px_rgba(47,111,237,0.32)] active:translate-y-0 active:scale-[0.985]',
         secondary:
-          'border border-white/10 bg-white/[0.05] text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:-translate-y-[1px] hover:border-white/18 hover:bg-white/[0.09] hover:shadow-[0_6px_18px_rgba(0,0,0,0.35),inset_0_1px_0_rgba(255,255,255,0.12)] active:translate-y-0 active:scale-[0.98]',
-        destructive: [
-          'border border-destructive/75 text-white',
-          'bg-[linear-gradient(180deg,#F27690_0%,#EF5A7A_56%,#CF3E60_100%)]',
-          'shadow-[0_0_0_1px_rgba(239,90,122,0.5),0_4px_12px_rgba(239,90,122,0.3),inset_0_1px_0_0_rgba(255,255,255,0.2)]',
-          'hover:-translate-y-[1px] hover:bg-[linear-gradient(180deg,#F58AA1_0%,#F06A87_56%,#D74A69_100%)]',
-          'hover:shadow-[0_0_0_1px_rgba(239,90,122,0.62),0_8px_24px_rgba(239,90,122,0.34),inset_0_1px_0_0_rgba(255,255,255,0.22)]',
-          'active:translate-y-0 active:scale-[0.98] active:shadow-[0_0_0_1px_rgba(239,90,122,0.45),0_2px_8px_rgba(239,90,122,0.24)]',
-        ].join(' '),
-        success: [
-          'border border-success/80 text-white',
-          'bg-[linear-gradient(180deg,#3ED49A_0%,#26C281_56%,#149D63_100%)]',
-          'shadow-[0_0_0_1px_rgba(38,194,129,0.45),0_4px_12px_rgba(38,194,129,0.3),inset_0_1px_0_0_rgba(255,255,255,0.2)]',
-          'hover:-translate-y-[1px] hover:bg-[linear-gradient(180deg,#56D9A8_0%,#35CD90_56%,#1FAA71_100%)]',
-          'hover:shadow-[0_0_0_1px_rgba(38,194,129,0.58),0_8px_22px_rgba(38,194,129,0.34),inset_0_1px_0_0_rgba(255,255,255,0.2)]',
-          'active:translate-y-0 active:scale-[0.98] active:shadow-[0_0_0_1px_rgba(38,194,129,0.42),0_2px_8px_rgba(38,194,129,0.24)]',
-        ].join(' '),
+          'border-border bg-card text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] hover:-translate-y-px hover:border-border-light hover:bg-card-elevated hover:shadow-[0_10px_22px_rgba(3,8,16,0.32)] active:translate-y-0 active:scale-[0.985]',
+        destructive:
+          'border-destructive/65 bg-destructive text-destructive-foreground shadow-[0_1px_0_rgba(255,255,255,0.14),0_8px_18px_rgba(227,93,106,0.26)] hover:-translate-y-px hover:border-destructive/80 hover:bg-[#d95562] active:translate-y-0 active:scale-[0.985]',
+        success:
+          'border-success/65 bg-success text-white shadow-[0_1px_0_rgba(255,255,255,0.12),0_8px_18px_rgba(34,160,107,0.26)] hover:-translate-y-px hover:border-success/80 hover:bg-[#1f9564] active:translate-y-0 active:scale-[0.985]',
         outline:
-          'border border-white/12 bg-transparent text-foreground/90 hover:border-white/22 hover:bg-white/[0.05]',
+          'border-border bg-transparent text-foreground/90 hover:border-border-light hover:bg-card/60',
         ghost:
-          'bg-transparent text-muted-foreground hover:bg-white/[0.05] hover:text-foreground active:scale-[0.98]',
+          'border-transparent bg-transparent text-muted-foreground hover:bg-card/60 hover:text-foreground active:scale-[0.985]',
         link: 'text-primary underline-offset-4 hover:text-accent hover:underline',
       },
       size: {
@@ -67,19 +47,21 @@ export interface ButtonProps
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, loading = false, disabled, children, type = 'button', ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button';
+  ({ className, variant, size, asChild: _asChild = false, loading = false, disabled, children, type = 'button', ...props }, ref) => {
+    const isDisabled = disabled || loading;
+    const showLoadingIcon = loading;
+
     return (
-      <Comp
+      <button
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
-        type={asChild ? undefined : type}
-        disabled={disabled || loading}
+        type={type}
+        disabled={isDisabled}
         {...props}
       >
-        {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+        {showLoadingIcon && <Loader2 className="h-4 w-4 animate-spin" />}
         {children}
-      </Comp>
+      </button>
     );
   }
 );

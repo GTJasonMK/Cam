@@ -103,8 +103,8 @@ function KpiCard({
 
   const content = (
     <div
-      className={`group relative min-h-[9.25rem] overflow-hidden rounded-2xl border border-white/8 p-7 shadow-[var(--shadow-card)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-        isActive || href ? 'hover:-translate-y-0.5 hover:border-white/14 hover:shadow-[var(--shadow-card-hover)]' : ''
+      className={`group relative min-h-[9.25rem] overflow-hidden rounded-2xl border border-border p-7 shadow-[var(--shadow-card)] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        isActive || href ? 'hover:-translate-y-0.5 hover:border-border-light hover:shadow-[var(--shadow-card-hover)]' : ''
       }${href ? ' cursor-pointer' : ''}`}
       style={
         isActive
@@ -160,7 +160,7 @@ function TablesSkeleton() {
   return (
     <div className="grid gap-9 xl:grid-cols-3">
       <div className="space-y-9 xl:col-span-2">
-        <div className="rounded-2xl border border-white/8 p-8 shadow-[var(--shadow-card)]">
+        <div className="rounded-2xl border border-border p-8 shadow-[var(--shadow-card)]">
           <Skeleton className="mb-7 h-4 w-20" />
           <div className="space-y-3">
             {Array.from({ length: 4 }, (_, i) => (
@@ -168,7 +168,7 @@ function TablesSkeleton() {
             ))}
           </div>
         </div>
-        <div className="rounded-2xl border border-white/8 p-8 shadow-[var(--shadow-card)]">
+        <div className="rounded-2xl border border-border p-8 shadow-[var(--shadow-card)]">
           <Skeleton className="mb-7 h-4 w-24" />
           <div className="space-y-3">
             {Array.from({ length: 3 }, (_, i) => (
@@ -177,7 +177,7 @@ function TablesSkeleton() {
           </div>
         </div>
       </div>
-      <div className="rounded-2xl border border-white/8 shadow-[var(--shadow-card)]">
+      <div className="rounded-2xl border border-border shadow-[var(--shadow-card)]">
         <div className="border-b border-border/30 px-7 py-5">
           <Skeleton className="h-4 w-20" />
         </div>

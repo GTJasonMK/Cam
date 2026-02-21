@@ -60,23 +60,23 @@ export const STATUS_DISPLAY_LABELS: Record<string, string> = {
 // ---- 颜色映射（适配新调色板） ----
 
 const COLOR_HEX: Record<string, string> = {
-  primary: '#5e6ad2',
-  success: '#26c281',
-  destructive: '#ef5a7a',
-  warning: '#f4b35f',
-  accent: '#6872d9',
-  cyan: '#59a6ff',
-  'muted-foreground': '#8a8f98',
+  primary: '#2f6fed',
+  success: '#22a06b',
+  destructive: '#e35d6a',
+  warning: '#f59e0b',
+  accent: '#1f9b87',
+  cyan: '#2aa8d8',
+  'muted-foreground': '#95a4ba',
 };
 
 const COLOR_RGB: Record<string, string> = {
-  primary: '94, 106, 210',
-  success: '38, 194, 129',
-  destructive: '239, 90, 122',
-  warning: '244, 179, 95',
-  accent: '104, 114, 217',
-  cyan: '89, 166, 255',
-  'muted-foreground': '138, 143, 152',
+  primary: '47, 111, 237',
+  success: '34, 160, 107',
+  destructive: '227, 93, 106',
+  warning: '245, 158, 11',
+  accent: '31, 155, 135',
+  cyan: '42, 168, 216',
+  'muted-foreground': '149, 164, 186',
 };
 
 export function getColorVar(token: string): string {

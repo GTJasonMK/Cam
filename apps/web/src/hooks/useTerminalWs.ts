@@ -15,6 +15,10 @@ const PING_INTERVAL_MS = 25000;
 type OutputCallback = (sessionId: string, data: string) => void;
 type ExitCallback = (sessionId: string, exitCode: number) => void;
 
+function isSessionAccessError(message: string): boolean {
+  return message.includes('无权访问该会话') || message.includes('会话不存在');
+}
+
 interface UseTerminalWsReturn {
   /** 发送消息到服务器，返回是否发送成功 */
   send: (msg: ClientMessage) => boolean;
@@ -107,6 +111,14 @@ export function useTerminalWs(): UseTerminalWsReturn {
           break;
 
         case 'error':
+          if (msg.sessionId && isSessionAccessError(msg.message)) {
+            // 会话已失效/无权限：自动清理本地状态并重拉会话列表，避免持续报错
+            removeSession(msg.sessionId);
+            send({ type: 'list' });
+            send({ type: 'agent-list' });
+            console.warn('[Terminal WS] 已清理无效会话:', msg.message, msg.sessionId);
+            break;
+          }
           console.error('[Terminal WS] 服务端错误:', msg.message, msg.sessionId);
           break;
 
@@ -142,9 +154,10 @@ export function useTerminalWs(): UseTerminalWsReturn {
           addPipeline({
             pipelineId: msg.pipelineId,
             steps: msg.steps.map((s) => ({
-              taskId: s.taskId,
+              taskIds: s.taskIds,
               title: s.title,
               status: s.status,
+              sessionIds: s.sessionIds,
             })),
             currentStep: msg.currentStep,
             status: 'running',
@@ -152,7 +165,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
           break;
 
         case 'pipeline-step-status':
-          updatePipelineStep(msg.pipelineId, msg.stepIndex, msg.status, msg.sessionId);
+          updatePipelineStep(msg.pipelineId, msg.stepIndex, msg.status, msg.sessionIds, msg.taskIds);
           break;
 
         case 'pipeline-completed':
@@ -164,7 +177,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
           break;
 
         case 'pipeline-resumed':
-          resumePipeline(msg.pipelineId);
+          resumePipeline(msg.pipelineId, msg.currentStep, msg.sessionIds);
           break;
       }
     };

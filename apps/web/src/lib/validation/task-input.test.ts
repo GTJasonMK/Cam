@@ -42,6 +42,31 @@ test('parseCreatePipelinePayload: 非法 steps 返回失败', () => {
   assert.equal(result.success, false);
 });
 
+test('parseCreatePipelinePayload: 支持并行子任务并解析输入约束', () => {
+  const result = parseCreatePipelinePayload({
+    repoUrl: 'https://github.com/acme/repo',
+    steps: [
+      {
+        title: '并行实现',
+        description: '按模块拆分',
+        inputFiles: ['summary.md', 'summary.md', 'module-a.md'],
+        inputCondition: 'summary.md 存在',
+        parallelAgents: [
+          { title: 'A', description: '实现 A', agentDefinitionId: 'codex' },
+          { title: 'B', description: '实现 B', agentDefinitionId: 'claude-code' },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.success, true);
+  if (!result.success) return;
+
+  assert.equal(result.data.steps[0].parallelAgents?.length, 2);
+  assert.deepEqual(result.data.steps[0].inputFiles, ['summary.md', 'module-a.md']);
+  assert.equal(result.data.steps[0].inputCondition, 'summary.md 存在');
+});
+
 test('parseReviewPayload: reject 必须提供 feedback', () => {
   const result = parseReviewPayload({
     action: 'reject',

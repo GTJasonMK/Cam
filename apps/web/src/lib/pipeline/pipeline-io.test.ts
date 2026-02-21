@@ -57,6 +57,32 @@ test('findMissingPipelineAgentIds: 返回缺失的 Agent 引用', () => {
   assert.deepEqual(missing, ['claude-code']);
 });
 
+test('parsePipelineImport/collectPipelineReferencedAgentIds: 支持并行子任务字段', () => {
+  const result = parsePipelineImport(JSON.stringify({
+    type: 'cam-pipeline',
+    steps: [
+      {
+        title: '并行阶段',
+        description: '实现',
+        inputFiles: ['summary.md', 'module-a.md'],
+        inputCondition: 'summary.md 存在',
+        parallelAgents: [
+          { title: 'A', description: '实现 A', agentDefinitionId: 'codex' },
+          { title: 'B', description: '实现 B', agentDefinitionId: 'claude-code' },
+        ],
+      },
+    ],
+  }));
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.steps[0].parallelAgents?.length, 2);
+  assert.deepEqual(result.data.steps[0].inputFiles, ['summary.md', 'module-a.md']);
+
+  const refs = collectPipelineReferencedAgentIds(result.data);
+  assert.deepEqual(refs.sort(), ['claude-code', 'codex']);
+});
+
 test('validatePipelineImportFileSize: 超过阈值时返回失败', () => {
   const result = validatePipelineImportFileSize(3 * 1024 * 1024, 2 * 1024 * 1024);
   assert.equal(result.ok, false);

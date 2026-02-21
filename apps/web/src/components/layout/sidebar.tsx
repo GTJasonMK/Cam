@@ -48,6 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: '/tasks', label: SIDEBAR_UI_MESSAGES.nav.tasks, icon: ListTodo },
       { href: '/terminal', label: SIDEBAR_UI_MESSAGES.nav.terminal, icon: TerminalSquare },
       { href: '/templates', label: SIDEBAR_UI_MESSAGES.nav.templates, icon: FileText },
+      { href: '/pipelines', label: SIDEBAR_UI_MESSAGES.nav.pipelines, icon: GitFork },
     ],
   },
   {
@@ -126,7 +127,7 @@ export function Sidebar() {
       <button
         type="button"
         onClick={() => setMobileOpen(true)}
-        className="fixed left-3 top-3 z-40 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/12 bg-white/[0.06] text-muted-foreground shadow-[0_8px_18px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-200 hover:border-white/20 hover:bg-white/[0.1] hover:text-foreground md:hidden"
+        className="fixed left-3 top-3 z-40 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground shadow-[var(--shadow-card)] backdrop-blur-xl transition-all duration-200 hover:border-border-light hover:bg-card-elevated hover:text-foreground md:hidden"
         aria-label={SIDEBAR_UI_MESSAGES.openMenuAria}
       >
         <Menu size={19} />
@@ -136,32 +137,32 @@ export function Sidebar() {
       {mobileOpen ? (
         <div
           role="presentation"
-          className="fixed inset-0 z-40 cursor-pointer bg-[#050506]/90 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-40 cursor-pointer bg-background/85 backdrop-blur-sm md:hidden"
           onClick={() => setMobileOpen(false)}
         />
       ) : null}
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(var(--sidebar-width),85vw)] flex-col border-r border-white/8 bg-sidebar shadow-[0_18px_36px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] md:static md:z-auto md:w-[var(--sidebar-width)] md:translate-x-0',
+          'fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(var(--sidebar-width),85vw)] flex-col border-r border-sidebar-border bg-sidebar shadow-[0_18px_36px_rgba(6,11,17,0.48)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] md:static md:z-auto md:w-[var(--sidebar-width)] md:translate-x-0',
           mobileOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/35 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/55 to-transparent" />
 
         {/* Logo */}
         <div className="flex h-[4.5rem] items-center gap-3 px-[1.125rem]">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/45 bg-[linear-gradient(150deg,rgba(104,114,217,0.95)_0%,rgba(94,106,210,0.88)_60%,rgba(75,84,168,0.9)_100%)] shadow-[0_0_0_1px_rgba(94,106,210,0.48),0_8px_20px_rgba(94,106,210,0.3),inset_0_1px_0_rgba(255,255,255,0.25)]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/45 bg-primary shadow-[0_8px_20px_rgba(47,111,237,0.28)]">
             <span className="text-base font-bold text-white">C</span>
           </div>
           <div className="leading-tight">
-            <p className="text-base font-semibold tracking-tight text-foreground">CAM</p>
-            <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground/60">Control Center</p>
+            <p className="text-base font-semibold tracking-tight text-foreground" style={{ fontFamily: 'var(--font-heading), var(--font-body), sans-serif' }}>CAM</p>
+            <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">Control Center</p>
           </div>
           <button
             type="button"
             onClick={() => setMobileOpen(false)}
-            className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.08] hover:text-foreground md:hidden"
+            className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground md:hidden"
             aria-label={SIDEBAR_UI_MESSAGES.closeMenuAria}
           >
             <X size={16} />
@@ -169,7 +170,7 @@ export function Sidebar() {
         </div>
 
         {/* 分隔线 */}
-        <div className="mx-3 h-px bg-white/8" />
+        <div className="mx-3 h-px bg-border" />
 
         {/* 导航 */}
         <nav className="flex-1 overflow-y-auto px-2 py-3">
@@ -196,15 +197,15 @@ export function Sidebar() {
                       className={cn(
                         'group relative flex items-center gap-3 rounded-xl border px-3.5 py-3 text-[0.95rem] font-medium transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
                         isActive
-                          ? 'border-primary/35 bg-[linear-gradient(120deg,rgba(94,106,210,0.2)_0%,rgba(94,106,210,0.08)_75%)] text-foreground shadow-[0_0_0_1px_rgba(94,106,210,0.2),0_8px_22px_rgba(94,106,210,0.16)]'
-                          : 'border-transparent text-muted-foreground hover:border-white/10 hover:bg-white/[0.06] hover:text-foreground',
+                          ? 'border-primary/40 bg-primary/12 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.06),0_8px_20px_rgba(47,111,237,0.18)]'
+                          : 'border-transparent text-muted-foreground hover:border-border hover:bg-card-elevated/70 hover:text-foreground',
                       )}
                     >
                       {/* 活跃态左侧指示条 + 发光 */}
                       {isActive ? (
                         <span
                           className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary"
-                          style={{ boxShadow: '0 0 12px rgba(94, 106, 210, 0.56)' }}
+                          style={{ boxShadow: '0 0 12px rgba(47, 111, 237, 0.42)' }}
                         />
                       ) : null}
                       <Icon
@@ -216,7 +217,7 @@ export function Sidebar() {
                       />
                       {item.label}
                       {item.badge != null && item.badge > 0 && (
-                        <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/20 px-1.5 text-[10px] font-semibold tabular-nums text-primary">
+                        <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/18 px-1.5 text-[10px] font-semibold tabular-nums text-primary">
                           {item.badge}
                         </span>
                       )}
@@ -229,7 +230,7 @@ export function Sidebar() {
         </nav>
 
         {/* 底部分隔线 */}
-        <div className="mx-3 h-px bg-white/8" />
+        <div className="mx-3 h-px bg-border" />
 
         {/* 底部状态 */}
         <div className="space-y-3 px-3 py-4">
@@ -243,14 +244,14 @@ export function Sidebar() {
                 setPendingPath('/profile');
                 setMobileOpen(false);
               }}
-              className="flex items-center gap-2.5 rounded-xl border border-transparent bg-white/[0.02] px-2.5 py-3.5 transition-all duration-200 hover:border-white/10 hover:bg-white/[0.06]"
+              className="flex items-center gap-2.5 rounded-xl border border-transparent bg-card/35 px-2.5 py-3.5 transition-all duration-200 hover:border-border hover:bg-card-elevated/70"
               title="进入个人设置"
             >
               {user.avatarUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full" />
               ) : (
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/16">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/14">
                   <span className="text-xs font-semibold text-primary">
                     {(user.displayName || user.username || '?')[0]?.toUpperCase()}
                   </span>
@@ -271,7 +272,7 @@ export function Sidebar() {
           </div>
           <button
             onClick={handleSignOut}
-            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-3 text-sm font-medium text-muted-foreground transition-all duration-200 hover:border-destructive/20 hover:bg-destructive/8 hover:text-destructive"
+            className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-3 text-sm font-medium text-muted-foreground transition-all duration-200 hover:border-destructive/25 hover:bg-destructive/10 hover:text-destructive"
           >
             <LogOut size={14} />
             {SIDEBAR_UI_MESSAGES.signOut}

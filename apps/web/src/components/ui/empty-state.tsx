@@ -14,7 +14,7 @@ export function EmptyState({ message, hint, icon }: EmptyStateProps) {
   return (
     <Card padding="lg" className="animate-fade-in py-24 text-center">
       {icon ? (
-        <div className="mx-auto mb-7 flex h-20 w-20 items-center justify-center rounded-2xl border border-white/8 bg-muted/60 text-muted-foreground/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
+        <div className="mx-auto mb-7 flex h-20 w-20 items-center justify-center rounded-2xl border border-border bg-muted/60 text-muted-foreground/50 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
           {icon}
         </div>
       ) : null}

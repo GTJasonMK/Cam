@@ -10,7 +10,7 @@ const CardRoot = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivEl
     <div
       ref={ref}
       className={cn(
-        'relative overflow-hidden rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.03)_100%)] text-card-foreground shadow-[var(--shadow-card)] before:pointer-events-none before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/30 before:to-transparent',
+        'relative overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-[var(--shadow-card)]',
         className,
       )}
       {...props}
@@ -85,10 +85,9 @@ function Card({ children, className, padding = 'md', hover = false, glow, varian
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.03)_100%)] shadow-[var(--shadow-card)]',
-        'before:pointer-events-none before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/30 before:to-transparent',
+        'relative overflow-hidden rounded-2xl border border-border bg-card shadow-[var(--shadow-card)]',
         PADDING[padding],
-        hover && 'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:border-white/14 hover:bg-card-elevated hover:shadow-[var(--shadow-card-hover)]',
+        hover && 'transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:border-border-light hover:bg-card-elevated hover:shadow-[var(--shadow-card-hover)]',
         className,
       )}
       style={{

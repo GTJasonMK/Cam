@@ -13,6 +13,7 @@ let logBuffer: string[] = [];
 const MAX_LOG_LINES = 500;
 const LOG_FLUSH_INTERVAL_MS = 1000;
 const LOG_FLUSH_BATCH_SIZE = 100;
+const MAX_PENDING_PERSISTED_LINES = 5000;
 let logPersistSink: ((line: string) => void) | null = null;
 
 function appendLog(line: string): void {
@@ -77,6 +78,7 @@ export async function executeTask(
   const agentWorkDir = workDir ? path.join(repoDir, workDir) : repoDir;
 
   let pendingPersistedLines: string[] = [];
+  let droppedPersistedLines = 0;
   let persistFlushInFlight = false;
 
   const flushPersistedLogs = async (force = false): Promise<void> => {
@@ -92,6 +94,11 @@ export async function executeTask(
         pendingPersistedLines = pendingPersistedLines.slice(batchSize);
         if (!force) break;
       }
+      if (droppedPersistedLines > 0) {
+        const droppedCount = droppedPersistedLines;
+        droppedPersistedLines = 0;
+        console.warn(`[Executor] 警告: 持久化日志队列达到上限，已丢弃 ${droppedCount} 行旧日志`);
+      }
     } catch (err) {
       console.error(`[Executor] 写入持久化日志失败: ${(err as Error).message}`);
     } finally {
@@ -101,6 +108,11 @@ export async function executeTask(
 
   logPersistSink = (line: string) => {
     pendingPersistedLines.push(line);
+    if (pendingPersistedLines.length > MAX_PENDING_PERSISTED_LINES) {
+      const overflow = pendingPersistedLines.length - MAX_PENDING_PERSISTED_LINES;
+      pendingPersistedLines.splice(0, overflow);
+      droppedPersistedLines += overflow;
+    }
   };
 
   clearLog();

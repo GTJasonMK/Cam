@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { parseWorkerStatus } from '@/lib/workers/status';
 
 type ClaudeAuthStatus = { loggedIn: boolean; authMethod: string; apiProvider: string };
 
@@ -61,7 +62,14 @@ function parseClaudeAuthStatus(value: unknown): ClaudeAuthStatus | null | undefi
 async function handler(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const body = await request.json();
+    const bodyRaw = await request.json().catch(() => null);
+    if (!isPlainObject(bodyRaw)) {
+      return NextResponse.json(
+        { success: false, error: { code: 'INVALID_INPUT', message: '请求体必须是 JSON object' } },
+        { status: 400 }
+      );
+    }
+    const body = bodyRaw;
     const existing = await db.select({ status: workers.status }).from(workers).where(eq(workers.id, id)).limit(1);
 
     if (existing.length === 0) {
@@ -71,10 +79,13 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
       );
     }
 
-    const reportedStatus =
-      typeof body.status === 'string' && body.status.trim().length > 0
-        ? body.status.trim()
-        : 'busy';
+    const reportedStatus = body.status === undefined ? 'busy' : parseWorkerStatus(body.status);
+    if (reportedStatus === null) {
+      return NextResponse.json(
+        { success: false, error: { code: 'INVALID_INPUT', message: 'status 仅支持 idle/busy/offline/draining' } },
+        { status: 400 }
+      );
+    }
     const shouldKeepDraining =
       existing[0].status === 'draining' &&
       (reportedStatus === 'idle' || reportedStatus === 'busy');

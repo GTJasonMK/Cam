@@ -11,7 +11,7 @@ export default function DashboardLoading() {
       {/* KPI 卡片骨架 */}
       <div className="grid grid-cols-1 gap-9 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="min-h-[9.25rem] rounded-2xl border border-white/8 p-7 shadow-[var(--shadow-card)]">
+          <div key={i} className="min-h-[9.25rem] rounded-2xl border border-border p-7 shadow-[var(--shadow-card)]">
             <div className="flex items-start justify-between gap-4">
               <Skeleton className="h-5 w-16" />
               <Skeleton className="h-14 w-14 rounded-xl" />
@@ -25,7 +25,7 @@ export default function DashboardLoading() {
       <div className="grid gap-9 xl:grid-cols-3">
         <div className="space-y-9 xl:col-span-2">
           {/* Worker 表格骨架 */}
-          <div className="rounded-2xl border border-white/8 p-8 shadow-[var(--shadow-card)]">
+          <div className="rounded-2xl border border-border p-8 shadow-[var(--shadow-card)]">
             <Skeleton className="mb-7 h-4 w-20" />
             <div className="space-y-3">
               {Array.from({ length: 4 }, (_, i) => (
@@ -34,7 +34,7 @@ export default function DashboardLoading() {
             </div>
           </div>
           {/* Agent 统计骨架 */}
-          <div className="rounded-2xl border border-white/8 p-8 shadow-[var(--shadow-card)]">
+          <div className="rounded-2xl border border-border p-8 shadow-[var(--shadow-card)]">
             <Skeleton className="mb-7 h-4 w-24" />
             <div className="space-y-3">
               {Array.from({ length: 3 }, (_, i) => (
@@ -44,7 +44,7 @@ export default function DashboardLoading() {
           </div>
         </div>
         {/* 最近事件骨架 */}
-        <div className="rounded-2xl border border-white/8 shadow-[var(--shadow-card)]">
+        <div className="rounded-2xl border border-border shadow-[var(--shadow-card)]">
           <div className="border-b border-border/30 px-7 py-5">
             <Skeleton className="h-4 w-20" />
           </div>

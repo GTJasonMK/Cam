@@ -43,6 +43,29 @@ test('parseCreateTaskTemplatePayload: 流水线模板允许缺省标题和提示
   assert.equal(result.data.pipelineSteps?.length, 1);
 });
 
+test('parseCreateTaskTemplatePayload: 支持并行子任务与输入约束字段', () => {
+  const result = parseCreateTaskTemplatePayload({
+    name: '并行流水线模板',
+    pipelineSteps: [
+      {
+        title: '实现阶段',
+        description: '按模块并行',
+        inputFiles: ['summary.md', 'module-a.md'],
+        inputCondition: 'summary.md 存在',
+        parallelAgents: [
+          { title: 'A', description: '实现 A', agentDefinitionId: 'codex' },
+          { title: 'B', description: '实现 B', agentDefinitionId: 'claude-code' },
+        ],
+      },
+    ],
+  });
+  assert.equal(result.success, true);
+  if (!result.success) return;
+  assert.equal(result.data.pipelineSteps?.[0].parallelAgents?.length, 2);
+  assert.deepEqual(result.data.pipelineSteps?.[0].inputFiles, ['summary.md', 'module-a.md']);
+  assert.equal(result.data.pipelineSteps?.[0].inputCondition, 'summary.md 存在');
+});
+
 test('parseCreateTaskTemplatePayload: 非法 pipelineSteps 返回失败', () => {
   const result = parseCreateTaskTemplatePayload({
     name: '非法流水线',

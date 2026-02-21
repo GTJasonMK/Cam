@@ -14,7 +14,7 @@ const TabsList = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
-    className={cn('relative flex gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] p-1.5', className)}
+    className={cn('relative flex gap-1.5 rounded-xl border border-border bg-card/70 p-1.5', className)}
     {...props}
   />
 ));
@@ -29,7 +29,7 @@ const TabsTrigger = React.forwardRef<
     className={cn(
       'relative rounded-lg px-5 py-2.5 text-sm font-medium transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
       'text-muted-foreground hover:text-foreground',
-      'data-[state=active]:bg-white/[0.08] data-[state=active]:text-foreground data-[state=active]:shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]',
+      'data-[state=active]:border data-[state=active]:border-border-light data-[state=active]:bg-card-elevated data-[state=active]:text-foreground data-[state=active]:shadow-[0_1px_0_rgba(255,255,255,0.06)]',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       className,
     )}
@@ -104,7 +104,7 @@ function TabBar({ tabs, activeKey, onChange }: TabBarProps) {
                   'ml-2 inline-flex min-w-[20px] items-center justify-center rounded px-1.5 text-[0.78rem]',
                   tab.key === activeKey
                     ? 'bg-primary/15 text-primary'
-                    : 'bg-muted text-muted-foreground',
+                    : 'bg-muted/90 text-muted-foreground',
                 )}
               >
                 {tab.count}

@@ -17,6 +17,14 @@ function send(ws: WebSocket, msg: ServerMessage): void {
   }
 }
 
+function collectStepTaskIds(step: { nodes: Array<{ taskId: string }> }): string[] {
+  return step.nodes.map((node) => node.taskId);
+}
+
+function collectStepSessionIds(step: { nodes: Array<{ sessionId?: string }> }): string[] {
+  return step.nodes.map((node) => node.sessionId).filter((id): id is string => Boolean(id));
+}
+
 /**
  * Attach Agent 会话到 WebSocket（PTY 输出 + 退出处理 + 流水线推进）
  * 提取为辅助函数以便 agent-create 和 pipeline-create 复用
@@ -72,8 +80,11 @@ async function handlePipelineAdvancement(
       type: 'pipeline-step-status',
       pipelineId,
       stepIndex: pipeline.currentStepIndex,
-      taskId: currentStep.taskId,
+      taskIds: collectStepTaskIds(currentStep),
       status: currentStep.status,
+      ...(collectStepSessionIds(currentStep).length > 0
+        ? { sessionIds: collectStepSessionIds(currentStep) }
+        : {}),
     });
   }
 
@@ -98,11 +109,13 @@ async function handlePipelineAdvancement(
   }
 
   // 尝试推进到下一步
-  const nextMeta = await agentSessionManager.advancePipeline(pipelineId, user);
+  const nextMetas = await agentSessionManager.advancePipeline(pipelineId, user);
 
-  if (nextMeta) {
+  if (nextMetas && nextMetas.length > 0) {
     // 新步骤已启动 → attach 并通知前端
-    attachAgentSession(ws, nextMeta, attachedSessions, user);
+    for (const meta of nextMetas) {
+      attachAgentSession(ws, meta, attachedSessions, user);
+    }
 
     const updatedPipeline = agentSessionManager.getPipeline(pipelineId);
     const nextStep = updatedPipeline?.steps[updatedPipeline.currentStepIndex];
@@ -111,24 +124,26 @@ async function handlePipelineAdvancement(
       type: 'pipeline-step-status',
       pipelineId,
       stepIndex: updatedPipeline?.currentStepIndex ?? 0,
-      taskId: nextStep?.taskId ?? '',
+      taskIds: nextStep ? collectStepTaskIds(nextStep) : [],
       status: 'running',
-      sessionId: nextMeta.sessionId,
+      ...(nextStep ? { sessionIds: collectStepSessionIds(nextStep) } : {}),
     });
 
     // 同时发送 agent-created 让前端感知新会话
-    send(ws, {
-      type: 'agent-created',
-      sessionId: nextMeta.sessionId,
-      shell: 'agent',
-      agentDefinitionId: nextMeta.agentDefinitionId,
-      agentDisplayName: nextMeta.agentDisplayName,
-      workBranch: nextMeta.workBranch,
-      status: 'running',
-      repoPath: nextMeta.repoPath,
-      mode: nextMeta.mode,
-      claudeSessionId: nextMeta.claudeSessionId,
-    });
+    for (const meta of nextMetas) {
+      send(ws, {
+        type: 'agent-created',
+        sessionId: meta.sessionId,
+        shell: 'agent',
+        agentDefinitionId: meta.agentDefinitionId,
+        agentDisplayName: meta.agentDisplayName,
+        workBranch: meta.workBranch,
+        status: 'running',
+        repoPath: meta.repoPath,
+        mode: meta.mode,
+        claudeSessionId: meta.claudeSessionId,
+      });
+    }
   } else {
     // 没有下一步 → 流水线完成
     const finalPipeline = agentSessionManager.getPipeline(pipelineId);
@@ -339,7 +354,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
 
       case 'pipeline-create': {
         try {
-          const { pipeline, firstSessionMeta } = await agentSessionManager.createPipeline(
+          const { pipeline, startedSessionMetas } = await agentSessionManager.createPipeline(
             {
               agentDefinitionId: msg.agentDefinitionId,
               workDir: msg.workDir,
@@ -352,37 +367,40 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
             { id: user.id, username: user.username },
           );
 
-          // Attach 第一步的 Agent 会话
-          attachAgentSession(ws, firstSessionMeta, attachedSessions, user);
+          // Attach 第一步的所有 Agent 会话
+          for (const meta of startedSessionMetas) {
+            attachAgentSession(ws, meta, attachedSessions, user);
+          }
 
           send(ws, {
             type: 'pipeline-created',
             pipelineId: pipeline.pipelineId,
             steps: pipeline.steps.map((s) => ({
-              taskId: s.taskId,
+              stepId: s.stepId,
               title: s.title,
               status: s.status,
+              taskIds: collectStepTaskIds(s),
+              ...(collectStepSessionIds(s).length > 0 ? { sessionIds: collectStepSessionIds(s) } : {}),
             })),
             currentStep: 0,
-            sessionId: firstSessionMeta.sessionId,
-            shell: 'agent',
-            agentDisplayName: pipeline.agentDisplayName,
-            workBranch: firstSessionMeta.workBranch,
+            sessionIds: startedSessionMetas.map((meta) => meta.sessionId),
             repoPath: pipeline.repoPath,
           });
 
           // 同时发送 agent-created 让前端添加会话条目
-          send(ws, {
-            type: 'agent-created',
-            sessionId: firstSessionMeta.sessionId,
-            shell: 'agent',
-            agentDefinitionId: firstSessionMeta.agentDefinitionId,
-            agentDisplayName: firstSessionMeta.agentDisplayName,
-            workBranch: firstSessionMeta.workBranch,
-            status: 'running',
-            repoPath: firstSessionMeta.repoPath,
-            mode: firstSessionMeta.mode,
-          });
+          for (const meta of startedSessionMetas) {
+            send(ws, {
+              type: 'agent-created',
+              sessionId: meta.sessionId,
+              shell: 'agent',
+              agentDefinitionId: meta.agentDefinitionId,
+              agentDisplayName: meta.agentDisplayName,
+              workBranch: meta.workBranch,
+              status: 'running',
+              repoPath: meta.repoPath,
+              mode: meta.mode,
+            });
+          }
         } catch (err) {
           send(ws, { type: 'error', message: (err as Error).message });
         }
@@ -442,7 +460,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
           break;
         }
         try {
-          const { advanced, sessionMeta } = await agentSessionManager.resumePipeline(
+          const { advanced, sessionMetas } = await agentSessionManager.resumePipeline(
             msg.pipelineId,
             { id: user.id, username: user.username },
           );
@@ -453,34 +471,40 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
             type: 'pipeline-resumed',
             pipelineId: msg.pipelineId,
             currentStep: updatedPipeline?.currentStepIndex ?? 0,
-            sessionId: sessionMeta?.sessionId,
+            ...(sessionMetas && sessionMetas.length > 0
+              ? { sessionIds: sessionMetas.map((meta) => meta.sessionId) }
+              : {}),
           });
 
           // 如果推进了新步骤，attach 并发送 agent-created
-          if (advanced && sessionMeta) {
-            attachAgentSession(ws, sessionMeta, attachedSessions, user);
+          if (advanced && sessionMetas && sessionMetas.length > 0) {
+            for (const meta of sessionMetas) {
+              attachAgentSession(ws, meta, attachedSessions, user);
+            }
 
             const nextStep = updatedPipeline?.steps[updatedPipeline.currentStepIndex];
             send(ws, {
               type: 'pipeline-step-status',
               pipelineId: msg.pipelineId,
               stepIndex: updatedPipeline?.currentStepIndex ?? 0,
-              taskId: nextStep?.taskId ?? '',
+              taskIds: nextStep ? collectStepTaskIds(nextStep) : [],
               status: 'running',
-              sessionId: sessionMeta.sessionId,
+              ...(nextStep ? { sessionIds: collectStepSessionIds(nextStep) } : {}),
             });
 
-            send(ws, {
-              type: 'agent-created',
-              sessionId: sessionMeta.sessionId,
-              shell: 'agent',
-              agentDefinitionId: sessionMeta.agentDefinitionId,
-              agentDisplayName: sessionMeta.agentDisplayName,
-              workBranch: sessionMeta.workBranch,
-              status: 'running',
-              repoPath: sessionMeta.repoPath,
-              mode: sessionMeta.mode,
-            });
+            for (const meta of sessionMetas) {
+              send(ws, {
+                type: 'agent-created',
+                sessionId: meta.sessionId,
+                shell: 'agent',
+                agentDefinitionId: meta.agentDefinitionId,
+                agentDisplayName: meta.agentDisplayName,
+                workBranch: meta.workBranch,
+                status: 'running',
+                repoPath: meta.repoPath,
+                mode: meta.mode,
+              });
+            }
           }
 
           // 如果恢复后发现流水线已完成（最后一步已完成）

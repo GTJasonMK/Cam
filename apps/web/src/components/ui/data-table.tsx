@@ -82,7 +82,7 @@ function SkeletonRows({ columns, rows = 5 }: { columns: number; rows?: number })
   return (
     <>
       {Array.from({ length: rows }, (_, rowIdx) => (
-        <TableRow key={rowIdx} className="border-t border-white/6">
+        <TableRow key={rowIdx} className="border-t border-border-subtle">
           {Array.from({ length: columns }, (_, colIdx) => (
             <TableCell key={colIdx}>
               <Skeleton className={cn('h-[1.1rem]', widths[(rowIdx + colIdx) % widths.length])} />
@@ -230,7 +230,7 @@ export function DataTable<T>({
     <div
       className={cn(
         'overflow-hidden',
-        !borderless && 'rounded-2xl border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.05)_0%,rgba(255,255,255,0.02)_100%)] shadow-[var(--shadow-card)]',
+        !borderless && 'rounded-2xl border border-border bg-card shadow-[var(--shadow-card)]',
       )}
     >
       <Table>
@@ -240,7 +240,7 @@ export function DataTable<T>({
             <TableRow
               key={headerGroup.id}
               className={cn(
-                'bg-white/[0.04] hover:bg-white/[0.04]',
+                'bg-card-elevated/55 hover:bg-card-elevated/55',
                 stickyHeader && 'sticky top-0 z-10',
               )}
             >
@@ -269,7 +269,7 @@ export function DataTable<T>({
               <TableCell colSpan={totalColumns} className="py-20 text-center">
                 {EmptyIcon && (
                   <div className="mb-4 flex justify-center">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-white/8 bg-muted/60 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-muted/60 shadow-[inset_0_2px_4px_rgba(0,0,0,0.2)]">
                       <EmptyIcon size={28} className="text-muted-foreground/50" />
                     </div>
                   </div>
@@ -293,7 +293,7 @@ export function DataTable<T>({
                   <TableRow
                     data-state={selected ? 'selected' : undefined}
                     className={cn(
-                      'border-t border-white/6',
+                      'border-t border-border',
                       selected ? 'bg-primary/12' : '',
                       isClickable && 'cursor-pointer',
                     )}
@@ -315,7 +315,7 @@ export function DataTable<T>({
                     })}
                   </TableRow>
                   {expanded && expandContent !== null && (
-                    <TableRow className="border-t border-white/10 bg-white/[0.04] hover:bg-white/[0.04]">
+                    <TableRow className="border-t border-border bg-card-elevated/50 hover:bg-card-elevated/50">
                       <TableCell colSpan={totalColumns} className="px-6 py-5">
                         {expandContent}
                       </TableCell>

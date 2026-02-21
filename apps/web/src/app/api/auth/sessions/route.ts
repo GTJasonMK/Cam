@@ -13,6 +13,7 @@ import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
 
 async function handleGet(request: AuthenticatedRequest) {
   const now = new Date().toISOString();
+  const currentToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   const rows = db
     .select({
@@ -32,16 +33,30 @@ async function handleGet(request: AuthenticatedRequest) {
     .orderBy(desc(sessions.createdAt))
     .all();
 
-  // 标记当前 Session
-  const currentToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-  // 为了不暴露 token，通过 session 创建时间识别当前 session（最新的）
-  const data = rows.map((row, idx) => ({
+  let currentSessionId: string | null = null;
+  if (currentToken) {
+    const current = db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.userId, request.user.id),
+          eq(sessions.token, currentToken),
+          gt(sessions.expiresAt, now),
+        )
+      )
+      .limit(1)
+      .get();
+    currentSessionId = current?.id ?? null;
+  }
+
+  const data = rows.map((row) => ({
     id: row.id,
     ipAddress: row.ipAddress || '-',
     userAgent: row.userAgent || '-',
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
-    isCurrent: idx === 0 && Boolean(currentToken), // 近似标记
+    isCurrent: row.id === currentSessionId,
   }));
 
   return NextResponse.json({ success: true, data });

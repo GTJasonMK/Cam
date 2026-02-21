@@ -36,7 +36,14 @@ interface PipelineTemplateItem {
   id: string;
   name: string;
   agentDefinitionId: string | null;
-  pipelineSteps: Array<{ title: string; description: string; agentDefinitionId?: string }> | null;
+  pipelineSteps: Array<{
+    title: string;
+    description: string;
+    agentDefinitionId?: string;
+    inputFiles?: string[];
+    inputCondition?: string;
+    parallelAgents?: Array<{ title?: string; description: string; agentDefinitionId?: string }>;
+  }> | null;
   maxRetries: number | null;
   repoUrl: string | null;
   baseBranch: string | null;
@@ -55,6 +62,14 @@ interface PipelineStep {
   title: string;
   prompt: string;
   agentDefinitionId: string;
+  inputFiles: string;
+  inputCondition: string;
+  parallelAgents: Array<{
+    _id: string;
+    title: string;
+    prompt: string;
+    agentDefinitionId: string;
+  }>;
 }
 
 interface Props {
@@ -64,8 +79,27 @@ interface Props {
 }
 
 // ---- 样式 ----
-const inputCls = 'w-full rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
-const selectCls = 'rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
+const inputCls = 'w-full rounded-lg border border-border bg-input-bg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
+const selectCls = 'rounded-lg border border-border bg-input-bg px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
+let parallelIdCounter = 0;
+
+function nextParallelId(): string {
+  parallelIdCounter += 1;
+  return `p-${parallelIdCounter}`;
+}
+
+function parseInputFiles(raw: string): string[] {
+  const files = raw
+    .split(/[\n,]/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return Array.from(new Set(files));
+}
+
+function formatInputFiles(files?: string[]): string {
+  if (!files || files.length === 0) return '';
+  return files.join(', ');
+}
 
 // ============================================================
 // 组件
@@ -88,8 +122,8 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
 
   // 步骤列表（每步含独立 agentDefinitionId）
   const [steps, setSteps] = useState<PipelineStep[]>([
-    { title: '', prompt: '', agentDefinitionId: '' },
-    { title: '', prompt: '', agentDefinitionId: '' },
+    { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
+    { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
   ]);
 
   // 保存模板弹窗
@@ -151,6 +185,14 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       title: s.title,
       prompt: s.description,
       agentDefinitionId: s.agentDefinitionId || '',
+      inputFiles: formatInputFiles(s.inputFiles),
+      inputCondition: s.inputCondition || '',
+      parallelAgents: (s.parallelAgents ?? []).map((node) => ({
+        _id: nextParallelId(),
+        title: node.title || '',
+        prompt: node.description,
+        agentDefinitionId: node.agentDefinitionId || '',
+      })),
     })));
   }, [pipelineTemplates]);
 
@@ -160,7 +202,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
   }, []);
 
   const addStep = useCallback(() => {
-    setSteps((prev) => [...prev, { title: '', prompt: '', agentDefinitionId: '' }]);
+    setSteps((prev) => [...prev, { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] }]);
   }, []);
 
   const removeStep = useCallback((index: number) => {
@@ -181,6 +223,45 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
     ));
   }, []);
 
+  const addParallelAgent = useCallback((index: number) => {
+    setSteps((prev) => prev.map((step, i) => (
+      i === index
+        ? {
+            ...step,
+            parallelAgents: [
+              ...step.parallelAgents,
+              { _id: nextParallelId(), title: '', prompt: '', agentDefinitionId: '' },
+            ],
+          }
+        : step
+    )));
+  }, []);
+
+  const removeParallelAgent = useCallback((stepIndex: number, parallelId: string) => {
+    setSteps((prev) => prev.map((step, i) => (
+      i === stepIndex
+        ? { ...step, parallelAgents: step.parallelAgents.filter((node) => node._id !== parallelId) }
+        : step
+    )));
+  }, []);
+
+  const updateParallelAgent = useCallback((
+    stepIndex: number,
+    parallelId: string,
+    field: 'title' | 'prompt' | 'agentDefinitionId',
+    value: string,
+  ) => {
+    setSteps((prev) => prev.map((step, i) => {
+      if (i !== stepIndex) return step;
+      return {
+        ...step,
+        parallelAgents: step.parallelAgents.map((node) => (
+          node._id === parallelId ? { ...node, [field]: value } : node
+        )),
+      };
+    }));
+  }, []);
+
   // ---- 保存为模板 ----
   const handleSaveAsTemplate = useCallback(async () => {
     if (!saveName.trim()) return;
@@ -190,6 +271,25 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         title: s.title.trim(),
         description: s.prompt.trim(),
         ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+        ...(parseInputFiles(s.inputFiles).length > 0 ? { inputFiles: parseInputFiles(s.inputFiles) } : {}),
+        ...(s.inputCondition.trim() ? { inputCondition: s.inputCondition.trim() } : {}),
+        ...(s.parallelAgents
+          .map((node) => ({
+            ...(node.title.trim() ? { title: node.title.trim() } : {}),
+            description: node.prompt.trim(),
+            ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+          }))
+          .filter((node) => node.description.length > 0).length > 0
+          ? {
+              parallelAgents: s.parallelAgents
+                .map((node) => ({
+                  ...(node.title.trim() ? { title: node.title.trim() } : {}),
+                  description: node.prompt.trim(),
+                  ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+                }))
+                .filter((node) => node.description.length > 0),
+            }
+          : {}),
       }));
 
       const res = await fetch('/api/task-templates', {
@@ -237,7 +337,20 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       repoUrl,
       baseBranch,
       workDir,
-      steps,
+      steps: steps.map((step) => ({
+        title: step.title,
+        prompt: step.prompt,
+        agentDefinitionId: step.agentDefinitionId,
+        inputFiles: parseInputFiles(step.inputFiles),
+        inputCondition: step.inputCondition.trim() || undefined,
+        parallelAgents: step.parallelAgents
+          .map((node) => ({
+            title: node.title.trim() || undefined,
+            prompt: node.prompt,
+            agentDefinitionId: node.agentDefinitionId || undefined,
+          }))
+          .filter((node) => node.prompt.trim().length > 0),
+      })),
     });
     downloadPipelineJson(data);
   }, [defaultAgent, repoUrl, baseBranch, workDir, steps]);
@@ -275,6 +388,14 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       title: s.title,
       prompt: s.description,
       agentDefinitionId: s.agentDefinitionId || '',
+      inputFiles: formatInputFiles(s.inputFiles),
+      inputCondition: s.inputCondition || '',
+      parallelAgents: (s.parallelAgents ?? []).map((node) => ({
+        _id: nextParallelId(),
+        title: node.title || '',
+        prompt: node.description,
+        agentDefinitionId: node.agentDefinitionId || '',
+      })),
     })));
     setError('');
   }, [agents]);
@@ -304,6 +425,25 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         title: s.title.trim(),
         prompt: s.prompt.trim(),
         ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+        ...(parseInputFiles(s.inputFiles).length > 0 ? { inputFiles: parseInputFiles(s.inputFiles) } : {}),
+        ...(s.inputCondition.trim() ? { inputCondition: s.inputCondition.trim() } : {}),
+        ...(s.parallelAgents
+          .map((node) => ({
+            ...(node.title.trim() ? { title: node.title.trim() } : {}),
+            prompt: node.prompt.trim(),
+            ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+          }))
+          .filter((node) => node.prompt.length > 0).length > 0
+          ? {
+              parallelAgents: s.parallelAgents
+                .map((node) => ({
+                  ...(node.title.trim() ? { title: node.title.trim() } : {}),
+                  prompt: node.prompt.trim(),
+                  ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+                }))
+                .filter((node) => node.prompt.length > 0),
+            }
+          : {}),
       })),
     });
 
@@ -314,8 +454,8 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
 
     // 重置并关闭
     setSteps([
-      { title: '', prompt: '', agentDefinitionId: '' },
-      { title: '', prompt: '', agentDefinitionId: '' },
+      { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
+      { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
     ]);
     setSelectedTemplateId('');
     setError('');
@@ -394,7 +534,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
           <div className="space-y-3">
             <label className="text-sm font-medium text-foreground">步骤定义</label>
             {steps.map((step, idx) => (
-              <div key={idx} className="rounded-lg border border-white/12 bg-white/[0.02] p-3 space-y-2">
+              <div key={idx} className="rounded-lg border border-border bg-card/70 p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-primary">步骤 {idx + 1}</span>
                   <div className="flex items-center gap-2">
@@ -406,7 +546,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                           const tpl = singleTemplates.find((t) => t.id === e.target.value);
                           if (tpl) fillFromSingleTemplate(idx, tpl);
                         }}
-                        className="rounded border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-muted-foreground"
+                        className="rounded border border-border bg-input-bg px-2 py-0.5 text-[11px] text-muted-foreground"
                       >
                         <option value="">{MSG.pipeline.fillFromTemplate}</option>
                         {singleTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
@@ -431,7 +571,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                   <select
                     value={step.agentDefinitionId}
                     onChange={(e) => updateStep(idx, 'agentDefinitionId', e.target.value)}
-                    className="flex-1 rounded border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-foreground"
+                    className="flex-1 rounded border border-border bg-input-bg px-2 py-1 text-xs text-foreground"
                   >
                     <option value="">{MSG.pipeline.stepAgentDefault}</option>
                     {agents.map((a) => <option key={a.id} value={a.id}>{a.displayName}</option>)}
@@ -452,13 +592,99 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                   rows={2}
                   className={`resize-none ${inputCls}`}
                 />
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground">输入文件（逗号/换行分隔，可选）</label>
+                    <input
+                      type="text"
+                      value={step.inputFiles}
+                      onChange={(e) => updateStep(idx, 'inputFiles', e.target.value)}
+                      placeholder="summary.md, module-a.md"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-muted-foreground">输入条件（可选）</label>
+                    <input
+                      type="text"
+                      value={step.inputCondition}
+                      onChange={(e) => updateStep(idx, 'inputCondition', e.target.value)}
+                      placeholder="例如：当 summary.md 存在时"
+                      className={inputCls}
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border bg-card/70 p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-muted-foreground">步骤内并行 Agent（可选）</span>
+                    <button
+                      type="button"
+                      onClick={() => addParallelAgent(idx)}
+                      className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:border-border-light transition-colors"
+                    >
+                      <Plus size={11} />
+                      添加并行子任务
+                    </button>
+                  </div>
+
+                  {step.parallelAgents.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground/80">
+                      不配置并行子任务时，将由当前步骤主提示词驱动单个 Agent 执行。
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {step.parallelAgents.map((node, nodeIdx) => (
+                        <div key={node._id} className="rounded border border-border bg-card/60 p-2 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-primary">并行子任务 {nodeIdx + 1}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeParallelAgent(idx, node._id)}
+                              className="rounded p-1 text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                              title="移除此并行子任务"
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                          <input
+                            type="text"
+                            value={node.title}
+                            onChange={(e) => updateParallelAgent(idx, node._id, 'title', e.target.value)}
+                            placeholder="子任务标题（可选）"
+                            className={inputCls}
+                          />
+                          <div className="flex items-center gap-2">
+                            <label className="text-[11px] text-muted-foreground whitespace-nowrap">Agent:</label>
+                            <select
+                              value={node.agentDefinitionId}
+                              onChange={(e) => updateParallelAgent(idx, node._id, 'agentDefinitionId', e.target.value)}
+                              className="flex-1 rounded border border-border bg-input-bg px-2 py-1 text-xs text-foreground"
+                            >
+                              <option value="">{MSG.pipeline.stepAgentDefault}</option>
+                              {agents.map((a) => <option key={a.id} value={a.id}>{a.displayName}</option>)}
+                            </select>
+                          </div>
+                          <textarea
+                            value={node.prompt}
+                            onChange={(e) => updateParallelAgent(idx, node._id, 'prompt', e.target.value)}
+                            rows={2}
+                            placeholder="该并行 Agent 的独立提示词"
+                            className={`resize-none ${inputCls}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
 
             <button
               type="button"
               onClick={addStep}
-              className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-white/15 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-border-light transition-colors"
             >
               <Plus size={12} />
               {MSG.pipeline.addStep}
@@ -502,7 +728,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
                 setSaveDialogOpen(true);
               }}
               disabled={steps.length < 2 || !steps.every((s) => s.title.trim() && s.prompt.trim())}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-border-light transition-colors disabled:opacity-50"
             >
               <Save size={14} />
               {MSG.pipeline.saveAsTemplate}
@@ -513,7 +739,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
               type="button"
               onClick={handleExportConfig}
               disabled={steps.length < 2 || !steps.every((s) => s.title.trim() && s.prompt.trim())}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-border-light transition-colors disabled:opacity-50"
             >
               <Download size={14} />
               {MSG.pipeline.exportConfig}
@@ -523,7 +749,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
             <button
               type="button"
               onClick={handleImportConfig}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-white/25 transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-border-light transition-colors"
             >
               <Upload size={14} />
               {MSG.pipeline.importConfig}
@@ -536,7 +762,7 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         {/* 保存模板弹窗 */}
         {saveDialogOpen && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded-lg z-10">
-            <div className="bg-card border border-white/12 rounded-lg p-5 w-80 space-y-3">
+            <div className="bg-card border border-border rounded-lg p-5 w-80 space-y-3">
               <h3 className="text-sm font-semibold">{MSG.pipeline.saveDialogTitle}</h3>
               <p className="text-xs text-muted-foreground">{MSG.pipeline.saveDialogDesc}</p>
               <div className="space-y-1.5">

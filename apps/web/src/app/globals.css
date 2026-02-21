@@ -2,77 +2,77 @@
 @import "tw-animate-css";
 
 @theme {
-  /* 线性风格主题色板 */
-  --color-background: #050506;
-  --color-input-bg: #0f1014;
-  --color-card: #0a0c12;
-  --color-card-foreground: #edecef;
-  --color-card-elevated: #121620;
-  --color-surface-hover: rgba(255, 255, 255, 0.08);
-  --color-muted: rgba(255, 255, 255, 0.04);
+  /* 控制台主题色板（简洁、专业、低噪点） */
+  --color-background: #0b1117;
+  --color-input-bg: #0f1823;
+  --color-card: #111b27;
+  --color-card-foreground: #e9eef5;
+  --color-card-elevated: #162333;
+  --color-surface-hover: rgba(137, 160, 195, 0.16);
+  --color-muted: rgba(140, 164, 196, 0.1);
 
-  --color-foreground: #edecef;
-  --color-text-tertiary: #6e7483;
-  --color-muted-foreground: #8a8f98;
+  --color-foreground: #e9eef5;
+  --color-text-tertiary: #6f839d;
+  --color-muted-foreground: #95a4ba;
 
-  --color-border-subtle: rgba(255, 255, 255, 0.05);
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-light: rgba(255, 255, 255, 0.14);
+  --color-border-subtle: rgba(137, 160, 195, 0.12);
+  --color-border: rgba(137, 160, 195, 0.2);
+  --color-border-light: rgba(165, 184, 214, 0.32);
 
-  --color-primary: #5e6ad2;
+  --color-primary: #2f6fed;
   --color-primary-foreground: #ffffff;
-  --color-destructive: #ef5a7a;
-  --color-success: #26c281;
-  --color-warning: #f4b35f;
-  --color-accent: #6872d9;
-  --color-ring: #5e6ad2;
-  --color-cyan: #59a6ff;
+  --color-destructive: #e35d6a;
+  --color-success: #22a06b;
+  --color-warning: #f59e0b;
+  --color-accent: #1f9b87;
+  --color-ring: #2f6fed;
+  --color-cyan: #2aa8d8;
 
-  --color-secondary: rgba(255, 255, 255, 0.06);
-  --color-secondary-foreground: #edecef;
+  --color-secondary: rgba(137, 160, 195, 0.14);
+  --color-secondary-foreground: #e9eef5;
   --color-destructive-foreground: #ffffff;
-  --color-accent-foreground: #edecef;
-  --color-popover: #0a0c12;
-  --color-popover-foreground: #edecef;
-  --color-input: rgba(255, 255, 255, 0.12);
+  --color-accent-foreground: #e9eef5;
+  --color-popover: #101924;
+  --color-popover-foreground: #e9eef5;
+  --color-input: rgba(137, 160, 195, 0.3);
 
   --radius: 1rem;
 
-  --color-sidebar: rgba(8, 10, 14, 0.9);
-  --color-sidebar-foreground: #edecef;
-  --color-sidebar-primary: #5e6ad2;
+  --color-sidebar: rgba(11, 17, 23, 0.92);
+  --color-sidebar-foreground: #e9eef5;
+  --color-sidebar-primary: #2f6fed;
   --color-sidebar-primary-foreground: #ffffff;
-  --color-sidebar-accent: rgba(255, 255, 255, 0.06);
-  --color-sidebar-accent-foreground: #edecef;
-  --color-sidebar-border: rgba(255, 255, 255, 0.08);
+  --color-sidebar-accent: rgba(137, 160, 195, 0.12);
+  --color-sidebar-accent-foreground: #e9eef5;
+  --color-sidebar-border: rgba(137, 160, 195, 0.18);
   --sidebar-width: 16.5rem;
 }
 
 /* ---- 自定义 CSS 变量（不影响布局，放在 unlayered 没问题） ---- */
 
 :root {
-  --background-deep: #020203;
-  --background: #050506;
-  --background-elevated: #0a0a0c;
-  --foreground: #edecef;
-  --card: #0a0c12;
-  --card-elevated: #121620;
-  --primary: #5e6ad2;
+  --background-deep: #060b11;
+  --background: #0b1117;
+  --background-elevated: #0f1722;
+  --foreground: #e9eef5;
+  --card: #111b27;
+  --card-elevated: #162333;
+  --primary: #2f6fed;
   --primary-foreground: #ffffff;
-  --muted: rgba(255, 255, 255, 0.04);
-  --muted-foreground: #8a8f98;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-light: rgba(255, 255, 255, 0.14);
-  --destructive: #ef5a7a;
-  --success: #26c281;
-  --warning: #f4b35f;
-  --accent: #6872d9;
-  --cyan: #59a6ff;
-  --accent-glow: rgba(94, 106, 210, 0.28);
+  --muted: rgba(140, 164, 196, 0.1);
+  --muted-foreground: #95a4ba;
+  --border: rgba(137, 160, 195, 0.2);
+  --border-light: rgba(165, 184, 214, 0.32);
+  --destructive: #e35d6a;
+  --success: #22a06b;
+  --warning: #f59e0b;
+  --accent: #1f9b87;
+  --cyan: #2aa8d8;
+  --accent-glow: rgba(47, 111, 237, 0.24);
   --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 20px rgba(0, 0, 0, 0.42), 0 0 42px rgba(0, 0, 0, 0.24);
-  --shadow-card-hover: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 10px 42px rgba(0, 0, 0, 0.52), 0 0 82px rgba(94, 106, 210, 0.14);
-  --shadow-accent: 0 0 0 1px rgba(94, 106, 210, 0.5), 0 4px 14px rgba(94, 106, 210, 0.34), inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03), 0 0 0 1px rgba(137, 160, 195, 0.16), 0 10px 26px rgba(3, 8, 16, 0.32);
+  --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(165, 184, 214, 0.24), 0 16px 34px rgba(3, 8, 16, 0.42);
+  --shadow-accent: 0 0 0 1px rgba(47, 111, 237, 0.38), 0 8px 24px rgba(47, 111, 237, 0.24);
 }
 
 /* ---- 元素基础样式 — 放入 @layer base 以允许 Tailwind utilities 正常覆盖 ---- */
@@ -93,11 +93,11 @@
     background: var(--background);
     color: var(--foreground);
     background-image:
-      radial-gradient(1200px 680px at 50% -14%, rgba(94, 106, 210, 0.22) 0%, rgba(94, 106, 210, 0.02) 52%, transparent 74%),
-      radial-gradient(980px 760px at 10% 18%, rgba(104, 114, 217, 0.14) 0%, transparent 64%),
-      radial-gradient(900px 700px at 92% 22%, rgba(90, 102, 186, 0.12) 0%, transparent 62%),
-      radial-gradient(ellipse at top, #0a0a0f 0%, #050506 52%, #020203 100%);
-    font-family: var(--font-inter), "Geist Sans", system-ui, sans-serif;
+      radial-gradient(900px 520px at 50% -10%, rgba(47, 111, 237, 0.2) 0%, rgba(47, 111, 237, 0.03) 50%, transparent 70%),
+      radial-gradient(760px 520px at 8% 14%, rgba(31, 155, 135, 0.13) 0%, transparent 64%),
+      radial-gradient(760px 560px at 92% 16%, rgba(42, 168, 216, 0.12) 0%, transparent 62%),
+      linear-gradient(180deg, #0e1621 0%, #0b1117 54%, #060b11 100%);
+    font-family: var(--font-body), "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     color-scheme: dark;
@@ -113,7 +113,7 @@
   }
 
   ::selection {
-    background: rgba(94, 106, 210, 0.36);
+    background: rgba(47, 111, 237, 0.36);
     color: #fff;
   }
 
@@ -122,28 +122,28 @@
   textarea:focus-visible,
   select:focus-visible {
     outline: none;
-    border-color: rgba(94, 106, 210, 0.78) !important;
-    box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.5), 0 0 0 6px rgba(94, 106, 210, 0.12);
+    border-color: rgba(47, 111, 237, 0.78) !important;
+    box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.44), 0 0 0 6px rgba(47, 111, 237, 0.14);
   }
 
   button:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.5), 0 0 0 5px rgba(94, 106, 210, 0.18);
+    box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.5), 0 0 0 5px rgba(47, 111, 237, 0.18);
   }
 
   /* 滚动条 */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.16);
+    background: rgba(165, 184, 214, 0.32);
     border-radius: 999px;
   }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(165, 184, 214, 0.46); }
 
   /* 深色主题 select 下拉箭头 */
   select {
     appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f98' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2395a4ba' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.75rem center;
     padding-right: 2.5rem;
@@ -216,8 +216,8 @@
   }
 
   @keyframes glow-pulse {
-    0%, 100% { box-shadow: 0 0 8px rgba(94, 106, 210, 0.2); }
-    50%      { box-shadow: 0 0 22px rgba(94, 106, 210, 0.34); }
+    0%, 100% { box-shadow: 0 0 8px rgba(47, 111, 237, 0.2); }
+    50%      { box-shadow: 0 0 22px rgba(47, 111, 237, 0.34); }
   }
 
   @keyframes float-ambient {
@@ -300,7 +300,7 @@
     left: 34%;
     height: 1300px;
     width: 900px;
-    background: radial-gradient(circle, rgba(94, 106, 210, 0.18) 0%, rgba(94, 106, 210, 0) 85%);
+    background: radial-gradient(circle, rgba(47, 111, 237, 0.18) 0%, rgba(47, 111, 237, 0) 85%);
     animation: float-ambient 9.5s ease-in-out infinite;
   }
 
@@ -309,7 +309,7 @@
     left: -16%;
     height: 860px;
     width: 640px;
-    background: radial-gradient(circle, rgba(104, 114, 217, 0.14) 0%, rgba(104, 114, 217, 0) 80%);
+    background: radial-gradient(circle, rgba(31, 155, 135, 0.16) 0%, rgba(31, 155, 135, 0) 80%);
     animation: float-ambient-alt 8.8s ease-in-out infinite;
   }
 
@@ -318,7 +318,7 @@
     right: -18%;
     height: 780px;
     width: 580px;
-    background: radial-gradient(circle, rgba(82, 91, 164, 0.14) 0%, rgba(82, 91, 164, 0) 82%);
+    background: radial-gradient(circle, rgba(42, 168, 216, 0.15) 0%, rgba(42, 168, 216, 0) 82%);
     animation: float-ambient 10.5s ease-in-out infinite;
   }
 
@@ -327,7 +327,7 @@
     left: 24%;
     height: 760px;
     width: 920px;
-    background: radial-gradient(circle, rgba(94, 106, 210, 0.10) 0%, rgba(94, 106, 210, 0) 86%);
+    background: radial-gradient(circle, rgba(47, 111, 237, 0.1) 0%, rgba(47, 111, 237, 0) 86%);
     animation: pulse-ambient 7.6s ease-in-out infinite;
   }
 

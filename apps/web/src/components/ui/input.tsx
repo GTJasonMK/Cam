@@ -9,13 +9,13 @@ import { cn } from '@/lib/utils';
 /* ---- 共享样式 ---- */
 
 const fieldBase = [
-  'w-full rounded-lg border border-white/10 bg-[#0f1014]/90 px-4 py-3',
-  'text-[0.95rem] text-foreground placeholder:text-muted-foreground/65',
-  'shadow-[inset_0_1px_0_rgba(255,255,255,0.04),inset_0_-1px_0_rgba(0,0,0,0.35)]',
+  'w-full rounded-lg border border-border bg-input-bg px-4 py-3',
+  'text-[0.95rem] text-foreground placeholder:text-muted-foreground/70',
+  'shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]',
   'transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
-  'hover:border-white/18 hover:bg-[#11131a]',
-  'focus:border-primary/70 focus:outline-none focus:ring-2 focus:ring-primary/36 focus:ring-offset-2 focus:ring-offset-[#050506]',
-  'focus:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_0_0_1px_rgba(94,106,210,0.3),0_0_20px_rgba(94,106,210,0.2)]',
+  'hover:border-border-light hover:bg-card-elevated/60',
+  'focus:border-primary/70 focus:outline-none focus:ring-2 focus:ring-primary/36 focus:ring-offset-2 focus:ring-offset-background',
+  'focus:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_0_0_1px_rgba(47,111,237,0.3),0_0_16px_rgba(47,111,237,0.2)]',
   'disabled:cursor-not-allowed disabled:opacity-50',
 ].join(' ');
 
