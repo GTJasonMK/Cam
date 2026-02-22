@@ -222,6 +222,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     // 所有 Agent 都做目录检测；Claude Code 额外发现已有会话
     discoverRef.current = setTimeout(() => discover(workDir.trim()), 400);
     return () => { if (discoverRef.current) clearTimeout(discoverRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workDir, selectedAgent, open]);
 
   // ---- API ----

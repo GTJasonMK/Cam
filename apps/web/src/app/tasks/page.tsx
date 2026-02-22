@@ -27,12 +27,16 @@ import { Plus, Layers, Search, ArrowUpDown, XCircle, RotateCcw, CheckCircle, X, 
 const FILTER_STATUSES = ['', 'queued', 'waiting', 'running', 'awaiting_review', 'completed', 'failed', 'cancelled'];
 const CANCELLABLE_STATUSES = new Set(['queued', 'waiting', 'running']);
 const RERUNNABLE_STATUSES = new Set(['failed', 'cancelled', 'completed']);
+const DELETABLE_STATUSES = new Set(['draft', 'completed', 'failed', 'cancelled']);
 
 function canCancelTask(status: string): boolean {
   return CANCELLABLE_STATUSES.has(status);
 }
 function canRerunTask(status: string): boolean {
   return RERUNNABLE_STATUSES.has(status);
+}
+function canDeleteTask(status: string): boolean {
+  return DELETABLE_STATUSES.has(status);
 }
 
 export default function TasksPage() {
@@ -50,7 +54,7 @@ export default function TasksPage() {
   const [groupActionLoading, setGroupActionLoading] = useState(false);
   const [restartFromTaskId, setRestartFromTaskId] = useState<string>('');
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
-  const [batchActionLoading, setBatchActionLoading] = useState<null | 'cancel' | 'rerun'>(null);
+  const [batchActionLoading, setBatchActionLoading] = useState<null | 'cancel' | 'rerun' | 'delete'>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -138,6 +142,10 @@ export default function TasksPage() {
   );
   const selectedRerunnableCount = useMemo(
     () => visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canRerunTask(t.status)).length,
+    [visibleTasks, selectedTaskIds]
+  );
+  const selectedDeletableCount = useMemo(
+    () => visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canDeleteTask(t.status)).length,
     [visibleTasks, selectedTaskIds]
   );
 
@@ -313,6 +321,33 @@ export default function TasksPage() {
     notify({ type: 'success', title: '批量重跑完成', message: `已重跑 ${success} 个任务` });
   };
 
+  const handleBatchDelete = async () => {
+    const targets = visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canDeleteTask(t.status));
+    if (targets.length === 0) return;
+    const confirmed = await confirmDialog({
+      title: '删除已选任务?',
+      description: `将永久删除 ${targets.length} 个任务记录（不可恢复）。`,
+      confirmText: '批量删除',
+      confirmVariant: 'destructive',
+    });
+    if (!confirmed) return;
+
+    setBatchActionLoading('delete');
+    let success = 0, failed = 0;
+    for (const task of targets) {
+      try {
+        const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) success += 1; else failed += 1;
+      } catch { failed += 1; }
+    }
+    setBatchActionLoading(null);
+    setSelectedTaskIds(new Set());
+    await fetchTasks();
+    if (failed > 0) { notify({ type: 'error', title: '批量删除部分失败', message: `成功 ${success}，失败 ${failed}` }); return; }
+    notify({ type: 'success', title: '批量删除完成', message: `已删除 ${success} 个任务` });
+  };
+
   // ---- 单行操作 ----
 
   const handleRowReview = async (task: TaskItem, action: 'approve' | 'reject', options?: { merge?: boolean }) => {
@@ -342,7 +377,12 @@ export default function TasksPage() {
       title: `确认${label}任务?`, description: `${label}任务 "${task.title}"`, confirmText: label, confirmVariant: 'destructive',
     });
     if (!confirmed) return;
-    await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    const res = await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.success) {
+      notify({ type: 'error', title: `${label}失败`, message: json?.error?.message || '请求失败' });
+      return;
+    }
     notify({ type: 'success', title: '任务已取消', message: `任务 ${task.title} 已取消。` });
     fetchTasks();
   };
@@ -361,6 +401,60 @@ export default function TasksPage() {
     const json = await res.json().catch(() => null);
     if (!json?.success) { notify({ type: 'error', title: '重跑失败', message: json?.error?.message || '请求失败' }); return; }
     notify({ type: 'success', title: '任务已重新入队', message: '任务已重新入队。' });
+    fetchTasks();
+  };
+
+  const handleRowDelete = async (task: TaskItem) => {
+    const deletable = canDeleteTask(task.status);
+    const stoppable = canCancelTask(task.status);
+    if (!deletable && !stoppable) {
+      notify({
+        type: 'error',
+        title: '当前状态不可删除',
+        message: '请先将任务处理到可删除状态，或先停止任务后再删除。',
+      });
+      return;
+    }
+
+    const confirmed = await confirmDialog(deletable
+      ? {
+          title: '删除任务?',
+          description: `任务 "${task.title}" 将被永久删除（不可恢复）。`,
+          confirmText: '删除',
+          confirmVariant: 'destructive',
+        }
+      : {
+          title: '停止并删除任务?',
+          description: `任务 "${task.title}" 正在执行，将先停止再删除（不可恢复）。`,
+          confirmText: '停止并删除',
+          confirmVariant: 'destructive',
+        });
+    if (!confirmed) return;
+
+    if (!deletable && stoppable) {
+      const cancelRes = await fetch(`/api/tasks/${task.id}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: '用户在任务页执行停止并删除' }),
+      });
+      const cancelJson = await cancelRes.json().catch(() => null);
+      if (!cancelRes.ok || !cancelJson?.success) {
+        notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
+        return;
+      }
+    }
+
+    const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.success) {
+      notify({ type: 'error', title: '删除失败', message: json?.error?.message || '请求失败' });
+      return;
+    }
+    notify({
+      type: 'success',
+      title: deletable ? '任务已删除' : '任务已停止并删除',
+      message: `任务 ${task.title} 已删除。`,
+    });
     fetchTasks();
   };
 
@@ -464,6 +558,12 @@ export default function TasksPage() {
               <RotateCcw size={16} />
             </Button>
           )}
+          {(canDeleteTask(row.status) || canCancelTask(row.status)) && (
+            <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-destructive hover:bg-destructive/10"
+              onClick={() => handleRowDelete(row)} aria-label={canDeleteTask(row.status) ? '删除' : '停止并删除'}>
+              <Trash2 size={16} />
+            </Button>
+          )}
           {row.prUrl && (
             <a href={row.prUrl} target="_blank" rel="noopener noreferrer"
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-primary transition-colors hover:bg-primary/10" aria-label="查看 PR">
@@ -548,6 +648,9 @@ export default function TasksPage() {
             </Button>
             <Button size="sm" variant="secondary" disabled={batchActionLoading !== null || selectedRerunnableCount === 0} onClick={handleBatchRerun}>
               {batchActionLoading === 'rerun' ? '重跑中...' : `批量重跑 (${selectedRerunnableCount})`}
+            </Button>
+            <Button size="sm" variant="destructive" disabled={batchActionLoading !== null || selectedDeletableCount === 0} onClick={handleBatchDelete}>
+              {batchActionLoading === 'delete' ? '删除中...' : `批量删除 (${selectedDeletableCount})`}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setSelectedTaskIds(new Set())}>
               清空
@@ -881,7 +984,6 @@ function CreatePipelineModal({
   });
   const [repoPresetId, setRepoPresetId] = useState('');
   const [steps, setSteps] = useState<Array<{ _id: string; title: string; description: string; agentDefinitionId: string }>>([{ _id: '1', title: '', description: '', agentDefinitionId: '' }]);
-  const [stepCounter, setStepCounter] = useState(2);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [missingEnvVars, setMissingEnvVars] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -894,7 +996,7 @@ function CreatePipelineModal({
   useEffect(() => {
     if (open) {
       setForm({ agentDefinitionId: agents[0]?.id || '', repoUrl: '', baseBranch: 'main', workDir: '', maxRetries: 2, groupId: '' });
-      setRepoPresetId(''); setSteps([{ _id: '1', title: '', description: '', agentDefinitionId: '' }]); setStepCounter(2);
+      setRepoPresetId(''); setSteps([{ _id: '1', title: '', description: '', agentDefinitionId: '' }]);
       setSubmitError(null); setMissingEnvVars([]); setSaving(false); setPipelineTemplateId('');
     }
   }, [open, agents]);
@@ -941,7 +1043,6 @@ function CreatePipelineModal({
         return { _id: String(_pipelineStepIdCounter), title: s.title, description: s.description, agentDefinitionId: s.agentDefinitionId || '' };
       });
       setSteps(newSteps);
-      setStepCounter(_pipelineStepIdCounter + 1);
     }
   };
 
@@ -1026,7 +1127,6 @@ function CreatePipelineModal({
         <Button size="sm" variant="secondary" onClick={() => {
           _pipelineStepIdCounter += 1;
           setSteps((s) => [...s, { _id: String(_pipelineStepIdCounter), title: '', description: '', agentDefinitionId: '' }]);
-          setStepCounter((c) => c + 1);
         }}>
           <Plus size={13} className="mr-1" /> 添加步骤
         </Button>

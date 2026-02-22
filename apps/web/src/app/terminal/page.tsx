@@ -1,37 +1,71 @@
 // ============================================================
-// 终端页面
-// 任务页风格：页头 + 概览统计 + 会话列表 + 终端详情
+// 终端页面（任务页同构）
+// 仅展示执行项列表，详细会话与 Agent 信息在工作节点页查看
 // ============================================================
 
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import { Bot, GitBranch, Pause, Play, Plus, Square, TerminalSquare, Wifi, WifiOff } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Bot, GitBranch, Plus, RefreshCw, Search, Square, TerminalSquare, Trash2, Wifi, WifiOff } from 'lucide-react';
 import { useTerminalWs } from '@/hooks/useTerminalWs';
 import { useTerminalStore } from '@/stores/terminal';
-import { TerminalTabs } from '@/components/terminal/terminal-tabs';
 import { AgentCreateDialog } from '@/components/terminal/agent-create-dialog';
 import { PipelineCreateDialog } from '@/components/terminal/pipeline-create-dialog';
 import { PageHeader } from '@/components/ui/page-header';
-import { Button, buttonVariants } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
+import { TabBar } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { getStatusDisplayLabel, TASK_STATUS_COLORS } from '@/lib/constants';
 import { formatDurationMs } from '@/lib/time/duration';
-import { TASK_STATUS_COLORS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
+import { useFeedback } from '@/components/providers/feedback-provider';
 import type { AgentSessionStatus } from '@/lib/terminal/protocol';
 import type { TerminalSession } from '@/stores/terminal';
 
-// xterm 依赖 DOM API，必须 ssr: false
-const TerminalPanel = dynamic(
-  () => import('@/components/terminal/terminal-panel'),
-  { ssr: false },
-);
+type TerminalPageMode = 'runtime' | 'history';
+type ExecutionFilter = 'all' | 'terminal' | 'agent' | 'pipeline';
+type PipelineStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
-type SessionFilter = 'all' | 'running' | 'agent' | 'terminal';
+type SessionStatusPresentation = {
+  status: string;
+  label: string;
+  colorToken: string;
+  pulse: boolean;
+};
+
+type ExecutionRow = {
+  id: string;
+  executionId: string;
+  title: string;
+  kind: 'terminal' | 'agent' | 'pipeline';
+  kindLabel: string;
+  status: SessionStatusPresentation;
+  meta: string;
+  sessionId?: string;
+  pipelineId?: string;
+  running: boolean;
+  sortTs: number;
+};
+
+type HistoryTaskRow = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  groupId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+const TERMINAL_TASK_RUNNING_STATUSES = new Set(['queued', 'waiting', 'running', 'awaiting_review']);
+const TERMINAL_TASK_CANCELLABLE_STATUSES = new Set(['queued', 'waiting', 'running']);
+const TERMINAL_TASK_DELETABLE_STATUSES = new Set(['draft', 'completed', 'failed', 'cancelled']);
+const TERMINAL_HISTORY_STATUS_ORDER = ['running', 'awaiting_review', 'queued', 'waiting', 'completed', 'failed', 'cancelled', 'draft'];
 
 const AGENT_STATUS_COLORS: Record<AgentSessionStatus, string> = {
   running: 'primary',
@@ -47,7 +81,7 @@ const AGENT_STATUS_LABELS: Record<AgentSessionStatus, string> = {
   cancelled: '已取消',
 };
 
-const PIPELINE_STATUS_COLORS: Record<'running' | 'paused' | 'completed' | 'failed' | 'cancelled', string> = {
+const PIPELINE_STATUS_COLORS: Record<PipelineStatus, string> = {
   running: 'primary',
   paused: 'warning',
   completed: 'success',
@@ -55,7 +89,7 @@ const PIPELINE_STATUS_COLORS: Record<'running' | 'paused' | 'completed' | 'faile
   cancelled: 'muted-foreground',
 };
 
-const PIPELINE_STATUS_LABELS: Record<'running' | 'paused' | 'completed' | 'failed' | 'cancelled', string> = {
+const PIPELINE_STATUS_LABELS: Record<PipelineStatus, string> = {
   running: '运行中',
   paused: '已暂停',
   completed: '已完成',
@@ -63,9 +97,34 @@ const PIPELINE_STATUS_LABELS: Record<'running' | 'paused' | 'completed' | 'faile
   cancelled: '已取消',
 };
 
-function shortId(id: string, length = 10): string {
+function shortId(id: string, length = 12): string {
   if (id.length <= length) return id;
   return `${id.slice(0, length)}...`;
+}
+
+function toTimestamp(input?: string | null): number {
+  if (!input) return 0;
+  const t = new Date(input).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function formatDateTime(input?: string | null): string {
+  if (!input) return '-';
+  const t = new Date(input);
+  if (!Number.isFinite(t.getTime())) return '-';
+  return t.toLocaleString('zh-CN');
+}
+
+function canDeleteTerminalHistoryTask(status: string): boolean {
+  return TERMINAL_TASK_DELETABLE_STATUSES.has(status) || TERMINAL_TASK_CANCELLABLE_STATUSES.has(status);
+}
+
+function canStopTerminalHistoryTask(status: string): boolean {
+  return TERMINAL_TASK_CANCELLABLE_STATUSES.has(status);
+}
+
+function needsStopBeforeDelete(status: string): boolean {
+  return TERMINAL_TASK_CANCELLABLE_STATUSES.has(status) && !TERMINAL_TASK_DELETABLE_STATUSES.has(status);
 }
 
 function getSessionStatus(session: TerminalSession): SessionStatusPresentation {
@@ -78,48 +137,37 @@ function getSessionStatus(session: TerminalSession): SessionStatusPresentation {
       pulse: status === 'running',
     };
   }
-
   return {
     status: session.attached ? 'attached' : 'detached',
-    label: session.attached ? '已连接' : '待连接',
+    label: session.attached ? '执行中' : '未连接',
     colorToken: session.attached ? 'success' : 'warning',
-    pulse: false,
+    pulse: session.attached,
   };
 }
 
-type SessionStatusPresentation = {
-  status: string;
-  label: string;
-  colorToken: string;
-  pulse: boolean;
-};
-
-type TerminalSessionRow = {
-  sessionId: string;
-  title: string;
-  kind: 'agent' | 'terminal';
-  status: SessionStatusPresentation;
-  workBranch: string;
-  elapsedMs: number | null;
-  prompt: string;
-  raw: TerminalSession;
-};
-
 export default function TerminalPage() {
-  const { send, onOutput, onExit } = useTerminalWs();
+  const router = useRouter();
+  const { send } = useTerminalWs();
+  const { confirm: confirmDialog, notify } = useFeedback();
   const sessions = useTerminalStore((s) => s.sessions);
-  const activeSessionId = useTerminalStore((s) => s.activeSessionId);
   const connected = useTerminalStore((s) => s.connected);
   const pipelines = useTerminalStore((s) => s.pipelines);
-  const setActiveSession = useTerminalStore((s) => s.setActiveSession);
-  const removeSession = useTerminalStore((s) => s.removeSession);
 
+  const [pageMode, setPageMode] = useState<TerminalPageMode>('runtime');
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [pipelineDialogOpen, setPipelineDialogOpen] = useState(false);
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
+  const [filterKey, setFilterKey] = useState<ExecutionFilter>('all');
   const [keyword, setKeyword] = useState('');
+  const [runningOnly, setRunningOnly] = useState(false);
+  const [historyTasks, setHistoryTasks] = useState<HistoryTaskRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyKeyword, setHistoryKeyword] = useState('');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState('all');
+  const [historyRunningOnly, setHistoryRunningOnly] = useState(false);
+  const [historyPipelineOnly, setHistoryPipelineOnly] = useState(false);
+  const [historyBulkDeleting, setHistoryBulkDeleting] = useState(false);
 
-  // URL 参数预填充（从任务详情页跳转过来时使用）
   const searchParams = useSearchParams();
   const prefill = useMemo(() => {
     const agent = searchParams.get('agent');
@@ -136,12 +184,12 @@ export default function TerminalPage() {
       prompt: prompt || undefined,
     };
   }, [searchParams]);
+
   const openPipelineFromQuery = useMemo(
     () => searchParams.get('pipeline') === '1' || searchParams.get('mode') === 'pipeline',
-    [searchParams]
+    [searchParams],
   );
 
-  // URL 参数存在时自动打开 Agent 创建对话框
   const prefillAppliedRef = useRef(false);
   useEffect(() => {
     if (prefill && !prefillAppliedRef.current) {
@@ -158,49 +206,223 @@ export default function TerminalPage() {
     }
   }, [openPipelineFromQuery]);
 
-  // 输出回调注册表：sessionId → handler
-  const outputHandlers = useRef<Map<string, (data: string) => void>>(new Map());
-  // 输出缓冲区：xterm.js 加载前暂存 PTY 输出，加载后一次性回放
-  const outputBuffers = useRef<Map<string, string[]>>(new Map());
-
-  const registerOutput = useCallback((sessionId: string, handler: (data: string) => void) => {
-    outputHandlers.current.set(sessionId, handler);
-    // 回放在 handler 注册前缓冲的所有输出（Claude TUI 初始渲染等）
-    const buf = outputBuffers.current.get(sessionId);
-    if (buf) {
-      for (const data of buf) handler(data);
-      outputBuffers.current.delete(sessionId);
+  const fetchHistoryTasks = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setHistoryLoading(true);
+    try {
+      const res = await fetch('/api/tasks?source=terminal');
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success || !Array.isArray(json?.data)) {
+        setHistoryError(json?.error?.message || `HTTP ${res.status}`);
+        return;
+      }
+      const normalized = (json.data as Array<Record<string, unknown>>).map<HistoryTaskRow>((item) => ({
+        id: typeof item.id === 'string' ? item.id : '',
+        title: typeof item.title === 'string' ? item.title : '(未命名任务)',
+        description: typeof item.description === 'string' ? item.description : '',
+        status: typeof item.status === 'string' ? item.status : 'unknown',
+        groupId: typeof item.groupId === 'string' ? item.groupId : null,
+        createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
+        startedAt: typeof item.startedAt === 'string' ? item.startedAt : null,
+        completedAt: typeof item.completedAt === 'string' ? item.completedAt : null,
+      })).filter((item) => item.id);
+      setHistoryTasks(normalized);
+      setHistoryError(null);
+    } catch (err) {
+      setHistoryError((err as Error).message);
+    } finally {
+      if (!silent) setHistoryLoading(false);
     }
   }, []);
 
-  const unregisterOutput = useCallback((sessionId: string) => {
-    outputHandlers.current.delete(sessionId);
-    outputBuffers.current.delete(sessionId);
-  }, []);
+  const handleDeleteHistoryTask = useCallback(async (task: HistoryTaskRow) => {
+    if (!canDeleteTerminalHistoryTask(task.status)) {
+      notify({ type: 'error', title: '当前状态不可删除', message: '该任务当前状态不支持删除。' });
+      return;
+    }
 
-  // 绑定 WebSocket 输出/退出回调
-  useEffect(() => {
-    onOutput.current = (sessionId, data) => {
-      const handler = outputHandlers.current.get(sessionId);
-      if (handler) {
-        handler(data);
-      } else {
-        // xterm.js 尚未加载完成，缓冲输出等待回放
-        let buf = outputBuffers.current.get(sessionId);
-        if (!buf) {
-          buf = [];
-          outputBuffers.current.set(sessionId, buf);
+    const stopThenDelete = needsStopBeforeDelete(task.status);
+    const confirmed = await confirmDialog(stopThenDelete
+      ? {
+          title: '停止并删除历史任务?',
+          description: `任务 "${task.title}" 正在执行，将先停止再删除（不可恢复）。`,
+          confirmText: '停止并删除',
+          confirmVariant: 'destructive',
         }
-        buf.push(data);
-      }
-    };
-    onExit.current = (sessionId, exitCode) => {
-      console.log(`[Terminal] 会话 ${sessionId} 退出, code=${exitCode}`);
-      removeSession(sessionId);
-    };
-  }, [onOutput, onExit, removeSession]);
+      : {
+          title: '删除历史任务?',
+          description: `将永久删除 "${task.title}"（不可恢复）。`,
+          confirmText: '删除',
+          confirmVariant: 'destructive',
+        });
+    if (!confirmed) return;
 
-  // 页面加载时，自动 attach 已有会话
+    try {
+      if (stopThenDelete) {
+        const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: '用户在终端历史执行停止并删除' }),
+        });
+        const cancelJson = await cancelRes.json().catch(() => null);
+        if (!cancelRes.ok || !cancelJson?.success) {
+          notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
+          return;
+        }
+      }
+
+      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        notify({ type: 'error', title: '删除失败', message: json?.error?.message || '请求失败' });
+        return;
+      }
+
+      setHistoryTasks((prev) => prev.filter((item) => item.id !== task.id));
+      notify({
+        type: 'success',
+        title: stopThenDelete ? '历史任务已停止并删除' : '历史任务已删除',
+        message: `任务 ${task.title} 已删除。`,
+      });
+    } catch (err) {
+      notify({ type: 'error', title: '删除失败', message: (err as Error).message });
+    }
+  }, [confirmDialog, notify]);
+
+  const handleStopHistoryTask = useCallback(async (task: HistoryTaskRow) => {
+    if (!canStopTerminalHistoryTask(task.status)) {
+      notify({ type: 'error', title: '当前状态不可停止', message: '该任务当前状态无需停止。' });
+      return;
+    }
+
+    const confirmed = await confirmDialog({
+      title: '停止历史任务?',
+      description: `将停止 "${task.title}"，任务记录会保留。`,
+      confirmText: '停止',
+      confirmVariant: 'destructive',
+    });
+    if (!confirmed) return;
+
+    try {
+      const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: '用户在终端历史执行停止任务' }),
+      });
+      const cancelJson = await cancelRes.json().catch(() => null);
+      if (!cancelRes.ok || !cancelJson?.success) {
+        notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      setHistoryTasks((prev) => prev.map((item) => {
+        if (item.id !== task.id) return item;
+        return {
+          ...item,
+          status: 'cancelled',
+          completedAt: item.completedAt || nowIso,
+        };
+      }));
+      notify({ type: 'success', title: '历史任务已停止', message: `任务 ${task.title} 已停止。` });
+    } catch (err) {
+      notify({ type: 'error', title: '停止任务失败', message: (err as Error).message });
+    }
+  }, [confirmDialog, notify]);
+
+  const handleBulkDeleteHistory = useCallback(async () => {
+    const kw = historyKeyword.trim().toLowerCase();
+    const targets = historyTasks
+      .filter((task) => {
+        if (historyStatusFilter !== 'all' && task.status !== historyStatusFilter) return false;
+        if (historyRunningOnly && !TERMINAL_TASK_RUNNING_STATUSES.has(task.status)) return false;
+        if (historyPipelineOnly && !task.groupId) return false;
+        if (!kw) return true;
+        const searchable = `${task.id} ${task.title} ${task.description} ${task.groupId || ''}`;
+        return searchable.toLowerCase().includes(kw);
+      })
+      .filter((task) => canDeleteTerminalHistoryTask(task.status));
+    if (targets.length === 0) return;
+
+    const stopThenDeleteCount = targets.filter((task) => needsStopBeforeDelete(task.status)).length;
+    const confirmed = await confirmDialog({
+      title: '一键删除当前筛选结果?',
+      description: stopThenDeleteCount > 0
+        ? `将删除 ${targets.length} 条历史任务，其中 ${stopThenDeleteCount} 条会先停止再删除（不可恢复）。`
+        : `将删除 ${targets.length} 条历史任务（不可恢复）。`,
+      confirmText: '一键删除',
+      confirmVariant: 'destructive',
+    });
+    if (!confirmed) return;
+
+    setHistoryBulkDeleting(true);
+    let success = 0;
+    let failed = 0;
+    const deletedTaskIds = new Set<string>();
+
+    for (const task of targets) {
+      try {
+        if (needsStopBeforeDelete(task.status)) {
+          const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: '用户在终端历史执行一键停止并删除' }),
+          });
+          const cancelJson = await cancelRes.json().catch(() => null);
+          if (!cancelRes.ok || !cancelJson?.success) {
+            failed += 1;
+            continue;
+          }
+        }
+
+        const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: 'DELETE' });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          failed += 1;
+          continue;
+        }
+
+        deletedTaskIds.add(task.id);
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+
+    setHistoryBulkDeleting(false);
+    if (deletedTaskIds.size > 0) {
+      setHistoryTasks((prev) => prev.filter((item) => !deletedTaskIds.has(item.id)));
+    }
+
+    if (success === 0) {
+      notify({ type: 'error', title: '一键删除失败', message: '未成功删除任何历史任务。' });
+      return;
+    }
+    if (failed > 0) {
+      notify({ type: 'error', title: '一键删除部分完成', message: `已删除 ${success} 条，失败 ${failed} 条。` });
+      return;
+    }
+    notify({ type: 'success', title: '一键删除完成', message: `已删除 ${success} 条历史任务。` });
+  }, [
+    confirmDialog,
+    notify,
+    historyTasks,
+    historyKeyword,
+    historyStatusFilter,
+    historyRunningOnly,
+    historyPipelineOnly,
+  ]);
+
+  useEffect(() => {
+    if (pageMode !== 'history') return;
+    void fetchHistoryTasks();
+    const timer = setInterval(() => {
+      void fetchHistoryTasks({ silent: true });
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [pageMode, fetchHistoryTasks]);
+
+  // 维持 attach，确保 exited 事件和状态变更能持续同步
   useEffect(() => {
     if (!connected || sessions.length === 0) return;
     for (const session of sessions) {
@@ -214,27 +436,13 @@ export default function TerminalPage() {
     send({ type: 'create', cols: 80, rows: 24 });
   }, [send]);
 
-  const handleRemoveSessionOnly = useCallback((sessionId: string) => {
-    removeSession(sessionId);
-  }, [removeSession]);
-
   const handleDestroySession = useCallback((sessionId: string) => {
     send({ type: 'destroy', sessionId });
-    removeSession(sessionId);
-  }, [removeSession, send]);
+  }, [send]);
 
-  // 首次进入且无会话时自动创建
-  const autoCreatedRef = useRef(false);
-  useEffect(() => {
-    if (connected && sessions.length === 0 && !autoCreatedRef.current) {
-      autoCreatedRef.current = true;
-      handleNewTerminal();
-    }
-  }, [connected, sessions.length, handleNewTerminal]);
-
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
-    [sessions, activeSessionId],
+  const activePipelineCount = useMemo(
+    () => pipelines.filter((pipeline) => pipeline.status === 'running' || pipeline.status === 'paused').length,
+    [pipelines],
   );
 
   const runningAgentCount = useMemo(
@@ -242,122 +450,155 @@ export default function TerminalPage() {
     [sessions],
   );
 
-  const activePipelines = useMemo(
-    () => pipelines.filter((pipeline) => pipeline.status === 'running' || pipeline.status === 'paused'),
-    [pipelines],
-  );
-
-  const runningPipelineCount = useMemo(
-    () => pipelines.filter((pipeline) => pipeline.status === 'running').length,
-    [pipelines],
-  );
-
-  const sortedPipelines = useMemo(() => {
-    return [...pipelines].sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (a.status !== 'running' && b.status === 'running') return 1;
-      if (a.status === 'paused' && b.status !== 'paused') return -1;
-      if (a.status !== 'paused' && b.status === 'paused') return 1;
-      return a.pipelineId.localeCompare(b.pipelineId);
-    });
-  }, [pipelines]);
-
-  const filteredSessions = useMemo(() => {
-    const keywordLower = keyword.trim().toLowerCase();
-
-    const sorted = [...sessions].sort((a, b) => {
-      if (a.sessionId === activeSessionId) return -1;
-      if (b.sessionId === activeSessionId) return 1;
-
-      const aRunning = a.isAgent && a.agentInfo?.status === 'running';
-      const bRunning = b.isAgent && b.agentInfo?.status === 'running';
-      if (aRunning && !bRunning) return -1;
-      if (!aRunning && bRunning) return 1;
-
-      const aTime = new Date(a.createdAt).getTime();
-      const bTime = new Date(b.createdAt).getTime();
-      return Number.isFinite(bTime) && Number.isFinite(aTime) ? bTime - aTime : 0;
+  const rawRows = useMemo<ExecutionRow[]>(() => {
+    const sessionRows = sessions.map<ExecutionRow>((session) => {
+      const status = getSessionStatus(session);
+      const kind: ExecutionRow['kind'] = session.isAgent ? 'agent' : 'terminal';
+      const elapsed = session.isAgent && typeof session.agentInfo?.elapsedMs === 'number'
+        ? ` · ${formatDurationMs(session.agentInfo.elapsedMs)}`
+        : '';
+      return {
+        id: `session:${session.sessionId}`,
+        executionId: session.sessionId,
+        title: session.title,
+        kind,
+        kindLabel: kind === 'agent' ? 'Agent' : '终端命令',
+        status,
+        meta: `${session.isAgent ? 'Agent' : '终端'}${elapsed}`,
+        sessionId: session.sessionId,
+        running: status.status === 'running' || status.status === 'attached',
+        sortTs: toTimestamp(session.createdAt),
+      };
     });
 
-    return sorted.filter((session) => {
-      if (sessionFilter === 'running' && (!session.isAgent || session.agentInfo?.status !== 'running')) {
-        return false;
-      }
-      if (sessionFilter === 'agent' && !session.isAgent) {
-        return false;
-      }
-      if (sessionFilter === 'terminal' && session.isAgent) {
-        return false;
-      }
+    const pipelineRows = pipelines.map<ExecutionRow>((pipeline) => ({
+      id: `pipeline:${pipeline.pipelineId}`,
+      executionId: pipeline.pipelineId,
+      title: `流水线 ${shortId(pipeline.pipelineId, 14)}`,
+      kind: 'pipeline',
+      kindLabel: '流水线',
+      status: {
+        status: pipeline.status,
+        label: PIPELINE_STATUS_LABELS[pipeline.status],
+        colorToken: PIPELINE_STATUS_COLORS[pipeline.status],
+        pulse: pipeline.status === 'running',
+      },
+      meta: `步骤 ${pipeline.currentStep + 1}/${pipeline.steps.length}`,
+      pipelineId: pipeline.pipelineId,
+      running: pipeline.status === 'running' || pipeline.status === 'paused',
+      sortTs: 0,
+    }));
 
-      if (!keywordLower) return true;
-      const haystack = [
-        session.title,
-        session.sessionId,
-        session.agentInfo?.agentDisplayName ?? '',
-        session.agentInfo?.prompt ?? '',
-        session.agentInfo?.workBranch ?? '',
-      ].join(' ').toLowerCase();
-      return haystack.includes(keywordLower);
+    return [...pipelineRows, ...sessionRows].sort((a, b) => {
+      if (a.running && !b.running) return -1;
+      if (!a.running && b.running) return 1;
+      return b.sortTs - a.sortTs;
     });
-  }, [sessions, sessionFilter, keyword, activeSessionId]);
+  }, [sessions, pipelines]);
 
-  const sessionFilterCounts = useMemo(() => {
-    return {
-      all: sessions.length,
-      running: sessions.filter((session) => session.isAgent && session.agentInfo?.status === 'running').length,
-      agent: sessions.filter((session) => session.isAgent).length,
-      terminal: sessions.filter((session) => !session.isAgent).length,
-    } satisfies Record<SessionFilter, number>;
-  }, [sessions]);
+  const runtimeTabs = useMemo(() => ([
+    { key: 'all', label: '全部', count: rawRows.length },
+    { key: 'terminal', label: '终端命令', count: rawRows.filter((row) => row.kind === 'terminal').length },
+    { key: 'agent', label: 'Agent', count: rawRows.filter((row) => row.kind === 'agent').length },
+    { key: 'pipeline', label: '流水线', count: rawRows.filter((row) => row.kind === 'pipeline').length },
+  ]), [rawRows]);
 
-  const filteredSessionRows = useMemo<TerminalSessionRow[]>(
-    () => filteredSessions.map((session) => ({
-      sessionId: session.sessionId,
-      title: session.title,
-      kind: session.isAgent ? 'agent' : 'terminal',
-      status: getSessionStatus(session),
-      workBranch: session.agentInfo?.workBranch ?? '-',
-      elapsedMs: session.isAgent ? (session.agentInfo?.elapsedMs ?? 0) : null,
-      prompt: session.agentInfo?.prompt ?? '',
-      raw: session,
-    })),
-    [filteredSessions],
+  const visibleRows = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return rawRows.filter((row) => {
+      if (filterKey !== 'all' && row.kind !== filterKey) return false;
+      if (runningOnly && !row.running) return false;
+      if (!kw) return true;
+      return `${row.title} ${row.executionId} ${row.kindLabel}`.toLowerCase().includes(kw);
+    });
+  }, [rawRows, filterKey, runningOnly, keyword]);
+
+  const modeTabs = useMemo(() => ([
+    { key: 'runtime', label: '运行态', count: rawRows.length },
+    { key: 'history', label: '历史回溯', count: historyTasks.length },
+  ]), [rawRows.length, historyTasks.length]);
+
+  const historySummary = useMemo(() => {
+    const total = historyTasks.length;
+    const running = historyTasks.filter((task) => TERMINAL_TASK_RUNNING_STATUSES.has(task.status)).length;
+    const pipelines = historyTasks.filter((task) => Boolean(task.groupId)).length;
+    return { total, running, pipelines };
+  }, [historyTasks]);
+
+  const historyStatusTabs = useMemo(() => {
+    const statusCounts = new Map<string, number>();
+    for (const task of historyTasks) {
+      statusCounts.set(task.status, (statusCounts.get(task.status) || 0) + 1);
+    }
+    const sortedStatuses = Array.from(statusCounts.keys()).sort((a, b) => {
+      const aIndex = TERMINAL_HISTORY_STATUS_ORDER.indexOf(a);
+      const bIndex = TERMINAL_HISTORY_STATUS_ORDER.indexOf(b);
+      if (aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+      if (aIndex === -1) return 1;
+      if (bIndex === -1) return -1;
+      return aIndex - bIndex;
+    });
+    return [
+      { key: 'all', label: '全部', count: historyTasks.length },
+      ...sortedStatuses.map((status) => ({
+        key: status,
+        label: getStatusDisplayLabel(status),
+        count: statusCounts.get(status) || 0,
+      })),
+    ];
+  }, [historyTasks]);
+
+  const visibleHistoryRows = useMemo(() => {
+    const kw = historyKeyword.trim().toLowerCase();
+    return historyTasks
+      .filter((task) => {
+        if (historyStatusFilter !== 'all' && task.status !== historyStatusFilter) return false;
+        if (historyRunningOnly && !TERMINAL_TASK_RUNNING_STATUSES.has(task.status)) return false;
+        if (historyPipelineOnly && !task.groupId) return false;
+        if (!kw) return true;
+        const searchable = `${task.id} ${task.title} ${task.description} ${task.groupId || ''}`;
+        return searchable.toLowerCase().includes(kw);
+      })
+      .sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt));
+  }, [historyTasks, historyKeyword, historyStatusFilter, historyRunningOnly, historyPipelineOnly]);
+
+  const bulkDeletableHistoryCount = useMemo(
+    () => visibleHistoryRows.filter((row) => canDeleteTerminalHistoryTask(row.status)).length,
+    [visibleHistoryRows],
   );
 
-  const selectedSessionKeys = useMemo(
-    () => (activeSessionId ? new Set([activeSessionId]) : undefined),
-    [activeSessionId],
-  );
-
-  const sessionColumns = useMemo<Column<TerminalSessionRow>[]>(() => ([
+  const columns = useMemo<Column<ExecutionRow>[]>(() => ([
     {
-      key: 'session',
-      header: '会话',
-      className: 'w-[260px]',
+      key: 'execution',
+      header: '执行项',
+      className: 'w-[280px]',
       cell: (row) => (
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5">
-            {row.kind === 'agent' ? <Bot size={12} className="text-primary" /> : <TerminalSquare size={12} className="text-muted-foreground" />}
-            <span className="max-w-[240px] truncate text-sm font-medium text-foreground">{row.title}</span>
+            {row.kind === 'pipeline' ? (
+              <GitBranch size={13} className="text-primary" />
+            ) : row.kind === 'agent' ? (
+              <Bot size={13} className="text-primary" />
+            ) : (
+              <TerminalSquare size={13} className="text-muted-foreground" />
+            )}
+            <span className="max-w-[260px] truncate text-sm font-medium text-foreground">{row.title}</span>
           </div>
-          <p className="font-mono text-[11px] text-muted-foreground">{shortId(row.sessionId, 12)}</p>
-          {row.prompt ? (
-            <p className="max-w-[280px] truncate text-[11px] text-muted-foreground">{row.prompt}</p>
-          ) : null}
-          <p className="text-[11px] text-muted-foreground">
-            {row.kind === 'agent' ? 'Agent' : '终端'}
-            {' · '}
-            {row.workBranch}
-            {row.elapsedMs !== null ? ` · ${formatDurationMs(row.elapsedMs)}` : ''}
-          </p>
+          <p className="font-mono text-[11px] text-muted-foreground">{shortId(row.executionId, 14)}</p>
+          <p className="text-[11px] text-muted-foreground">{row.meta}</p>
         </div>
       ),
     },
     {
+      key: 'kind',
+      header: '类型',
+      className: 'w-[120px]',
+      cell: (row) => <span className="text-xs text-muted-foreground">{row.kindLabel}</span>,
+    },
+    {
       key: 'status',
       header: '状态',
-      className: 'w-[130px]',
+      className: 'w-[140px]',
       cell: (row) => (
         <StatusBadge
           status={row.status.status}
@@ -370,42 +611,187 @@ export default function TerminalPage() {
     {
       key: 'actions',
       header: '',
-      className: 'w-[170px] text-right',
+      className: 'w-[360px] text-right',
       cell: (row) => (
-        <div className="flex items-center justify-end gap-1.5">
-          {row.raw.isAgent && row.raw.agentInfo?.status === 'running' ? (
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {row.sessionId ? (
+            <Link
+              href={`/workers/terminal?sessionId=${encodeURIComponent(row.sessionId)}`}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+            >
+              节点详情
+            </Link>
+          ) : null}
+
+          {row.pipelineId ? (
+            <Link
+              href={`/workers/terminal?pipelineId=${encodeURIComponent(row.pipelineId)}`}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+            >
+              节点详情
+            </Link>
+          ) : null}
+
+          {row.pipelineId && row.status.status === 'running' ? (
             <button
               type="button"
-              onClick={() => send({ type: 'agent-cancel', sessionId: row.sessionId })}
+              onClick={() => send({ type: 'pipeline-pause', pipelineId: row.pipelineId! })}
+              className="rounded border border-yellow-500/30 px-2 py-1 text-[11px] text-yellow-500 transition-colors hover:bg-yellow-500/10"
+            >
+              暂停
+            </button>
+          ) : null}
+
+          {row.pipelineId && row.status.status === 'paused' ? (
+            <button
+              type="button"
+              onClick={() => send({ type: 'pipeline-resume', pipelineId: row.pipelineId! })}
+              className="rounded border border-green-500/30 px-2 py-1 text-[11px] text-green-500 transition-colors hover:bg-green-500/10"
+            >
+              继续
+            </button>
+          ) : null}
+
+          {row.pipelineId && (row.status.status === 'running' || row.status.status === 'paused') ? (
+            <button
+              type="button"
+              onClick={() => send({ type: 'pipeline-cancel', pipelineId: row.pipelineId! })}
               className="rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive transition-colors hover:bg-destructive/10"
             >
               取消
             </button>
           ) : null}
+
+          {row.kind === 'agent' && row.sessionId && row.status.status === 'running' ? (
+            <button
+              type="button"
+              onClick={() => send({ type: 'agent-cancel', sessionId: row.sessionId! })}
+              className="rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive transition-colors hover:bg-destructive/10"
+            >
+              取消 Agent
+            </button>
+          ) : null}
+
+          {row.sessionId && row.kind === 'terminal' ? (
+            <button
+              type="button"
+              onClick={() => handleDestroySession(row.sessionId!)}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+            >
+              关闭
+            </button>
+          ) : null}
+        </div>
+      ),
+    },
+  ]), [send, handleDestroySession]);
+
+  const historyColumns = useMemo<Column<HistoryTaskRow>[]>(() => ([
+    {
+      key: 'task',
+      header: '终端任务',
+      className: 'w-[320px]',
+      cell: (row) => (
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-1.5">
+            <TerminalSquare size={13} className="text-muted-foreground" />
+            <span className="max-w-[300px] truncate text-sm font-medium text-foreground">{row.title}</span>
+          </div>
+          <p className="font-mono text-[11px] text-muted-foreground">{shortId(row.id, 14)}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {row.groupId ? `流水线 ${row.groupId}` : '独立终端会话'}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: 'status',
+      header: '状态',
+      className: 'w-[140px]',
+      cell: (row) => (
+        <StatusBadge
+          status={row.status}
+          colorToken={TASK_STATUS_COLORS[row.status] || 'muted-foreground'}
+          label={getStatusDisplayLabel(row.status)}
+          pulse={TERMINAL_TASK_RUNNING_STATUSES.has(row.status)}
+        />
+      ),
+    },
+    {
+      key: 'time',
+      header: '时间',
+      className: 'w-[220px]',
+      cell: (row) => (
+        <div className="space-y-1 text-[11px] text-muted-foreground">
+          <p>创建: {formatDateTime(row.createdAt)}</p>
+          <p>开始: {formatDateTime(row.startedAt)}</p>
+          <p>结束: {formatDateTime(row.completedAt)}</p>
+        </div>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      className: 'w-[260px] text-right',
+      cell: (row) => (
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           <Link
-            href={`/workers?sessionId=${encodeURIComponent(row.sessionId)}`}
+            href={`/tasks/${encodeURIComponent(row.id)}`}
             className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
           >
-            节点
+            任务详情
           </Link>
+          {row.groupId?.startsWith('pipeline/') ? (
+            <Link
+              href={`/workers/terminal?pipelineId=${encodeURIComponent(row.groupId)}`}
+              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+            >
+              节点详情
+            </Link>
+          ) : null}
+          {canStopTerminalHistoryTask(row.status) ? (
+            <button
+              type="button"
+              onClick={() => void handleStopHistoryTask(row)}
+              className="inline-flex items-center gap-1 rounded border border-destructive/35 px-2 py-1 text-[11px] text-destructive transition-colors hover:bg-destructive/10"
+              title="停止任务（保留历史）"
+            >
+              <Square size={12} />
+              停止
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={() => handleDestroySession(row.sessionId)}
-            className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+            disabled={!canDeleteTerminalHistoryTask(row.status)}
+            onClick={() => void handleDeleteHistoryTask(row)}
+            className={cn(
+              'inline-flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition-colors',
+              !canDeleteTerminalHistoryTask(row.status)
+                ? 'cursor-not-allowed border-border/60 text-muted-foreground/50'
+                : 'border-destructive/35 text-destructive hover:bg-destructive/10',
+            )}
+            title={canDeleteTerminalHistoryTask(row.status)
+              ? (needsStopBeforeDelete(row.status) ? '先停止再删除' : '删除历史任务')
+              : '当前状态不可删除'}
           >
-            关闭
+            <Trash2 size={12} />
+            {needsStopBeforeDelete(row.status) ? '停止并删除' : '删除'}
           </button>
         </div>
       ),
     },
-  ]), [handleDestroySession, send]);
+  ]), [handleDeleteHistoryTask, handleStopHistoryTask]);
 
   return (
-    <div className="space-y-10">
-      <PageHeader title="终端" subtitle="统一管理终端会话、Agent 执行与流水线进度">
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-12">
+      <PageHeader
+        title="终端"
+        subtitle={pageMode === 'runtime'
+          ? '执行视图（流水线 / 终端命令）；详细会话与 Agent 信息请在工作节点查看'
+          : '历史回溯（终端来源任务）；可回看历史执行与日志'}
+      >
+        <div className="flex items-center gap-3">
           <Button
-            size="sm"
             variant="secondary"
             disabled={!connected}
             onClick={() => setPipelineDialogOpen(true)}
@@ -414,7 +800,6 @@ export default function TerminalPage() {
             新建流水线
           </Button>
           <Button
-            size="sm"
             variant="secondary"
             disabled={!connected}
             onClick={() => setAgentDialogOpen(true)}
@@ -422,309 +807,165 @@ export default function TerminalPage() {
             <Bot size={15} className="mr-1" />
             新建 Agent
           </Button>
-          <Button
-            size="sm"
-            disabled={!connected}
-            onClick={handleNewTerminal}
-          >
+          <Button disabled={!connected} onClick={handleNewTerminal}>
             <Plus size={15} className="mr-1" />
             新建终端
           </Button>
         </div>
       </PageHeader>
 
-      <div className="flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card/70 px-5 py-4">
-        <span className="inline-flex items-center gap-2 text-sm">
-          {connected ? <Wifi size={15} className="text-success" /> : <WifiOff size={15} className="text-destructive" />}
-          <span className={cn('font-medium', connected ? 'text-success' : 'text-destructive')}>
-            {connected ? '已连接' : '未连接'}
-          </span>
-        </span>
-        <span className="h-3 w-px bg-border" />
-        <span className="text-sm text-muted-foreground">会话总数 <span className="font-semibold text-foreground">{sessions.length}</span></span>
-        <span className="text-sm text-muted-foreground">运行中 Agent <span className="font-semibold text-primary">{runningAgentCount}</span></span>
-        <span className="text-sm text-muted-foreground">活跃流水线 <span className="font-semibold text-primary">{activePipelines.length}</span></span>
-        <span className="text-sm text-muted-foreground">运行中流水线 <span className="font-semibold text-primary">{runningPipelineCount}</span></span>
-      </div>
+      <TabBar
+        tabs={modeTabs}
+        activeKey={pageMode}
+        onChange={(key) => setPageMode((key as TerminalPageMode) || 'runtime')}
+      />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)]">
-        <div className="space-y-6">
-          <section className="overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[var(--shadow-card)]">
-            <div className="border-b border-border px-4 py-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-foreground">会话列表</span>
-                <span className="text-xs text-muted-foreground">{filteredSessions.length} / {sessions.length}</span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {([
-                  { key: 'all', label: '全部' },
-                  { key: 'running', label: '运行中' },
-                  { key: 'agent', label: 'Agent' },
-                  { key: 'terminal', label: '终端' },
-                ] as Array<{ key: SessionFilter; label: string }>).map((filter) => {
-                  const active = sessionFilter === filter.key;
-                  return (
-                    <button
-                      key={filter.key}
-                      type="button"
-                      onClick={() => setSessionFilter(filter.key)}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors',
-                        active
-                          ? 'border-primary/35 bg-primary/12 text-primary'
-                          : 'border-border bg-input-bg text-muted-foreground hover:text-foreground',
-                      )}
-                    >
-                      {filter.label}
-                      <span className={cn(
-                        'rounded px-1.5 py-0.5 text-[11px]',
-                        active ? 'bg-primary/20 text-primary' : 'bg-muted text-muted-foreground',
-                      )}
-                      >
-                        {sessionFilterCounts[filter.key]}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <input
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
-                placeholder="搜索会话标题、ID、分支或提示词"
-                className="mt-3 h-9 w-full rounded-lg border border-border bg-input-bg px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary/40"
-              />
-            </div>
-
-            <div className="max-h-[560px] overflow-y-auto p-3">
-              <DataTable
-                columns={sessionColumns}
-                data={filteredSessionRows}
-                rowKey={(row) => row.sessionId}
-                onRowClick={(row) => setActiveSession(row.sessionId)}
-                selectedKeys={selectedSessionKeys}
-                borderless
-                stickyHeader
-                emptyMessage={sessions.length === 0 ? (connected ? '暂无会话，点击上方按钮创建。' : '正在连接终端服务...') : '没有匹配的会话'}
-                emptyHint={sessions.length === 0 ? '你可以在页头创建终端、Agent 或流水线。' : '请调整筛选条件或搜索关键词。'}
-              />
-            </div>
-          </section>
-
-          <section className="overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[var(--shadow-card)]">
-            <div className="border-b border-border px-4 py-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-foreground">流水线执行</span>
-                <span className="text-xs text-muted-foreground">活跃 {activePipelines.length}</span>
-              </div>
-            </div>
-            <div className="max-h-[420px] space-y-2 overflow-y-auto p-3">
-              {sortedPipelines.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-                  暂无流水线执行记录
-                </div>
-              ) : (
-                sortedPipelines.map((pipeline) => (
-                  <div key={pipeline.pipelineId} className="rounded-lg border border-border bg-card-elevated/65 p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <GitBranch size={13} className="text-primary" />
-                          <span className="font-mono text-xs text-muted-foreground">{pipeline.pipelineId}</span>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          当前步骤 {pipeline.currentStep + 1}/{pipeline.steps.length}
-                        </p>
-                      </div>
-                      <StatusBadge
-                        status={pipeline.status}
-                        colorToken={PIPELINE_STATUS_COLORS[pipeline.status]}
-                        label={PIPELINE_STATUS_LABELS[pipeline.status]}
-                        pulse={pipeline.status === 'running'}
-                      />
-                    </div>
-
-                    {(pipeline.status === 'running' || pipeline.status === 'paused') ? (
-                      <div className="mt-2 flex items-center gap-2">
-                        <Link
-                          href={`/workers?pipelineId=${encodeURIComponent(pipeline.pipelineId)}`}
-                          className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
-                        >
-                          节点视图
-                        </Link>
-                        {pipeline.status === 'running' ? (
-                          <button
-                            type="button"
-                            onClick={() => send({ type: 'pipeline-pause', pipelineId: pipeline.pipelineId })}
-                            className="inline-flex items-center gap-1 rounded border border-yellow-500/30 px-2 py-1 text-xs text-yellow-500 transition-colors hover:bg-yellow-500/10"
-                          >
-                            <Pause size={11} />
-                            暂停
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => send({ type: 'pipeline-resume', pipelineId: pipeline.pipelineId })}
-                            className="inline-flex items-center gap-1 rounded border border-green-500/30 px-2 py-1 text-xs text-green-500 transition-colors hover:bg-green-500/10"
-                          >
-                            <Play size={11} />
-                            继续
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => send({ type: 'pipeline-cancel', pipelineId: pipeline.pipelineId })}
-                          className="inline-flex items-center gap-1 rounded border border-destructive/30 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                        >
-                          <Square size={11} />
-                          取消
-                        </button>
-                      </div>
-                    ) : null}
-
-                    <div className="mt-3 space-y-1.5">
-                      {pipeline.steps.map((step, index) => {
-                        const isCurrent = index === pipeline.currentStep;
-                        return (
-                          <div
-                            key={`${pipeline.pipelineId}-${index}-${step.title}`}
-                            className={cn(
-                              'rounded border px-2 py-1.5',
-                              isCurrent ? 'border-primary/30 bg-primary/10' : 'border-border bg-background/40',
-                            )}
-                          >
-                            <div className="flex flex-wrap items-center gap-2 text-xs">
-                              <span className="text-muted-foreground">{index + 1}.</span>
-                              <span className={cn('text-foreground', isCurrent && 'font-semibold')}>
-                                {step.title || `步骤 ${index + 1}`}
-                              </span>
-                              <StatusBadge
-                                status={step.status}
-                                colorToken={TASK_STATUS_COLORS[step.status] || 'muted-foreground'}
-                                size="sm"
-                              />
-                              {step.taskIds.length > 0 ? (
-                                <span className="text-[11px] text-muted-foreground">
-                                  {step.taskIds.length} 个任务
-                                </span>
-                              ) : null}
-                            </div>
-                            {step.sessionIds && step.sessionIds.length > 0 ? (
-                              <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                                会话: {step.sessionIds.map((id) => shortId(id, 8)).join(', ')}
-                              </p>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </div>
-
-        <section className="overflow-hidden rounded-2xl border border-border bg-card/80 shadow-[var(--shadow-card)]">
-          <div className="border-b border-border px-4 py-3">
-            {activeSession ? (
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground">{activeSession.title}</span>
-                    <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                      {activeSession.isAgent ? 'Agent' : '终端'}
-                    </span>
-                    {activeSession.isAgent ? (
-                      <StatusBadge
-                        status={activeSession.agentInfo?.status ?? 'running'}
-                        colorToken={AGENT_STATUS_COLORS[activeSession.agentInfo?.status ?? 'running']}
-                        label={AGENT_STATUS_LABELS[activeSession.agentInfo?.status ?? 'running']}
-                      />
-                    ) : null}
-                  </div>
-                  <p className="mt-1 font-mono text-xs text-muted-foreground">ID: {activeSession.sessionId}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Link
-                    href={`/workers?sessionId=${encodeURIComponent(activeSession.sessionId)}`}
-                    className={buttonVariants({ size: 'sm', variant: 'secondary' })}
-                  >
-                    工作节点
-                  </Link>
-                  {activeSession.isAgent && activeSession.agentInfo?.status === 'running' ? (
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => send({ type: 'agent-cancel', sessionId: activeSession.sessionId })}
-                    >
-                      <Square size={13} className="mr-1" />
-                      取消 Agent
-                    </Button>
-                  ) : null}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleDestroySession(activeSession.sessionId)}
-                  >
-                    关闭会话
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground">暂无可用会话</div>
-            )}
+      {pageMode === 'runtime' ? (
+        <>
+          <div className="flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card/70 px-5 py-4">
+            <span className="inline-flex items-center gap-2 text-sm">
+              {connected ? <Wifi size={15} className="text-success" /> : <WifiOff size={15} className="text-destructive" />}
+              <span className={cn('font-medium', connected ? 'text-success' : 'text-destructive')}>
+                {connected ? '已连接' : '未连接'}
+              </span>
+            </span>
+            <span className="h-3 w-px bg-border" />
+            <span className="text-sm text-muted-foreground">执行项 <span className="font-semibold text-foreground">{rawRows.length}</span></span>
+            <span className="text-sm text-muted-foreground">运行中 Agent <span className="font-semibold text-primary">{runningAgentCount}</span></span>
+            <span className="text-sm text-muted-foreground">活跃流水线 <span className="font-semibold text-primary">{activePipelineCount}</span></span>
           </div>
 
-          {sessions.length > 0 ? (
-            <div className="border-b border-border bg-[var(--background-elevated)]">
-              <TerminalTabs
-                sessions={sessions}
-                activeSessionId={activeSessionId}
-                onSelect={setActiveSession}
-                onClose={handleRemoveSessionOnly}
-                send={send}
-              />
+          <TabBar
+            tabs={runtimeTabs}
+            activeKey={filterKey}
+            onChange={(key) => setFilterKey((key as ExecutionFilter) || 'all')}
+          />
+
+          <div className="flex flex-wrap items-end justify-between gap-5">
+            <div className="flex flex-wrap items-end gap-5">
+              <div className="relative w-80 max-w-full">
+                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="执行名称 / 会话 ID / 流水线 ID"
+                  className="pl-10"
+                />
+              </div>
+              <Button
+                variant={runningOnly ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-11 border border-border"
+                onClick={() => setRunningOnly((prev) => !prev)}
+              >
+                {runningOnly ? '仅看运行中' : '显示全部状态'}
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <Button variant="ghost" size="sm" onClick={() => router.push('/workers/terminal')}>
+                查看终端节点详情
+              </Button>
+            </div>
+          </div>
+
+          <DataTable
+            columns={columns}
+            data={visibleRows}
+            rowKey={(r) => r.id}
+            emptyMessage="未找到匹配执行项"
+            emptyHint={keyword || filterKey !== 'all' || !runningOnly ? '请尝试调整筛选条件。' : '先创建终端命令、Agent 或流水线。'}
+          />
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card/70 px-5 py-4">
+            <span className="text-sm text-muted-foreground">历史终端任务 <span className="font-semibold text-foreground">{historySummary.total}</span></span>
+            <span className="text-sm text-muted-foreground">运行中 <span className="font-semibold text-primary">{historySummary.running}</span></span>
+            <span className="text-sm text-muted-foreground">流水线任务 <span className="font-semibold text-primary">{historySummary.pipelines}</span></span>
+          </div>
+
+          <TabBar
+            tabs={historyStatusTabs}
+            activeKey={historyStatusFilter}
+            onChange={(key) => setHistoryStatusFilter(key || 'all')}
+          />
+
+          <div className="flex flex-wrap items-end justify-between gap-5">
+            <div className="flex flex-wrap items-end gap-5">
+              <div className="relative w-96 max-w-full">
+                <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={historyKeyword}
+                  onChange={(e) => setHistoryKeyword(e.target.value)}
+                  placeholder="任务标题 / 任务 ID / 流水线 ID"
+                  className="pl-10"
+                />
+              </div>
+              <Button
+                variant={historyRunningOnly ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-11 border border-border"
+                onClick={() => setHistoryRunningOnly((prev) => !prev)}
+              >
+                {historyRunningOnly ? '仅看运行中' : '显示全部状态'}
+              </Button>
+              <Button
+                variant={historyPipelineOnly ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-11 border border-border"
+                onClick={() => setHistoryPipelineOnly((prev) => !prev)}
+              >
+                {historyPipelineOnly ? '仅流水线任务' : '全部任务'}
+              </Button>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-11"
+                onClick={() => void handleBulkDeleteHistory()}
+                disabled={historyBulkDeleting || historyLoading || bulkDeletableHistoryCount === 0}
+              >
+                <Trash2 size={14} className="mr-1.5" />
+                {historyBulkDeleting ? '一键删除中...' : `一键删除 (${bulkDeletableHistoryCount})`}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="h-11 border border-border"
+                onClick={() => void fetchHistoryTasks()}
+                disabled={historyLoading}
+              >
+                <RefreshCw size={14} className={cn('mr-1.5', historyLoading && 'animate-spin')} />
+                刷新历史
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => router.push('/workers/terminal')}>
+                查看终端节点详情
+              </Button>
+            </div>
+          </div>
+
+          {historyError ? (
+            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              历史任务加载失败：{historyError}
             </div>
           ) : null}
 
-          <div className="relative h-[min(68vh,760px)] overflow-hidden bg-[var(--background-elevated)]">
-            {sessions.length === 0 ? (
-              <div className="flex h-full items-center justify-center">
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground">
-                    {connected ? '点击“新建终端”或“新建 Agent”开始使用' : '正在连接服务器...'}
-                  </p>
-                  {connected ? (
-                    <div className="mt-3 flex items-center justify-center gap-2">
-                      <Button size="sm" variant="secondary" onClick={() => setAgentDialogOpen(true)}>
-                        <Bot size={14} className="mr-1" />
-                        新建 Agent
-                      </Button>
-                      <Button size="sm" onClick={handleNewTerminal}>
-                        <Plus size={14} className="mr-1" />
-                        新建终端
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : (
-              sessions.map((session) => (
-                <TerminalPanel
-                  key={session.sessionId}
-                  sessionId={session.sessionId}
-                  active={session.sessionId === activeSessionId}
-                  send={send}
-                  registerOutput={registerOutput}
-                  unregisterOutput={unregisterOutput}
-                />
-              ))
-            )}
-          </div>
-        </section>
-      </div>
+          <DataTable
+            columns={historyColumns}
+            data={visibleHistoryRows}
+            rowKey={(row) => row.id}
+            loading={historyLoading && historyTasks.length === 0}
+            emptyMessage="未找到匹配历史任务"
+            emptyHint={historyKeyword || historyStatusFilter !== 'all' || historyRunningOnly || historyPipelineOnly
+              ? '请尝试调整筛选条件。'
+              : '暂无终端历史任务。'}
+          />
+        </>
+      )}
 
-      {/* Agent 创建对话框 */}
       <AgentCreateDialog
         open={agentDialogOpen}
         onOpenChange={setAgentDialogOpen}
@@ -732,7 +973,6 @@ export default function TerminalPage() {
         prefill={prefill}
       />
 
-      {/* 流水线创建对话框 */}
       <PipelineCreateDialog
         open={pipelineDialogOpen}
         onOpenChange={setPipelineDialogOpen}

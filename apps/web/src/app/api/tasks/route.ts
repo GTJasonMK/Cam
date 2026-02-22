@@ -1,13 +1,13 @@
 // ============================================================
 // API: Task CRUD + 状态管理
-// GET    /api/tasks         - 获取任务列表（支持 ?status= 筛选）
+// GET    /api/tasks         - 获取任务列表（支持 ?status=、?source= 筛选）
 // POST   /api/tasks         - 创建任务
 // ============================================================
 
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, systemEvents, agentDefinitions, repositories, workers } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { sseManager } from '@/lib/sse/manager';
 import { hasUsableSecretValue } from '@/lib/secrets/resolve';
@@ -28,10 +28,33 @@ async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
+    const source = searchParams.get('source');
+    const sourceFilter = source === 'scheduler' || source === 'terminal'
+      ? source
+      : source === 'all' || source === null
+        ? null
+        : 'invalid';
 
-    const result = status
-      ? await db.select().from(tasks).where(eq(tasks.status, status)).orderBy(tasks.createdAt)
-      : await db.select().from(tasks).orderBy(tasks.createdAt);
+    if (sourceFilter === 'invalid') {
+      return NextResponse.json(
+        { success: false, error: { code: 'INVALID_INPUT', message: 'source 仅支持 scheduler、terminal、all' } },
+        { status: 400 },
+      );
+    }
+
+    const filters: Array<ReturnType<typeof eq>> = [];
+    if (status) {
+      filters.push(eq(tasks.status, status));
+    }
+    if (sourceFilter) {
+      filters.push(eq(tasks.source, sourceFilter));
+    }
+
+    const result = filters.length === 0
+      ? await db.select().from(tasks).orderBy(tasks.createdAt)
+      : filters.length === 1
+        ? await db.select().from(tasks).where(filters[0]).orderBy(tasks.createdAt)
+        : await db.select().from(tasks).where(and(...filters)).orderBy(tasks.createdAt);
     return NextResponse.json({ success: true, data: result });
   } catch (err) {
     console.error('[API] 获取任务列表失败:', err);

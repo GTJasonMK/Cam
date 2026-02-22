@@ -9,6 +9,7 @@ import { users } from '@/lib/db/schema';
 import { sql } from 'drizzle-orm';
 import { hashPassword } from '@/lib/auth/password';
 import { createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { invalidateAuthModeCache } from '@/lib/auth/config';
 import { parseSetupPayload } from '@/lib/validation/user-input';
 
@@ -80,11 +81,7 @@ export async function POST(request: NextRequest) {
     }, { status: 201 });
 
     response.cookies.set(SESSION_COOKIE_NAME, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      path: '/',
-      maxAge: getSessionCookieMaxAgeSeconds(),
+      ...buildAuthCookieOptions({ maxAge: getSessionCookieMaxAgeSeconds() }),
     });
 
     return response;

@@ -5,7 +5,7 @@
 
 import { db } from '@/lib/db';
 import { tasks, workers, systemEvents, agentDefinitions } from '@/lib/db/schema';
-import { desc, sql, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { buildAgentStats, type AgentStatItem } from '@/lib/metrics/agent-stats';
 import { getTaskDurationMs } from '@/lib/time/duration';
 import { agentSessionManager } from '@/lib/terminal/agent-session-manager';
@@ -61,6 +61,8 @@ export interface DashboardData {
 
 /** 耗时统计样本上限（取最近 N 条，避免全表计算） */
 const DURATION_SAMPLE_LIMIT = 500;
+/** 仪表盘任务统计口径：与任务页保持一致，仅统计调度任务 */
+const DASHBOARD_TASK_SOURCE = 'scheduler' as const;
 
 export async function fetchDashboardData(): Promise<DashboardData> {
   // 并行执行所有数据库查询
@@ -69,6 +71,7 @@ export async function fetchDashboardData(): Promise<DashboardData> {
     db
       .select({ status: tasks.status, count: sql<number>`cast(count(*) as integer)` })
       .from(tasks)
+      .where(eq(tasks.source, DASHBOARD_TASK_SOURCE))
       .groupBy(tasks.status),
     // Worker 状态聚合
     db
@@ -107,7 +110,8 @@ export async function fetchDashboardData(): Promise<DashboardData> {
         startedAt: tasks.startedAt,
         completedAt: tasks.completedAt,
       })
-      .from(tasks),
+      .from(tasks)
+      .where(eq(tasks.source, DASHBOARD_TASK_SOURCE)),
     // 耗时统计样本：仅取最近 N 条有时间戳的任务
     db
       .select({
@@ -116,7 +120,10 @@ export async function fetchDashboardData(): Promise<DashboardData> {
         completedAt: tasks.completedAt,
       })
       .from(tasks)
-      .where(inArray(tasks.status, ['completed', 'running', 'awaiting_review']))
+      .where(and(
+        eq(tasks.source, DASHBOARD_TASK_SOURCE),
+        inArray(tasks.status, ['completed', 'running', 'awaiting_review']),
+      ))
       .orderBy(desc(tasks.startedAt))
       .limit(DURATION_SAMPLE_LIMIT),
     // Agent 定义

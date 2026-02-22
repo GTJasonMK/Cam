@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { verifyPassword, hashPassword } from '@/lib/auth/password';
 import { revokeAllUserSessions, createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { parseChangePasswordPayload } from '@/lib/validation/user-input';
 
 async function handlePost(request: AuthenticatedRequest) {
@@ -78,11 +79,7 @@ async function handlePost(request: AuthenticatedRequest) {
 
   const response = NextResponse.json({ success: true });
   response.cookies.set(SESSION_COOKIE_NAME, newToken, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: getSessionCookieMaxAgeSeconds(),
+    ...buildAuthCookieOptions({ maxAge: getSessionCookieMaxAgeSeconds() }),
   });
 
   return response;

@@ -4,6 +4,7 @@ import {
   collectPipelineReferencedAgentIds,
   findMissingPipelineAgentIds,
   parsePipelineImport,
+  sanitizePipelineImportAgentIds,
   validatePipelineImportFileSize,
 } from '../pipeline-io.ts';
 
@@ -81,6 +82,53 @@ test('parsePipelineImport/collectPipelineReferencedAgentIds: 支持并行子任�
 
   const refs = collectPipelineReferencedAgentIds(result.data);
   assert.deepEqual(refs.sort(), ['claude-code', 'codex']);
+});
+
+test('parsePipelineImport: 兼容旧格式 prompt/pipelineSteps 字段', () => {
+  const result = parsePipelineImport(JSON.stringify({
+    type: 'cam-pipeline-template',
+    pipelineSteps: [
+      {
+        title: '旧步骤',
+        prompt: '旧描述',
+        parallelAgents: [
+          { title: '并行A', prompt: '并行旧描述', agentDefinitionId: 'codex' },
+        ],
+      },
+    ],
+  }));
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.steps[0].description, '旧描述');
+  assert.equal(result.data.steps[0].parallelAgents?.[0]?.description, '并行旧描述');
+});
+
+test('sanitizePipelineImportAgentIds: 清理未知 Agent 引用', () => {
+  const parsed = parsePipelineImport(JSON.stringify({
+    type: 'cam-pipeline',
+    agentDefinitionId: 'codex',
+    steps: [
+      { title: '步骤1', description: 'desc1', agentDefinitionId: 'unknown-a' },
+      {
+        title: '步骤2',
+        description: 'desc2',
+        parallelAgents: [
+          { description: 'p1', agentDefinitionId: 'claude-code' },
+          { description: 'p2', agentDefinitionId: 'unknown-b' },
+        ],
+      },
+    ],
+  }));
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+
+  const sanitized = sanitizePipelineImportAgentIds(parsed.data, ['codex', 'claude-code']);
+  assert.deepEqual(sanitized.missingAgentIds.sort(), ['unknown-a', 'unknown-b']);
+  assert.equal(sanitized.data.agentDefinitionId, 'codex');
+  assert.equal(sanitized.data.steps[0].agentDefinitionId, undefined);
+  assert.equal(sanitized.data.steps[1].parallelAgents?.[0]?.agentDefinitionId, 'claude-code');
+  assert.equal(sanitized.data.steps[1].parallelAgents?.[1]?.agentDefinitionId, undefined);
 });
 
 test('validatePipelineImportFileSize: 超过阈值时返回失败', () => {

@@ -12,6 +12,11 @@ import type { ClientMessage, ServerMessage } from '@/lib/terminal/protocol';
 const RECONNECT_INTERVAL_MS = 3000;
 const PING_INTERVAL_MS = 25000;
 
+// 跨 Hook 实例缓存能力探测结果，避免 StrictMode/HMR 导致重复探测与重复告警
+let gPipelineListUnsupported = false;
+let gPipelineListWarned = false;
+let gRuntimePipelineFallbackNotFound = false;
+
 type OutputCallback = (sessionId: string, data: string) => void;
 type ExitCallback = (sessionId: string, exitCode: number) => void;
 
@@ -33,6 +38,9 @@ export function useTerminalWs(): UseTerminalWsReturn {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
+  const pipelineListUnsupportedRef = useRef(gPipelineListUnsupported);
+  const warnedPipelineListUnsupportedRef = useRef(gPipelineListWarned);
+  const runtimePipelineFallbackNotFoundRef = useRef(gRuntimePipelineFallbackNotFound);
 
   const onOutputRef = useRef<OutputCallback | null>(null);
   const onExitRef = useRef<ExitCallback | null>(null);
@@ -44,6 +52,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
   const addAgentSession = useTerminalStore((s) => s.addAgentSession);
   const updateAgentStatus = useTerminalStore((s) => s.updateAgentStatus);
   const setAgentSessions = useTerminalStore((s) => s.setAgentSessions);
+  const setPipelines = useTerminalStore((s) => s.setPipelines);
   const addPipeline = useTerminalStore((s) => s.addPipeline);
   const updatePipelineStep = useTerminalStore((s) => s.updatePipelineStep);
   const completePipeline = useTerminalStore((s) => s.completePipeline);
@@ -58,6 +67,46 @@ export function useTerminalWs(): UseTerminalWsReturn {
     }
     return false;
   }, []);
+
+  const fetchRuntimePipelinesFallback = useCallback(async () => {
+    if (runtimePipelineFallbackNotFoundRef.current) return;
+    try {
+      const res = await fetch('/api/workers/runtime');
+      if (res.status === 404) {
+        runtimePipelineFallbackNotFoundRef.current = true;
+        gRuntimePipelineFallbackNotFound = true;
+        return;
+      }
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) return;
+      const pipelines = Array.isArray(json?.data?.pipelines) ? json.data.pipelines : [];
+      setPipelines(pipelines.map((pipeline: {
+        pipelineId: string;
+        currentStepIndex: number;
+        status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+        steps: Array<{
+          title: string;
+          status: string;
+          nodes: Array<{
+            sessionId: string | null;
+            taskId: string;
+          }>;
+        }>;
+      }) => ({
+        pipelineId: pipeline.pipelineId,
+        currentStep: pipeline.currentStepIndex,
+        status: pipeline.status,
+        steps: pipeline.steps.map((step) => ({
+          title: step.title,
+          status: step.status,
+          sessionIds: step.nodes.map((node) => node.sessionId).filter((id): id is string => Boolean(id)),
+          taskIds: step.nodes.map((node) => node.taskId),
+        })),
+      })));
+    } catch {
+      // fallback 失败不阻塞终端主链路
+    }
+  }, [setPipelines]);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -82,6 +131,12 @@ export function useTerminalWs(): UseTerminalWsReturn {
       send({ type: 'list' });
       // 同时请求 Agent 会话列表
       send({ type: 'agent-list' });
+      // 请求已有流水线列表（页面刷新后恢复状态）
+      if (!pipelineListUnsupportedRef.current) {
+        send({ type: 'pipeline-list' });
+      } else {
+        void fetchRuntimePipelinesFallback();
+      }
     };
 
     ws.onmessage = (event) => {
@@ -116,7 +171,23 @@ export function useTerminalWs(): UseTerminalWsReturn {
             removeSession(msg.sessionId);
             send({ type: 'list' });
             send({ type: 'agent-list' });
+            if (!pipelineListUnsupportedRef.current) {
+              send({ type: 'pipeline-list' });
+            } else {
+              void fetchRuntimePipelinesFallback();
+            }
             console.warn('[Terminal WS] 已清理无效会话:', msg.message, msg.sessionId);
+            break;
+          }
+          if (msg.message.includes('未知消息类型: pipeline-list')) {
+            pipelineListUnsupportedRef.current = true;
+            gPipelineListUnsupported = true;
+            if (!warnedPipelineListUnsupportedRef.current) {
+              warnedPipelineListUnsupportedRef.current = true;
+              gPipelineListWarned = true;
+              console.warn('[Terminal WS] 服务端暂不支持 pipeline-list，已切换 HTTP 回退同步流水线状态');
+            }
+            void fetchRuntimePipelinesFallback();
             break;
           }
           console.error('[Terminal WS] 服务端错误:', msg.message, msg.sessionId);
@@ -164,6 +235,22 @@ export function useTerminalWs(): UseTerminalWsReturn {
           });
           break;
 
+        case 'pipelines':
+          pipelineListUnsupportedRef.current = false;
+          gPipelineListUnsupported = false;
+          setPipelines(msg.pipelines.map((pipeline) => ({
+            pipelineId: pipeline.pipelineId,
+            steps: pipeline.steps.map((step) => ({
+              taskIds: step.taskIds,
+              title: step.title,
+              status: step.status,
+              sessionIds: step.sessionIds,
+            })),
+            currentStep: pipeline.currentStep,
+            status: pipeline.status,
+          })));
+          break;
+
         case 'pipeline-step-status':
           updatePipelineStep(msg.pipelineId, msg.stepIndex, msg.status, msg.sessionIds, msg.taskIds);
           break;
@@ -200,7 +287,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
     ws.onerror = () => {
       // onclose 会随后触发，在那里处理重连
     };
-  }, [setConnected, addSession, removeSession, setSessions, addAgentSession, updateAgentStatus, setAgentSessions, addPipeline, updatePipelineStep, completePipeline, pausePipeline, resumePipeline, send]);
+  }, [setConnected, addSession, removeSession, setSessions, addAgentSession, updateAgentStatus, setAgentSessions, setPipelines, addPipeline, updatePipelineStep, completePipeline, pausePipeline, resumePipeline, send, fetchRuntimePipelinesFallback]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -216,7 +303,15 @@ export function useTerminalWs(): UseTerminalWsReturn {
         clearInterval(pingTimerRef.current);
         pingTimerRef.current = null;
       }
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else if (ws?.readyState === WebSocket.CONNECTING) {
+        // React StrictMode 下首次 mount 的 cleanup 可能发生在握手前，避免触发浏览器噪音日志
+        ws.onopen = () => ws.close();
+        ws.onmessage = null;
+        ws.onerror = null;
+      }
       wsRef.current = null;
     };
   }, [connect]);

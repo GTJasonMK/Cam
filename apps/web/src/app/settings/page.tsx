@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { getBadgeBg, getColorVar } from '@/lib/constants';
-import { Plus, RefreshCw, RotateCcw, Trash2, Key } from 'lucide-react';
+import { Plus, RefreshCw, RotateCcw, Trash2, Key, Download, TerminalSquare, ShieldCheck } from 'lucide-react';
 
 // ---- 类型定义 ----
 
@@ -28,6 +28,46 @@ type SecretItem = {
 };
 
 type RepoMini = { id: string; name: string };
+
+type CliStatusItem = {
+  id: 'claude-code' | 'codex';
+  label: string;
+  command: string;
+  packageName: string;
+  installed: boolean;
+  version: string | null;
+  detail: string | null;
+};
+
+type CliDeployTarget = 'all' | 'claude-code' | 'codex';
+
+type CliPreflightCheckStatus = 'pass' | 'warn' | 'fail';
+
+type CliPreflightCheck = {
+  id: string;
+  label: string;
+  status: CliPreflightCheckStatus;
+  detail: string;
+  suggestion?: string;
+};
+
+type CliPreflightResult = {
+  summary: {
+    readyForDeploy: boolean;
+    failCount: number;
+    warnCount: number;
+    checkedAt: string;
+  };
+  npm: {
+    available: boolean;
+    version: string | null;
+    binary: string;
+    globalPrefix: string | null;
+    globalPrefixWritable: boolean;
+  };
+  checks: CliPreflightCheck[];
+  statuses: CliStatusItem[];
+};
 
 interface SettingsData {
   docker: { socketPath: string; available: boolean };
@@ -69,6 +109,13 @@ export default function SettingsPage() {
   const [secretsError, setSecretsError] = useState<string | null>(null);
   const [repos, setRepos] = useState<RepoMini[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [cliStatuses, setCliStatuses] = useState<CliStatusItem[]>([]);
+  const [cliLoading, setCliLoading] = useState(false);
+  const [cliDeploying, setCliDeploying] = useState<CliDeployTarget | null>(null);
+  const [cliError, setCliError] = useState<string | null>(null);
+  const [cliLog, setCliLog] = useState('');
+  const [cliPreflight, setCliPreflight] = useState<CliPreflightResult | null>(null);
+  const [cliPreflightLoading, setCliPreflightLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,10 +161,31 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const fetchCliStatuses = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setCliLoading(true);
+    setCliError(null);
+    try {
+      const res = await fetch('/api/settings/agent-cli');
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success || !Array.isArray(json?.data?.statuses)) {
+        const message = json?.error?.message || `HTTP ${res.status}`;
+        setCliError(message);
+        return;
+      }
+      setCliStatuses(json.data.statuses as CliStatusItem[]);
+    } catch (err) {
+      setCliError((err as Error).message);
+    } finally {
+      if (!silent) setCliLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSecrets();
     fetchRepos();
-  }, [fetchRepos, fetchSecrets]);
+    fetchCliStatuses();
+  }, [fetchCliStatuses, fetchRepos, fetchSecrets]);
 
   const missingRequired = useMemo(() => {
     if (!data) return [];
@@ -192,6 +260,122 @@ export default function SettingsPage() {
     await fetchSecrets();
     notify({ type: 'success', title: '密钥已删除', message: `${secret.name} 已删除。` });
   };
+
+  const handleDeployCli = useCallback(async (target: CliDeployTarget) => {
+    const targetLabel = target === 'all'
+      ? 'Claude Code + Codex CLI'
+      : target === 'claude-code'
+        ? 'Claude Code'
+        : 'Codex CLI';
+
+    const confirmed = await confirmDialog({
+      title: `一键部署 ${targetLabel}?`,
+      description: '将调用 npm 全局安装命令，过程可能需要几分钟。',
+      confirmText: '开始部署',
+      confirmVariant: 'default',
+    });
+    if (!confirmed) return;
+
+    setCliDeploying(target);
+    setCliError(null);
+    try {
+      const res = await fetch('/api/settings/agent-cli', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        const message = json?.error?.message || `HTTP ${res.status}`;
+        setCliError(message);
+        notify({ type: 'error', title: '部署失败', message });
+        return;
+      }
+
+      if (Array.isArray(json?.data?.statuses)) {
+        setCliStatuses(json.data.statuses as CliStatusItem[]);
+      } else {
+        await fetchCliStatuses({ silent: true });
+      }
+
+      const rows = Array.isArray(json?.data?.results) ? (json.data.results as Array<Record<string, unknown>>) : [];
+      const logText = rows.map((item) => {
+        const label = typeof item.label === 'string' ? item.label : '未知';
+        const pkg = typeof item.packageName === 'string' ? item.packageName : '';
+        const install = (item.install || {}) as {
+          ok?: boolean;
+          code?: number | null;
+          durationMs?: number;
+          errorMessage?: string | null;
+          stdoutTail?: string;
+          stderrTail?: string;
+        };
+        const statusAfter = (item.statusAfter || {}) as {
+          installed?: boolean;
+          version?: string | null;
+          detail?: string | null;
+        };
+
+        const lines = [
+          `# ${label} (${pkg})`,
+          `install.ok=${install.ok ? 'true' : 'false'} code=${install.code ?? 'null'} durationMs=${install.durationMs ?? '-'}`,
+          `installed=${statusAfter.installed ? 'true' : 'false'} version=${statusAfter.version || '-'}`,
+        ];
+        if (install.errorMessage) lines.push(`error=${install.errorMessage}`);
+        if (statusAfter.detail) lines.push(`detail=${statusAfter.detail}`);
+        if (install.stdoutTail) lines.push('', '[stdout]', install.stdoutTail);
+        if (install.stderrTail) lines.push('', '[stderr]', install.stderrTail);
+        return lines.join('\n');
+      }).join('\n\n----------------------------------------\n\n');
+      setCliLog(logText);
+
+      const allOk = Boolean(json?.data?.allOk);
+      notify({
+        type: allOk ? 'success' : 'info',
+        title: allOk ? '部署完成' : '部署完成（部分异常）',
+        message: allOk ? `${targetLabel} 已部署并可用。` : '请查看下方日志定位失败原因。',
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      setCliError(message);
+      notify({ type: 'error', title: '部署失败', message });
+    } finally {
+      setCliDeploying(null);
+    }
+  }, [confirmDialog, fetchCliStatuses, notify]);
+
+  const handleRunCliPreflight = useCallback(async () => {
+    setCliPreflightLoading(true);
+    setCliError(null);
+    try {
+      const res = await fetch('/api/settings/agent-cli?mode=preflight');
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success || !json?.data) {
+        const message = json?.error?.message || `HTTP ${res.status}`;
+        setCliError(message);
+        notify({ type: 'error', title: '自检失败', message });
+        return;
+      }
+      const data = json.data as CliPreflightResult;
+      setCliPreflight(data);
+      if (Array.isArray(data.statuses)) {
+        setCliStatuses(data.statuses);
+      }
+      notify({
+        type: data.summary.readyForDeploy ? 'success' : 'info',
+        title: data.summary.readyForDeploy ? '部署前自检通过' : '部署前自检发现问题',
+        message: data.summary.readyForDeploy
+          ? '环境满足一键部署条件。'
+          : `失败 ${data.summary.failCount} 项，待确认 ${data.summary.warnCount} 项。`,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      setCliError(message);
+      notify({ type: 'error', title: '自检失败', message });
+    } finally {
+      setCliPreflightLoading(false);
+    }
+  }, [notify]);
 
   // 密钥表格列定义
   const sortedSecrets = useMemo(
@@ -291,7 +475,7 @@ export default function SettingsPage() {
               ))}
             </div>
             <p className="mt-3 text-xs text-muted-foreground leading-relaxed">
-              只展示是否配置，不会显示实际值。建议配置 CAM_AUTH_TOKEN 保护系统访问，CAM_MASTER_KEY 托管敏感值；GITHUB_TOKEN/GITLAB_TOKEN/GITEA_TOKEN 用于自动创建 PR/MR；CAM_WEBHOOK_URL/CAM_WEBHOOK_URLS 可配置状态变更通知。
+              只展示是否配置，不会显示实际值。建议优先初始化管理员账户；如需兼容旧模式可配置 CAM_AUTH_TOKEN。生产环境建议同时设置 CAM_PUBLIC_BASE_URL、CAM_COOKIE_SECURE、CAM_OAUTH_*（如使用 OAuth）与 CAM_MASTER_KEY。GITHUB_TOKEN/GITLAB_TOKEN/GITEA_TOKEN 用于自动创建 PR/MR；CAM_WEBHOOK_URL/CAM_WEBHOOK_URLS 可配置状态变更通知。
             </p>
           </Card>
 
@@ -344,6 +528,182 @@ export default function SettingsPage() {
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   仅上报“名称”，不包含任何密钥值。用于在服务端未配置密钥时，仍可允许由本地常驻 Worker 使用本机环境执行任务。
+                </p>
+              </div>
+            )}
+          </Card>
+
+          {/* Agent CLI 一键部署 */}
+          <Card padding="lg">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Agent CLI 一键部署</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  用于本机/常驻 Worker 场景：一键部署 Claude Code 与 Codex CLI，并自动回填安装状态。
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={cliDeploying !== null || cliPreflightLoading}
+                  onClick={() => void handleDeployCli('all')}
+                >
+                  <Download size={13} className="mr-1" />
+                  {cliDeploying === 'all' ? '部署中...' : '一键部署全部'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={cliDeploying !== null || cliPreflightLoading}
+                  onClick={() => void handleDeployCli('claude-code')}
+                >
+                  <TerminalSquare size={13} className="mr-1" />
+                  {cliDeploying === 'claude-code' ? '部署中...' : '部署 Claude Code'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={cliDeploying !== null || cliPreflightLoading}
+                  onClick={() => void handleDeployCli('codex')}
+                >
+                  <TerminalSquare size={13} className="mr-1" />
+                  {cliDeploying === 'codex' ? '部署中...' : '部署 Codex CLI'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={cliPreflightLoading || cliDeploying !== null}
+                  onClick={() => void handleRunCliPreflight()}
+                >
+                  <ShieldCheck size={13} className="mr-1" />
+                  {cliPreflightLoading ? '自检中...' : '部署前自检'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={cliLoading || cliDeploying !== null || cliPreflightLoading}
+                  onClick={() => void fetchCliStatuses()}
+                >
+                  <RefreshCw size={13} className={(cliLoading ? 'animate-spin ' : '') + 'mr-1'} />
+                  检测状态
+                </Button>
+              </div>
+            </div>
+
+            {cliError && (
+              <div className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {cliError}
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {cliStatuses.length === 0 ? (
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground sm:col-span-2">
+                  {cliLoading ? '正在检测 CLI 状态...' : '暂无 CLI 状态数据，点击“检测状态”获取。'}
+                </div>
+              ) : (
+                cliStatuses.map((item) => (
+                  <div key={item.id} className="rounded-lg border border-border bg-muted/15 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-foreground">{item.label}</span>
+                      <StatusPill label={item.installed ? '已安装' : '未安装'} ok={item.installed} />
+                    </div>
+                    <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                      <div>命令: <span className="font-mono">{item.command}</span></div>
+                      <div>包名: <span className="font-mono">{item.packageName}</span></div>
+                      <div>版本: <span className="font-mono">{item.version || '-'}</span></div>
+                      {item.detail && !item.installed && (
+                        <div className="text-destructive">{item.detail}</div>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {cliLog && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">最近部署日志</p>
+                <div className="max-h-[300px] overflow-y-auto rounded-lg border border-border bg-muted/30 p-3 font-mono text-2xs whitespace-pre-wrap">
+                  {cliLog}
+                </div>
+              </div>
+            )}
+
+            {cliPreflight && (
+              <div className="mt-4 rounded-lg border border-border bg-muted/20 p-3">
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">部署前自检结果</p>
+                    <p className="mt-1 text-2xs text-muted-foreground">
+                      检查 npm 可执行性、全局目录权限、网络连通性和 CLI 当前状态。
+                    </p>
+                  </div>
+                  <StatusPill label={cliPreflight.summary.readyForDeploy ? '可部署' : '需修复后部署'} ok={cliPreflight.summary.readyForDeploy} />
+                </div>
+
+                <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-md border border-border bg-background px-2.5 py-2 text-2xs text-muted-foreground">
+                    <div>
+                      npm 命令:
+                      {' '}
+                      <span className="font-mono text-foreground">{cliPreflight.npm.binary}</span>
+                    </div>
+                    <div>
+                      npm 版本:
+                      {' '}
+                      <span className="font-mono text-foreground">{cliPreflight.npm.version || '-'}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-background px-2.5 py-2 text-2xs text-muted-foreground">
+                    <div>
+                      全局目录:
+                      {' '}
+                      <span className="font-mono text-foreground">{cliPreflight.npm.globalPrefix || '-'}</span>
+                    </div>
+                    <div>
+                      目录可写:
+                      {' '}
+                      <span className={cliPreflight.npm.globalPrefixWritable ? 'text-foreground' : 'text-destructive'}>
+                        {cliPreflight.npm.globalPrefixWritable ? '是' : '否'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {cliPreflight.checks.map((check) => (
+                    <div key={check.id} className="rounded-md border border-border bg-background px-2.5 py-2">
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-foreground">{check.label}</span>
+                        <CliCheckStatusPill status={check.status} />
+                      </div>
+                      <p className="text-2xs text-muted-foreground">{check.detail}</p>
+                      {check.suggestion && (
+                        <p className="mt-1 text-2xs text-muted-foreground">
+                          建议:
+                          {' '}
+                          {check.suggestion}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <p className="mt-3 text-2xs text-muted-foreground">
+                  检测时间:
+                  {' '}
+                  {new Date(cliPreflight.summary.checkedAt).toLocaleString('zh-CN')}
+                  {' · '}
+                  失败
+                  {' '}
+                  {cliPreflight.summary.failCount}
+                  {' '}
+                  项，待确认
+                  {' '}
+                  {cliPreflight.summary.warnCount}
+                  {' '}
+                  项。
                 </p>
               </div>
             )}
@@ -551,6 +911,25 @@ function StatusPill({ label, ok }: { label: string; ok: boolean }) {
     >
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: getColorVar(token) }} />
       {label}
+    </span>
+  );
+}
+
+function CliCheckStatusPill({ status }: { status: CliPreflightCheckStatus }) {
+  const config = status === 'pass'
+    ? { label: '通过', token: 'success' }
+    : status === 'warn'
+      ? { label: '待确认', token: 'warning' }
+      : { label: '失败', token: 'destructive' };
+
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-semibold"
+      style={{ background: getBadgeBg(config.token), color: getColorVar(config.token) }}
+      title={config.label}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: getColorVar(config.token) }} />
+      {config.label}
     </span>
   );
 }

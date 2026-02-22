@@ -7,6 +7,7 @@ import { users } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { verifyPassword } from '@/lib/auth/password';
 import { createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { parsePasswordLoginPayload } from '@/lib/validation/user-input';
 
 export async function POST(request: NextRequest) {
@@ -98,14 +99,17 @@ export async function POST(request: NextRequest) {
       });
 
       response.cookies.set(SESSION_COOKIE_NAME, token, {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
-        path: '/',
-        maxAge: getSessionCookieMaxAgeSeconds(),
+        ...buildAuthCookieOptions({ maxAge: getSessionCookieMaxAgeSeconds() }),
       });
 
       return response;
+    }
+
+    if (authMode === 'setup_required') {
+      return NextResponse.json(
+        { success: false, error: { code: 'SETUP_REQUIRED', message: AUTH_MESSAGES.setupRequired } },
+        { status: 409 }
+      );
     }
 
     const configuredToken = getConfiguredAuthToken();
@@ -133,11 +137,7 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json({ success: true });
     response.cookies.set(AUTH_COOKIE_NAME, configuredToken, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      path: '/',
-      maxAge: 60 * 60 * 12,
+      ...buildAuthCookieOptions({ maxAge: 60 * 60 * 12 }),
     });
     return response;
   } catch (err) {

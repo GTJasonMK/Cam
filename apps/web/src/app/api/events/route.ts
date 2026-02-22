@@ -15,6 +15,10 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_EXPORT_LIMIT = 5000;
+const PRUNE_INTERVAL_MS = 60_000;
+
+let lastPruneAtMs = 0;
+let pruneInFlight: Promise<void> | null = null;
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   if (!value) return fallback;
@@ -65,9 +69,63 @@ function buildEventsCsv(
   return lines.join('\n');
 }
 
+async function pruneOrphanTaskEvents(): Promise<void> {
+  // 清理历史遗留：任务已删除但事件仍存在（无外键，需手动清理）
+  await db.run(sql`
+    DELETE FROM system_events
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+      AND json_extract(payload, '$.taskId') IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM tasks
+        WHERE tasks.id = json_extract(system_events.payload, '$.taskId')
+      )
+  `);
+
+  await db.run(sql`
+    DELETE FROM system_events
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+      AND json_extract(payload, '$.fromTaskId') IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM tasks
+        WHERE tasks.id = json_extract(system_events.payload, '$.fromTaskId')
+      )
+  `);
+
+  await db.run(sql`
+    DELETE FROM system_events
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+      AND json_type(payload, '$.taskIds') = 'array'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(system_events.payload, '$.taskIds') AS je
+        JOIN tasks t ON t.id = je.value
+      )
+  `);
+}
+
+function schedulePruneOrphanTaskEvents(): void {
+  const now = Date.now();
+  if (now - lastPruneAtMs < PRUNE_INTERVAL_MS) return;
+  if (pruneInFlight) return;
+
+  lastPruneAtMs = now;
+  pruneInFlight = pruneOrphanTaskEvents()
+    .catch((err) => {
+      console.warn('[API] 清理孤儿任务事件失败:', err);
+    })
+    .finally(() => {
+      pruneInFlight = null;
+    });
+}
+
 async function handler(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
   try {
+    // 读路径不阻塞等待清理；按时间窗节流后台清理，降低 GET 抖动
+    schedulePruneOrphanTaskEvents();
+
     const { searchParams } = new URL(request.url);
     const format = normalizeQuery(searchParams.get('format')).toLowerCase();
     const page = parsePositiveInt(searchParams.get('page'), DEFAULT_PAGE);

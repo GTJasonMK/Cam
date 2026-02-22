@@ -34,8 +34,8 @@ function attachAgentSession(
   meta: { sessionId: string; startedAt: number; pipelineId?: string },
   attachedSessions: Set<string>,
   user: { id: string; username: string },
-): void {
-  ptyManager.attach(meta.sessionId, {
+): string | null {
+  const scrollback = ptyManager.attach(meta.sessionId, {
     onData: (data) => send(ws, { type: 'output', sessionId: meta.sessionId, data }),
     onExit: (exitCode) => {
       // 更新 Agent 状态
@@ -61,6 +61,7 @@ function attachAgentSession(
     },
   });
   attachedSessions.add(meta.sessionId);
+  return scrollback;
 }
 
 /** 流水线步骤完成后的推进逻辑 */
@@ -238,14 +239,26 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
           break;
         }
 
-        const scrollback = ptyManager.attach(msg.sessionId, {
-          onData: (data) => send(ws, { type: 'output', sessionId: msg.sessionId, data }),
-          onExit: (exitCode) => {
-            send(ws, { type: 'exited', sessionId: msg.sessionId, exitCode });
-            attachedSessions.delete(msg.sessionId);
-          },
-        });
-        attachedSessions.add(msg.sessionId);
+        const agentMeta = agentSessionManager.getMeta(msg.sessionId);
+        let scrollback: string | null = null;
+
+        if (agentMeta) {
+          if (agentMeta.userId !== user.id) {
+            send(ws, { type: 'error', message: '无权访问该会话', sessionId: msg.sessionId });
+            break;
+          }
+          // Agent 会话必须复用 attachAgentSession，避免覆盖 onExit 导致任务状态不同步
+          scrollback = attachAgentSession(ws, agentMeta, attachedSessions, user);
+        } else {
+          scrollback = ptyManager.attach(msg.sessionId, {
+            onData: (data) => send(ws, { type: 'output', sessionId: msg.sessionId, data }),
+            onExit: (exitCode) => {
+              send(ws, { type: 'exited', sessionId: msg.sessionId, exitCode });
+              attachedSessions.delete(msg.sessionId);
+            },
+          });
+          attachedSessions.add(msg.sessionId);
+        }
 
         // 回放滚动缓冲
         if (scrollback) {
@@ -404,6 +417,23 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
         } catch (err) {
           send(ws, { type: 'error', message: (err as Error).message });
         }
+        break;
+      }
+
+      case 'pipeline-list': {
+        const pipelines = agentSessionManager.listPipelinesByUser(user.id).map((pipeline) => ({
+          pipelineId: pipeline.pipelineId,
+          steps: pipeline.steps.map((step) => ({
+            stepId: step.stepId,
+            title: step.title,
+            status: step.status,
+            taskIds: collectStepTaskIds(step),
+            ...(collectStepSessionIds(step).length > 0 ? { sessionIds: collectStepSessionIds(step) } : {}),
+          })),
+          currentStep: pipeline.currentStepIndex,
+          status: pipeline.status,
+        }));
+        send(ws, { type: 'pipelines', pipelines });
         break;
       }
 

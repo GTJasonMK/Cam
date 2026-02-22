@@ -158,6 +158,63 @@ export function findMissingPipelineAgentIds(
   return missing;
 }
 
+/** 导入后按已知 Agent 列表清洗引用，未知引用会被移除并返回缺失清单 */
+export function sanitizePipelineImportAgentIds(
+  data: PipelineExportData,
+  knownAgentIds: Iterable<string>
+): { data: PipelineExportData; missingAgentIds: string[] } {
+  const knownIds = new Set<string>();
+  for (const id of knownAgentIds) {
+    const normalized = id.trim();
+    if (normalized) knownIds.add(normalized);
+  }
+
+  // 没有可用的已知列表时，不做强制清洗，避免误删
+  if (knownIds.size === 0) {
+    return { data, missingAgentIds: [] };
+  }
+
+  const missingAgentIds = findMissingPipelineAgentIds(data, knownIds);
+  if (missingAgentIds.length === 0) {
+    return { data, missingAgentIds: [] };
+  }
+
+  const normalizeKnownAgent = (id?: string | null): string | undefined => {
+    if (!id) return undefined;
+    const normalized = id.trim();
+    if (!normalized) return undefined;
+    return knownIds.has(normalized) ? normalized : undefined;
+  };
+
+  const sanitized: PipelineExportData = {
+    ...data,
+    agentDefinitionId: normalizeKnownAgent(data.agentDefinitionId) ?? null,
+    steps: data.steps.map((step) => {
+      const stepAgentId = normalizeKnownAgent(step.agentDefinitionId);
+      const parallelAgents = step.parallelAgents?.map((node) => {
+        const nodeAgentId = normalizeKnownAgent(node.agentDefinitionId);
+        return {
+          ...(node.title ? { title: node.title } : {}),
+          description: node.description,
+          ...(nodeAgentId ? { agentDefinitionId: nodeAgentId } : {}),
+        };
+      });
+      return {
+        title: step.title,
+        description: step.description,
+        ...(stepAgentId ? { agentDefinitionId: stepAgentId } : {}),
+        ...(Array.isArray(step.inputFiles) && step.inputFiles.length > 0
+          ? { inputFiles: step.inputFiles }
+          : {}),
+        ...(step.inputCondition ? { inputCondition: step.inputCondition } : {}),
+        ...(Array.isArray(parallelAgents) && parallelAgents.length > 0 ? { parallelAgents } : {}),
+      };
+    }),
+  };
+
+  return { data: sanitized, missingAgentIds };
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.ceil(bytes / 1024)} KB`;
@@ -220,22 +277,29 @@ export function parsePipelineImport(jsonString: string): ParseResult {
 
   const obj = parsed as Record<string, unknown>;
 
-  // type 校验
-  if (obj.type !== 'cam-pipeline') {
+  // type 校验：兼容旧文件（可能无 type 或 type=cam-pipeline-template）
+  const rawType = obj.type;
+  if (rawType !== undefined && rawType !== 'cam-pipeline' && rawType !== 'cam-pipeline-template') {
     return { ok: false, error: '无效的文件类型：缺少 type: "cam-pipeline" 标识' };
   }
 
-  // steps 校验
-  if (!Array.isArray(obj.steps) || obj.steps.length === 0) {
+  // steps 校验：兼容旧结构 pipelineSteps
+  const rawSteps = Array.isArray(obj.steps)
+    ? obj.steps
+    : (Array.isArray(obj.pipelineSteps) ? obj.pipelineSteps : null);
+  if (!rawSteps || rawSteps.length === 0) {
     return { ok: false, error: '流水线必须包含至少一个步骤' };
   }
 
-  for (let i = 0; i < obj.steps.length; i++) {
-    const step = obj.steps[i] as Record<string, unknown>;
+  for (let i = 0; i < rawSteps.length; i++) {
+    const step = rawSteps[i] as Record<string, unknown>;
     if (!step || typeof step.title !== 'string' || !step.title.trim()) {
       return { ok: false, error: `步骤 ${i + 1} 缺少有效的 title 字段` };
     }
-    if (typeof step.description !== 'string' || !step.description.trim()) {
+    const stepDescription = typeof step.description === 'string'
+      ? step.description
+      : (typeof step.prompt === 'string' ? step.prompt : '');
+    if (!stepDescription.trim()) {
       return { ok: false, error: `步骤 ${i + 1} 缺少有效的 description 字段` };
     }
     if (step.inputCondition !== undefined && step.inputCondition !== null) {
@@ -263,7 +327,10 @@ export function parsePipelineImport(jsonString: string): ParseResult {
           return { ok: false, error: `步骤 ${i + 1} 的 parallelAgents[${j + 1}] 必须是对象` };
         }
         const nodeObj = node as Record<string, unknown>;
-        if (typeof nodeObj.description !== 'string' || !nodeObj.description.trim()) {
+        const nodeDescription = typeof nodeObj.description === 'string'
+          ? nodeObj.description
+          : (typeof nodeObj.prompt === 'string' ? nodeObj.prompt : '');
+        if (!nodeDescription.trim()) {
           return { ok: false, error: `步骤 ${i + 1} 的 parallelAgents[${j + 1}] 缺少 description` };
         }
       }
@@ -286,9 +353,11 @@ export function parsePipelineImport(jsonString: string): ParseResult {
       typeof obj.maxRetries === 'number' && Number.isFinite(obj.maxRetries)
         ? Math.max(0, Math.min(20, Math.floor(obj.maxRetries)))
         : null,
-    steps: (obj.steps as Array<Record<string, unknown>>).map((s) => ({
+    steps: (rawSteps as Array<Record<string, unknown>>).map((s) => ({
       title: String(s.title).trim(),
-      description: String(s.description).trim(),
+      description: (typeof s.description === 'string'
+        ? s.description
+        : (typeof s.prompt === 'string' ? s.prompt : '')).trim(),
       ...(typeof s.agentDefinitionId === 'string' && s.agentDefinitionId.trim()
         ? { agentDefinitionId: s.agentDefinitionId.trim() }
         : {}),
@@ -307,14 +376,16 @@ export function parsePipelineImport(jsonString: string): ParseResult {
             parallelAgents: (s.parallelAgents as Array<Record<string, unknown>>)
               .map((node) => {
                 const description = typeof node.description === 'string' ? node.description.trim() : '';
-                if (!description) return null;
+                const legacyPrompt = typeof node.prompt === 'string' ? node.prompt.trim() : '';
+                const normalizedDescription = description || legacyPrompt;
+                if (!normalizedDescription) return null;
                 const title = typeof node.title === 'string' ? node.title.trim() : '';
                 const agentDefinitionId = typeof node.agentDefinitionId === 'string'
                   ? node.agentDefinitionId.trim()
                   : '';
                 return {
                   ...(title ? { title } : {}),
-                  description,
+                  description: normalizedDescription,
                   ...(agentDefinitionId ? { agentDefinitionId } : {}),
                 };
               })

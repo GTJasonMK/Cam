@@ -90,6 +90,7 @@ interface TerminalState {
   updateAgentStatus: (sessionId: string, status: AgentSessionStatus, exitCode?: number, elapsedMs?: number) => void;
   setAgentSessions: (sessions: AgentSessionInfo[]) => void;
   // 流水线相关
+  setPipelines: (pipelines: TerminalPipelineState[]) => void;
   addPipeline: (pipeline: TerminalPipelineState) => void;
   updatePipelineStep: (
     pipelineId: string,
@@ -230,14 +231,59 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   setAgentSessions: (sessions) => {
-    set({ agentSessions: sessions });
+    set((state) => {
+      const nextSessions = [...state.sessions];
+      const upsertSession = (session: TerminalSession) => {
+        const index = nextSessions.findIndex((item) => item.sessionId === session.sessionId);
+        if (index >= 0) {
+          nextSessions[index] = session;
+          return;
+        }
+        nextSessions.push(session);
+      };
+
+      for (const agent of sessions) {
+        const prev = nextSessions.find((item) => item.sessionId === agent.sessionId);
+        // 仅合并运行中或当前已存在的会话，避免把纯历史会话注入 runtime 列表导致反复 attach 报错
+        if (agent.status !== 'running' && !prev) continue;
+
+        upsertSession({
+          sessionId: agent.sessionId,
+          shell: prev?.shell ?? 'agent',
+          title: `🤖 ${agent.agentDisplayName}`,
+          createdAt: prev?.createdAt ?? agent.createdAt,
+          attached: prev?.attached ?? false,
+          isAgent: true,
+          agentInfo: {
+            agentDefinitionId: agent.agentDefinitionId,
+            agentDisplayName: agent.agentDisplayName,
+            prompt: agent.prompt,
+            workBranch: agent.workBranch,
+            status: agent.status,
+            exitCode: agent.exitCode,
+            elapsedMs: agent.elapsedMs,
+            repoPath: prev?.agentInfo?.repoPath,
+            claudeSessionId: prev?.agentInfo?.claudeSessionId,
+            mode: prev?.agentInfo?.mode,
+          },
+        });
+      }
+
+      return { agentSessions: sessions, sessions: nextSessions };
+    });
   },
 
   // ---- Pipeline actions ----
 
+  setPipelines: (pipelines) => {
+    set({ pipelines });
+  },
+
   addPipeline: (pipeline) => {
     set((state) => ({
-      pipelines: [...state.pipelines, pipeline],
+      pipelines: state.pipelines.some((item) => item.pipelineId === pipeline.pipelineId)
+        ? state.pipelines.map((item) => (item.pipelineId === pipeline.pipelineId ? pipeline : item))
+        : [...state.pipelines, pipeline],
     }));
   },
 

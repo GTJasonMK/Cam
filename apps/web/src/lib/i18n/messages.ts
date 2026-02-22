@@ -5,6 +5,7 @@ export const AUTH_ERROR_QUERY_CODE = {
 export const AUTH_MESSAGES = {
   notConfigured: '服务端未配置 CAM_AUTH_TOKEN',
   notConfiguredGuide: '服务端未配置 CAM_AUTH_TOKEN，请先完成环境变量配置。',
+  setupRequired: '系统尚未初始化管理员，请先在登录页完成初始化。',
   tokenRequired: 'token 不能为空',
   tokenInvalid: 'token 不正确',
   loginFailed: '登录失败',

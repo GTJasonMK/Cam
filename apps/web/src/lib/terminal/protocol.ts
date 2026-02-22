@@ -95,6 +95,7 @@ export type ClientMessage =
       rows: number;
       steps: PipelineStepInput[];
     }
+  | { type: 'pipeline-list' }
   | { type: 'pipeline-cancel'; pipelineId: string }
   | { type: 'pipeline-pause'; pipelineId: string }
   | { type: 'pipeline-resume'; pipelineId: string };
@@ -149,6 +150,21 @@ export type ServerMessage =
       sessionIds: string[];
       /** 项目绝对路径 */
       repoPath: string;
+    }
+  | {
+      type: 'pipelines';
+      pipelines: Array<{
+        pipelineId: string;
+        steps: Array<{
+          stepId: string;
+          title: string;
+          status: string;
+          taskIds: string[];
+          sessionIds?: string[];
+        }>;
+        currentStep: number;
+        status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+      }>;
     }
   | {
       type: 'pipeline-step-status';

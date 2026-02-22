@@ -39,7 +39,7 @@ interface PtySession {
 
 const SCROLLBACK_LIMIT = 64 * 1024; // 64KB
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
-const MAX_SESSIONS_PER_USER = 5;
+export const MAX_SESSIONS_PER_USER = 5;
 
 function detectDefaultShell(): string {
   if (process.platform === 'win32') {
@@ -243,11 +243,22 @@ class PtyManager {
   }
 
   /** 销毁 PTY 会话 */
-  destroy(sessionId: string): void {
+  destroy(sessionId: string, opts?: { emitExit?: boolean; exitCode?: number }): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    const emitExit = opts?.emitExit ?? true;
+    const exitCode = opts?.exitCode ?? -1;
 
     console.log(`[Terminal] 会话销毁: ${sessionId}`);
+
+    if (emitExit) {
+      try {
+        session.onExit?.(exitCode);
+      } catch (err) {
+        console.warn(`[Terminal] 会话退出回调执行失败: ${(err as Error).message}`);
+      }
+    }
+
     this.cleanupSession(sessionId);
     try {
       session.process.kill();
@@ -305,8 +316,7 @@ class PtyManager {
 
     session.idleTimer = setTimeout(() => {
       console.log(`[Terminal] 会话空闲超时: ${sessionId}`);
-      session.onExit?.(-1);
-      this.destroy(sessionId);
+      this.destroy(sessionId, { emitExit: true, exitCode: -1 });
     }, session.idleTimeoutMs);
   }
 

@@ -7,8 +7,8 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getAuthMode } from '@/lib/auth/config';
-import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
-import { AUTH_COOKIE_NAME } from '@/lib/auth/constants';
+import { resolveSessionUser, SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { AUTH_COOKIE_NAME, getConfiguredAuthToken } from '@/lib/auth/constants';
 import { fetchDashboardData } from '@/lib/dashboard/queries';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import DashboardClient from './dashboard-client';
@@ -18,9 +18,18 @@ export default async function DashboardPage() {
   const authMode = await getAuthMode();
   if (authMode !== 'none') {
     const cookieStore = await cookies();
-    const hasSession = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-    const hasLegacy = cookieStore.get(AUTH_COOKIE_NAME)?.value;
-    if (!hasSession && !hasLegacy) {
+    const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value?.trim() || '';
+    const legacyToken = cookieStore.get(AUTH_COOKIE_NAME)?.value?.trim() || '';
+
+    let authenticated = false;
+    if (authMode === 'user_system' && sessionToken) {
+      authenticated = Boolean(await resolveSessionUser(sessionToken));
+    } else if (authMode === 'legacy_token') {
+      const configuredToken = getConfiguredAuthToken();
+      authenticated = Boolean(configuredToken && legacyToken && legacyToken === configuredToken);
+    }
+
+    if (!authenticated) {
       redirect('/login?next=/');
     }
   }

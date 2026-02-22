@@ -7,6 +7,8 @@ export const SIDEBAR_UI_MESSAGES = {
     events: '事件',
     agents: '智能体',
     workers: '工作节点',
+    workersTasks: '任务节点',
+    workersTerminal: '终端节点',
     repos: '仓库',
     terminal: '终端',
     profile: '个人设置',

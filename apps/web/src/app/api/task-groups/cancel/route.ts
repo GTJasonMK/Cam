@@ -14,6 +14,7 @@ import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES, TASK_GROUP_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { agentSessionManager } from '@/lib/terminal/agent-session-manager';
 
 const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 const docker = new Dockerode({ socketPath: dockerSocketPath });
@@ -63,7 +64,7 @@ async function handler(request: AuthenticatedRequest) {
     }
 
     const rows = await db
-      .select({ id: tasks.id, status: tasks.status })
+      .select({ id: tasks.id, status: tasks.status, source: tasks.source, groupId: tasks.groupId })
       .from(tasks)
       .where(eq(tasks.groupId, groupId))
       .limit(2000);
@@ -112,14 +113,53 @@ async function handler(request: AuthenticatedRequest) {
       }
     }
 
+    // best-effort：停止 terminal 会话/流水线（避免只改 DB 状态导致会话继续执行）
+    let cancelledRuntimePipelines = 0;
+    let cancelledRuntimeSessions = 0;
+    const cancelledPipelineIds = new Set<string>();
+    const terminalTasks = cancellable.filter((t) => t.source === 'terminal');
+    for (const t of terminalTasks) {
+      const pipelineId = t.groupId;
+      if (typeof pipelineId === 'string' && pipelineId.startsWith('pipeline/')) {
+        const pipeline = agentSessionManager.getPipeline(pipelineId);
+        if (pipeline && (pipeline.status === 'running' || pipeline.status === 'paused')) {
+          if (!cancelledPipelineIds.has(pipelineId)) {
+            agentSessionManager.cancelPipeline(pipelineId);
+            cancelledPipelineIds.add(pipelineId);
+            cancelledRuntimePipelines += 1;
+          }
+          continue;
+        }
+      }
+      if (agentSessionManager.cancelAgentSessionByTaskId(t.id)) {
+        cancelledRuntimeSessions += 1;
+      }
+    }
+
     await db.insert(systemEvents).values({
       type: 'task_group.cancelled',
       actor,
-      payload: { groupId, taskIds: ids, reason: reason || undefined, stoppedContainers },
+      payload: {
+        groupId,
+        taskIds: ids,
+        reason: reason || undefined,
+        stoppedContainers,
+        cancelledRuntimePipelines,
+        cancelledRuntimeSessions,
+      },
     });
     sseManager.broadcast('task_group.cancelled', { groupId, taskIds: ids });
 
-    return NextResponse.json({ success: true, data: { groupId, cancelled: ids.length, stoppedContainers } });
+    return NextResponse.json({
+      success: true,
+      data: {
+        groupId,
+        cancelled: ids.length,
+        stoppedContainers,
+        cancelledRuntimePipelines,
+        cancelledRuntimeSessions,
+      },
+    });
   } catch (err) {
     console.error('[API] 取消 Task Group 失败:', err);
     return NextResponse.json(

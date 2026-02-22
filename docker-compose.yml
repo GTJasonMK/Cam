@@ -19,6 +19,20 @@ services:
     environment:
       - DATABASE_PATH=/app/data/cam.db
       - DOCKER_SOCKET_PATH=/var/run/docker.sock
+      # --- 认证相关（生产建议）---
+      # 首次启动后请访问 /login 初始化管理员账户
+      # - CAM_ALLOW_ANONYMOUS_ACCESS=false
+      # Cookie / OAuth 在反向代理下建议配置公网地址
+      # - CAM_PUBLIC_BASE_URL=https://cam.example.com
+      # - CAM_COOKIE_SECURE=true
+      # - CAM_COOKIE_DOMAIN=example.com
+      # 可选：legacy token 登录模式（不建议长期使用）
+      # - CAM_AUTH_TOKEN=replace-with-strong-token
+      # 可选：OAuth（按需配置）
+      # - CAM_OAUTH_GITHUB_CLIENT_ID=
+      # - CAM_OAUTH_GITHUB_CLIENT_SECRET=
+      # - CAM_OAUTH_GITLAB_CLIENT_ID=
+      # - CAM_OAUTH_GITLAB_CLIENT_SECRET=
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/health || exit 1"]
       interval: 30s

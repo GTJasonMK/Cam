@@ -19,7 +19,7 @@ type SetupStatus = {
   hasUsers: boolean;
   hasLegacyToken: boolean;
   oauthProviders: Array<{ id: string; displayName: string }>;
-  authMode?: 'user_system' | 'legacy_token' | 'none';
+  authMode?: 'user_system' | 'legacy_token' | 'setup_required' | 'none';
 };
 
 type TabKey = 'setup' | 'legacy';
@@ -27,7 +27,7 @@ type TabKey = 'setup' | 'legacy';
 function computeAuthMode(status: SetupStatus): SetupStatus['authMode'] {
   if (status.hasUsers) return 'user_system';
   if (status.hasLegacyToken) return 'legacy_token';
-  return 'none';
+  return 'setup_required';
 }
 
 export function LoginScreen({ nextPath, initialError }: { nextPath: string; initialError: string }) {
@@ -90,7 +90,7 @@ export function LoginScreen({ nextPath, initialError }: { nextPath: string; init
     );
   }
 
-  // 无认证：直接进入
+  // 显式匿名模式（仅 CAM_ALLOW_ANONYMOUS_ACCESS 开启）
   if (authMode === 'none') {
     return (
       <div className="space-y-4">
@@ -123,7 +123,7 @@ export function LoginScreen({ nextPath, initialError }: { nextPath: string; init
     );
   }
 
-  // legacy token：推荐初始化管理员，也保留令牌登录
+  // setup_required / legacy_token：初始化管理员为主，legacy token 可选
   const showTabs = status.hasLegacyToken && !status.hasUsers;
 
   return (
@@ -165,4 +165,3 @@ export function LoginScreen({ nextPath, initialError }: { nextPath: string; init
     </div>
   );
 }
-

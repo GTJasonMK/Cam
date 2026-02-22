@@ -42,12 +42,11 @@ const buttonVariants = cva(
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
-  asChild?: boolean;
   loading?: boolean;
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild: _asChild = false, loading = false, disabled, children, type = 'button', ...props }, ref) => {
+  ({ className, variant, size, loading = false, disabled, children, type = 'button', ...props }, ref) => {
     const isDisabled = disabled || loading;
     const showLoadingIcon = loading;
 

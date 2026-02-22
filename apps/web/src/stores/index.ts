@@ -63,6 +63,8 @@ export interface TaskItem {
   completedAt: string | null;
 }
 
+export type TaskSourceFilter = 'scheduler' | 'terminal' | 'all';
+
 /** Worker */
 export interface WorkerItem {
   id: string;
@@ -184,23 +186,13 @@ function toWorkerStatusSummary(workerList: WorkerItem[]): DashboardData['workerS
   return summary;
 }
 
-function withRecentEvent(data: DashboardData, event: DashboardRealtimeEvent): DashboardData {
-  const payload = event.payload ?? {};
-  const taskId = typeof payload.taskId === 'string' ? payload.taskId : '';
-  const workerId = typeof payload.workerId === 'string' ? payload.workerId : '';
-  const suffix = taskId || workerId || event.timestamp;
-
-  const nextEvent: SystemEventItem = {
-    id: `rt-${event.type}-${suffix}`,
-    type: event.type,
-    payload,
-    timestamp: event.timestamp,
-  };
-
-  return {
-    ...data,
-    recentEvents: [nextEvent, ...data.recentEvents].slice(0, 20),
-  };
+function shouldRefreshDashboardFromEvent(eventType: string): boolean {
+  if (eventType.startsWith('task.')) return true;
+  if (eventType.startsWith('agent.session.')) return true;
+  return eventType === 'worker.online'
+    || eventType === 'worker.offline'
+    || eventType === 'worker.removed'
+    || eventType === 'worker.pruned';
 }
 
 interface DashboardStore {
@@ -257,23 +249,30 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
         return state;
       }
 
-      let nextData = withRecentEvent(state.data, event);
+      let nextData = state.data;
       let nextTaskStatuses = state.taskStatuses;
       const eventType = event.type;
       const payload = event.payload ?? {};
+      if (shouldRefreshDashboardFromEvent(eventType)) {
+        needReconcile = true;
+      }
 
       const applyTaskStatus = (taskId: string, nextStatus: string) => {
         const prevStatus = nextTaskStatuses[taskId];
         if (prevStatus === nextStatus) return;
+
+        // 口径防漂移：未知任务来源/筛选口径不明，交给后端全量统计校准
+        if (!prevStatus) {
+          needReconcile = true;
+          return;
+        }
 
         const nextMap = { ...nextTaskStatuses, [taskId]: nextStatus };
         const nextKpi = { ...nextData.kpi };
         const prevField = prevStatus ? KPI_STATUS_FIELD[prevStatus] : undefined;
         const nextField = KPI_STATUS_FIELD[nextStatus];
 
-        if (!prevStatus) {
-          nextKpi.totalTasks += 1;
-        } else if (prevField && nextKpi[prevField] > 0) {
+        if (prevField && nextKpi[prevField] > 0) {
           nextKpi[prevField] -= 1;
         }
 
@@ -432,7 +431,7 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
 interface TaskStore {
   tasks: TaskItem[];
   loading: boolean;
-  fetchTasks: (status?: string) => Promise<void>;
+  fetchTasks: (status?: string, source?: TaskSourceFilter) => Promise<void>;
   createTask: (
     input: Record<string, unknown>
   ) => Promise<{ success: boolean; errorMessage?: string; missingEnvVars?: string[] }>;
@@ -459,10 +458,14 @@ export const useTaskStore = create<TaskStore>((set) => ({
   tasks: [],
   loading: false,
 
-  fetchTasks: async (status?: string) => {
+  fetchTasks: async (status?: string, source: TaskSourceFilter = 'scheduler') => {
     set({ loading: true });
     try {
-      const url = status ? `/api/tasks?status=${status}` : '/api/tasks';
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (source) params.set('source', source);
+      const query = params.toString();
+      const url = query ? `/api/tasks?${query}` : '/api/tasks';
       const res = await fetch(url);
       const json = await res.json();
       if (json.success) {

@@ -27,7 +27,7 @@ export async function authenticateWs(req: IncomingMessage): Promise<WsUser | nul
   const cookieHeader = req.headers.cookie || '';
   const authMode = await getAuthMode();
 
-  // 0. 无认证模式 → 注入虚拟 admin（与 withAuth 行为一致）
+  // 0. 显式匿名模式（CAM_ALLOW_ANONYMOUS_ACCESS=true）→ 注入虚拟 admin
   if (authMode === 'none') {
     return { id: '__anonymous__', username: 'anonymous', role: 'admin' };
   }

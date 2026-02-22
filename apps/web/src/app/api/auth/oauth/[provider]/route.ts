@@ -6,6 +6,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProviderById } from '@/lib/auth/oauth/providers';
 import { generateOAuthState, buildAuthorizeUrl } from '@/lib/auth/oauth/flow';
+import { resolvePublicOrigin } from '@/lib/auth/public-origin';
+import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 
 type RouteContext = { params: Promise<Record<string, string>> };
 
@@ -22,7 +24,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   }
 
   // 构建回调 URL
-  const origin = request.nextUrl.origin;
+  const origin = resolvePublicOrigin(request);
   const callbackUrl = `${origin}/api/auth/oauth/${providerId}/callback`;
 
   // 生成 HMAC 签名的 state（防 CSRF）
@@ -34,11 +36,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   // 将 state 存入 httpOnly Cookie 供 callback 验证
   const response = NextResponse.redirect(authorizeUrl);
   response.cookies.set('cam_oauth_state', state, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    maxAge: 600, // 10 分钟
+    ...buildAuthCookieOptions({ maxAge: 600 }), // 10 分钟
   });
 
   return response;

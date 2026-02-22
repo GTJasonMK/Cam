@@ -13,6 +13,7 @@ import fs from 'fs';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { agentSessionManager } from '@/lib/terminal/agent-session-manager';
 
 const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 const docker = new Dockerode({ socketPath: dockerSocketPath });
@@ -55,12 +56,33 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
       );
     }
 
+    const currentTask = existing[0];
+    let pipelineCancelRequested = false;
+    let cancelledPipelineId: string | null = null;
+    let terminalCancelRequested = false;
+
+    if (currentTask.source === 'terminal') {
+      const maybePipelineId = typeof currentTask.groupId === 'string' ? currentTask.groupId : '';
+      if (maybePipelineId.startsWith('pipeline/')) {
+        const pipeline = agentSessionManager.getPipeline(maybePipelineId);
+        if (pipeline && (pipeline.status === 'running' || pipeline.status === 'paused')) {
+          agentSessionManager.cancelPipeline(maybePipelineId);
+          pipelineCancelRequested = true;
+          cancelledPipelineId = maybePipelineId;
+        }
+      }
+
+      if (!pipelineCancelRequested) {
+        terminalCancelRequested = agentSessionManager.cancelAgentSessionByTaskId(id);
+      }
+    }
+
     // 终态任务：直接返回成功（幂等）
     if (['cancelled', 'completed', 'failed'].includes(existing[0].status)) {
       return NextResponse.json({ success: true, data: existing[0] });
     }
 
-    const previousStatus = existing[0].status;
+    const previousStatus = currentTask.status;
 
     const result = await db
       .update(tasks)
@@ -75,7 +97,14 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
     await db.insert(systemEvents).values({
       type: 'task.cancelled',
       actor,
-      payload: { taskId: id, previousStatus, reason },
+      payload: {
+        taskId: id,
+        previousStatus,
+        reason,
+        terminalCancelRequested,
+        pipelineCancelRequested,
+        cancelledPipelineId,
+      },
     });
     sseManager.broadcast('task.progress', { taskId: id, status: 'cancelled' });
     sseManager.broadcast('task.cancelled', { taskId: id });

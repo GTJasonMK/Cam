@@ -422,6 +422,7 @@ export default function ProfilePage() {
         <Card padding="md">
           <div className="flex items-center gap-3">
             {user.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
               <img src={user.avatarUrl} alt="" className="h-10 w-10 rounded-full" />
             ) : (
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">

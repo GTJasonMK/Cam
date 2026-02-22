@@ -15,7 +15,7 @@ import { db } from '@/lib/db';
 import { agentDefinitions, repositories, taskLogs, tasks } from '@/lib/db/schema';
 import { resolveEnvVarValue, type SecretScope } from '@/lib/secrets/resolve';
 import { sseManager } from '@/lib/sse/manager';
-import { ptyManager } from './pty-manager';
+import { MAX_SESSIONS_PER_USER, ptyManager } from './pty-manager';
 import { resolveAgentCommand, generateWorkBranch } from './agent-command';
 import { injectCompletionHook } from './hook-injector';
 import type { AgentSessionInfo, AgentSessionStatus } from './protocol';
@@ -31,6 +31,13 @@ const TERMINAL_LOG_FLUSH_INTERVAL_MS = 1000;
 const TERMINAL_LOG_BATCH_SIZE = 100;
 const TERMINAL_LOG_MAX_PENDING_LINES = 5000;
 const TERMINAL_LOG_MAX_LINE_LENGTH = 8000;
+const STATE_PRUNE_INTERVAL_MS = 60 * 1000;
+const FINISHED_SESSION_TTL_MS = 10 * 60 * 1000;
+const FINISHED_PIPELINE_TTL_MS = 30 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Agent 会话元数据（内存中跟踪） */
 interface AgentSessionMeta {
@@ -45,6 +52,7 @@ interface AgentSessionMeta {
   workBranch: string;
   status: AgentSessionStatus;
   exitCode?: number;
+  finishedAt?: number;
   startedAt: number;
   /** 会话模式 */
   mode: 'create' | 'resume' | 'continue';
@@ -153,8 +161,19 @@ class AgentSessionManager {
   /** pipelineId:stepIndex → cleanup 函数（hook 注入的清理回调） */
   private hookCleanups: Map<string, () => Promise<void>> = new Map();
 
+  /** taskId → sessionId（terminal 任务取消/删除快速定位） */
+  private taskSessionIndex: Map<string, string> = new Map();
+
   /** sessionId → terminal 任务日志持久化状态 */
   private terminalLogPersisters: Map<string, TerminalLogPersistState> = new Map();
+  /** sessionId → terminal 日志收尾 Promise（用于删除任务前等待刷盘完成） */
+  private terminalLogDrainPromises: Map<string, Promise<void>> = new Map();
+  /** sessionId → 进入终态的时间戳（用于 TTL 清理） */
+  private sessionFinishedAt: Map<string, number> = new Map();
+  /** pipelineId → 进入终态的时间戳（用于 TTL 清理） */
+  private pipelineFinishedAt: Map<string, number> = new Map();
+  /** 最近一次状态清理时间戳 */
+  private lastStatePruneAtMs = 0;
 
   /** 创建 Agent 会话 */
   async createAgentSession(
@@ -232,6 +251,7 @@ class AgentSessionManager {
       claudeSessionId: opts.resumeSessionId,
     };
     this.sessions.set(sessionId, meta);
+    this.sessionFinishedAt.delete(sessionId);
 
     const modeLabel = mode === 'create' ? '新建' : mode === 'resume' ? '恢复' : '继续';
     console.log(`[AgentSession] ${modeLabel}: ${sessionId} (agent=${agent.displayName}, user=${user.username}, mode=${mode}${mode === 'resume' ? `, claude=${opts.resumeSessionId}` : ''}, 命令=${spec.file} ${spec.args.join(' ')})`);
@@ -250,6 +270,7 @@ class AgentSessionManager {
     if (opts._pipelineTaskId) {
       meta.taskId = opts._pipelineTaskId;
       meta.pipelineId = opts._pipelineId;
+      this.taskSessionIndex.set(opts._pipelineTaskId, sessionId);
       // 更新任务状态为 running + startedAt
       const now = new Date().toISOString();
       db.update(tasks)
@@ -278,6 +299,7 @@ class AgentSessionManager {
           maxRetries: 0,
         });
         meta.taskId = taskId;
+        this.taskSessionIndex.set(taskId, sessionId);
         console.log(`[AgentSession] 已创建任务记录: ${taskId.slice(0, 8)}`);
       } catch (err) {
         console.warn(`[AgentSession] 任务记录创建失败，不影响会话运行: ${(err as Error).message}`);
@@ -293,12 +315,13 @@ class AgentSessionManager {
 
   /** 处理 Agent PTY 退出 */
   handleAgentExit(sessionId: string, exitCode: number): void {
-    this.stopTerminalTaskLogPersistence(sessionId);
+    void this.stopTerminalTaskLogPersistence(sessionId);
     const meta = this.sessions.get(sessionId);
     if (!meta || meta.status !== 'running') return;
 
     const newStatus: AgentSessionStatus = exitCode === 0 ? 'completed' : 'failed';
-    const elapsedMs = Date.now() - meta.startedAt;
+    const finishedAt = Date.now();
+    const elapsedMs = finishedAt - meta.startedAt;
 
     // 更新 tasks 表状态（异步，不阻塞）
     if (meta.taskId) {
@@ -319,8 +342,10 @@ class AgentSessionManager {
         ...meta,
         status: newStatus,
         exitCode,
+        finishedAt,
       };
       this.sessions.set(sessionId, updatedMeta);
+      this.sessionFinishedAt.set(sessionId, finishedAt);
 
       console.log(`[AgentSession] ${newStatus}: ${sessionId} (exitCode=${exitCode}, elapsed=${Math.round(elapsedMs / 1000)}s${gitInfo.branch ? `, branch=${gitInfo.branch}` : ''})`);
 
@@ -340,8 +365,10 @@ class AgentSessionManager {
         ...meta,
         status: newStatus,
         exitCode,
+        finishedAt,
       };
       this.sessions.set(sessionId, updatedMeta);
+      this.sessionFinishedAt.set(sessionId, finishedAt);
 
       console.log(`[AgentSession] ${newStatus}: ${sessionId} (exitCode=${exitCode}, elapsed=${Math.round(elapsedMs / 1000)}s)`);
 
@@ -360,12 +387,28 @@ class AgentSessionManager {
     const meta = this.sessions.get(sessionId);
     if (!meta || meta.status !== 'running') return;
 
+    // 流水线内任一节点取消，统一升级为“取消整条流水线”，避免步骤状态卡住
+    if (meta.pipelineId) {
+      const pipeline = this.pipelines.get(meta.pipelineId);
+      if (pipeline && (pipeline.status === 'running' || pipeline.status === 'paused')) {
+        this.cancelPipeline(meta.pipelineId);
+        return;
+      }
+    }
+
     // 发送 Ctrl+C
-    ptyManager.write(sessionId, '\x03');
+    try {
+      ptyManager.write(sessionId, '\x03');
+    } catch {
+      // PTY 可能已退出
+    }
+
+    const finishedAt = Date.now();
 
     // 更新状态
-    const updatedMeta: AgentSessionMeta = { ...meta, status: 'cancelled' };
+    const updatedMeta: AgentSessionMeta = { ...meta, status: 'cancelled', finishedAt };
     this.sessions.set(sessionId, updatedMeta);
+    this.sessionFinishedAt.set(sessionId, finishedAt);
 
     // 更新 tasks 表状态
     if (meta.taskId) {
@@ -396,6 +439,7 @@ class AgentSessionManager {
 
   /** 获取指定用户的所有 Agent 会话 */
   listByUser(userId: string): AgentSessionInfo[] {
+    this.pruneInactiveState();
     const now = Date.now();
     const result: AgentSessionInfo[] = [];
 
@@ -417,7 +461,7 @@ class AgentSessionManager {
         workBranch: meta.workBranch,
         status: meta.status,
         exitCode: meta.exitCode,
-        elapsedMs: now - meta.startedAt,
+        elapsedMs: (meta.finishedAt ?? now) - meta.startedAt,
       });
     }
 
@@ -434,11 +478,81 @@ class AgentSessionManager {
     return this.sessions.get(sessionId);
   }
 
+  /** 按 taskId 查找 Agent 会话元数据（terminal 任务取消/删除联动） */
+  getMetaByTaskId(taskId: string): AgentSessionMeta | undefined {
+    const indexedSessionId = this.taskSessionIndex.get(taskId);
+    if (indexedSessionId) {
+      const indexedMeta = this.sessions.get(indexedSessionId);
+      if (indexedMeta?.taskId === taskId) {
+        return indexedMeta;
+      }
+      this.taskSessionIndex.delete(taskId);
+    }
+
+    for (const meta of this.sessions.values()) {
+      if (meta.taskId === taskId) {
+        this.taskSessionIndex.set(taskId, meta.sessionId);
+        return meta;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 按 taskId 取消正在运行的 Agent 会话。
+   * 返回 true 表示已发送取消请求。
+   */
+  cancelAgentSessionByTaskId(taskId: string): boolean {
+    const meta = this.getMetaByTaskId(taskId);
+    if (!meta || meta.status !== 'running') {
+      return false;
+    }
+    this.cancelAgentSession(meta.sessionId);
+    return true;
+  }
+
+  /**
+   * 删除任务前的会话收尾：
+   * 1) 若会话仍在运行，先取消并等待 PTY 退出
+   * 2) 等待 terminal 日志持久化收尾，降低 task_logs FK 竞态
+   */
+  async stopAndDrainTaskSessionByTaskId(
+    taskId: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<{ sessionId?: string; stopped: boolean; drained: boolean }> {
+    const timeoutMs = opts?.timeoutMs ?? CANCEL_TIMEOUT_MS + 1500;
+    const meta = this.getMetaByTaskId(taskId);
+    const sessionId = meta?.sessionId ?? this.taskSessionIndex.get(taskId);
+    if (!sessionId) {
+      return { stopped: true, drained: true };
+    }
+
+    if (meta?.status === 'running') {
+      this.cancelAgentSession(sessionId);
+    }
+
+    const stopped = await this.waitForSessionExit(sessionId, timeoutMs);
+    const drained = await this.waitForTerminalLogDrain(sessionId, timeoutMs);
+    if (drained && this.taskSessionIndex.get(taskId) === sessionId) {
+      this.taskSessionIndex.delete(taskId);
+    }
+    return { sessionId, stopped, drained };
+  }
+
   /** 清理已结束的会话记录（可定期调用） */
   cleanupFinished(): void {
     for (const [id, meta] of this.sessions) {
       if (meta.status !== 'running' && !ptyManager.has(id)) {
-        this.stopTerminalTaskLogPersistence(id);
+        const drainPromise = this.stopTerminalTaskLogPersistence(id);
+        const taskId = meta.taskId;
+        if (taskId && this.taskSessionIndex.get(taskId) === id) {
+          void drainPromise.finally(() => {
+            if (this.taskSessionIndex.get(taskId) === id) {
+              this.taskSessionIndex.delete(taskId);
+            }
+          });
+        }
+        this.sessionFinishedAt.delete(id);
         this.sessions.delete(id);
       }
     }
@@ -446,6 +560,7 @@ class AgentSessionManager {
 
   /** 获取当前活跃（running）Agent 会话数 */
   getActiveSessionCount(): number {
+    this.pruneInactiveState();
     let count = 0;
     for (const meta of this.sessions.values()) {
       if (meta.status === 'running') count++;
@@ -461,6 +576,7 @@ class AgentSessionManager {
     elapsedMs: number;
     repoPath?: string;
   }> {
+    this.pruneInactiveState();
     const now = Date.now();
     const result: Array<{
       sessionId: string;
@@ -475,7 +591,7 @@ class AgentSessionManager {
         sessionId: meta.sessionId,
         agentDisplayName: meta.agentDisplayName,
         status: meta.status,
-        elapsedMs: now - meta.startedAt,
+        elapsedMs: (meta.finishedAt ?? now) - meta.startedAt,
         repoPath: meta.repoPath,
       });
     }
@@ -581,6 +697,10 @@ class AgentSessionManager {
     const pipelineId = `pipeline/terminal-${crypto.randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
 
+    // 容量预检查：创建时至少要能启动第一步的全部并行节点，避免“部分启动”
+    const firstStepNodeCount = normalizedSteps[0]?.nodes.length ?? 0;
+    this.ensureSessionCapacity(user.id, firstStepNodeCount, '创建流水线');
+
     // 批量 INSERT 任务（步骤内每个并行节点一条记录）
     for (let stepIndex = 0; stepIndex < normalizedSteps.length; stepIndex++) {
       const step = normalizedSteps[stepIndex];
@@ -626,9 +746,20 @@ class AgentSessionManager {
       status: 'running',
     };
     this.pipelines.set(pipelineId, pipeline);
+    this.pipelineFinishedAt.delete(pipelineId);
 
     // 启动第一步（支持步骤内并行节点）
-    const startedSessionMetas = await this.startPipelineStepNodes(pipeline, 0, user);
+    let startedSessionMetas: Array<AgentSessionMeta & { shell: string }> = [];
+    try {
+      startedSessionMetas = await this.startPipelineStepNodes(pipeline, 0, user);
+    } catch (err) {
+      // 创建阶段失败：清理内存态，任务状态已在 startPipelineStepNodes 内回滚
+      this.cleanupPipelineHooks(pipelineId);
+      this.cleanupPipelineCallbackTokens(pipelineId);
+      this.pipelines.delete(pipelineId);
+      this.pipelineFinishedAt.delete(pipelineId);
+      throw err;
+    }
 
     const agentNames = [...allAgentIds].map((id) => agentCache.get(id)!.displayName);
     console.log(`[Pipeline] 已创建流水线: ${pipelineId} (${normalizedSteps.length} 步, agents=[${agentNames.join(', ')}])`);
@@ -655,6 +786,7 @@ class AgentSessionManager {
     // 已是最后一步 → 流水线完成
     if (nextIndex >= pipeline.steps.length) {
       pipeline.status = 'completed';
+      this.pipelineFinishedAt.set(pipelineId, Date.now());
       console.log(`[Pipeline] 流水线完成: ${pipelineId}`);
       return null;
     }
@@ -696,6 +828,7 @@ class AgentSessionManager {
     if (!success) {
       step.status = 'failed';
       pipeline.status = 'failed';
+      this.pipelineFinishedAt.set(pipelineId, Date.now());
       const now = new Date().toISOString();
 
       // 同步骤仍在运行的并行节点全部取消
@@ -747,6 +880,7 @@ class AgentSessionManager {
     if (!pipeline || (pipeline.status !== 'running' && pipeline.status !== 'paused')) return;
 
     pipeline.status = 'cancelled';
+    this.pipelineFinishedAt.set(pipelineId, Date.now());
     const now = new Date().toISOString();
 
     // 取消当前运行的 Agent 会话
@@ -781,11 +915,7 @@ class AgentSessionManager {
     this.cleanupPipelineHooks(pipelineId);
 
     // 清理所有关联的回调令牌
-    for (const [token, info] of this.callbackTokens) {
-      if (info.pipelineId === pipelineId) {
-        this.callbackTokens.delete(token);
-      }
-    }
+    this.cleanupPipelineCallbackTokens(pipelineId);
 
     console.log(`[Pipeline] 已取消流水线: ${pipelineId}`);
   }
@@ -818,6 +948,7 @@ class AgentSessionManager {
     }
 
     pipeline.status = 'running';
+    this.pipelineFinishedAt.delete(pipelineId);
 
     const currentStep = pipeline.steps[pipeline.currentStepIndex];
 
@@ -922,8 +1053,10 @@ class AgentSessionManager {
     if (!meta || meta.status !== 'running') return;
 
     // 更新状态为 completed（hook 回调意味着任务成功完成）
-    const updatedMeta: AgentSessionMeta = { ...meta, status: 'completed', exitCode: 0 };
+    const finishedAt = Date.now();
+    const updatedMeta: AgentSessionMeta = { ...meta, status: 'completed', exitCode: 0, finishedAt };
     this.sessions.set(sessionId, updatedMeta);
+    this.sessionFinishedAt.set(sessionId, finishedAt);
 
     // 发送 Ctrl+C 让 Claude 退出交互模式
     try {
@@ -942,11 +1075,13 @@ class AgentSessionManager {
 
   /** 获取流水线状态 */
   getPipeline(pipelineId: string): TerminalPipeline | undefined {
+    this.pruneInactiveState();
     return this.pipelines.get(pipelineId);
   }
 
   /** 获取指定用户的所有流水线 */
   listPipelinesByUser(userId: string): TerminalPipeline[] {
+    this.pruneInactiveState();
     const result: TerminalPipeline[] = [];
     for (const p of this.pipelines.values()) {
       if (p.userId === userId) result.push(p);
@@ -955,6 +1090,143 @@ class AgentSessionManager {
   }
 
   // ---- 内部方法 ----
+
+  private pruneInactiveState(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastStatePruneAtMs < STATE_PRUNE_INTERVAL_MS) {
+      return;
+    }
+    this.lastStatePruneAtMs = now;
+
+    // 先做一次即时清理：结束且 PTY 已退出的会话可以立即移除
+    this.cleanupFinished();
+
+    // 清理超时的终态会话元数据（仅在日志收尾完成后）
+    for (const [sessionId, finishedAt] of this.sessionFinishedAt.entries()) {
+      if (now - finishedAt < FINISHED_SESSION_TTL_MS) continue;
+      const meta = this.sessions.get(sessionId);
+      if (!meta) {
+        this.sessionFinishedAt.delete(sessionId);
+        continue;
+      }
+      if (meta.status === 'running') {
+        this.sessionFinishedAt.delete(sessionId);
+        continue;
+      }
+      if (ptyManager.has(sessionId)) continue;
+      if (this.terminalLogPersisters.has(sessionId) || this.terminalLogDrainPromises.has(sessionId)) continue;
+
+      if (meta.taskId && this.taskSessionIndex.get(meta.taskId) === sessionId) {
+        this.taskSessionIndex.delete(meta.taskId);
+      }
+      this.sessions.delete(sessionId);
+      this.sessionFinishedAt.delete(sessionId);
+    }
+
+    // running/paused 流水线不应保留终态时间戳
+    for (const [pipelineId, pipeline] of this.pipelines.entries()) {
+      if (pipeline.status === 'running' || pipeline.status === 'paused') {
+        this.pipelineFinishedAt.delete(pipelineId);
+      }
+    }
+
+    // 清理超时的终态流水线
+    for (const [pipelineId, finishedAt] of this.pipelineFinishedAt.entries()) {
+      if (now - finishedAt < FINISHED_PIPELINE_TTL_MS) continue;
+      const pipeline = this.pipelines.get(pipelineId);
+      if (!pipeline) {
+        this.pipelineFinishedAt.delete(pipelineId);
+        continue;
+      }
+      if (pipeline.status === 'running' || pipeline.status === 'paused') {
+        this.pipelineFinishedAt.delete(pipelineId);
+        continue;
+      }
+
+      const hasActiveNodes = pipeline.steps.some((step) =>
+        step.nodes.some((node) => Boolean(node.sessionId && ptyManager.has(node.sessionId)))
+      );
+      if (hasActiveNodes) continue;
+
+      this.cleanupPipelineHooks(pipelineId);
+      this.cleanupPipelineCallbackTokens(pipelineId);
+      this.pipelines.delete(pipelineId);
+      this.pipelineFinishedAt.delete(pipelineId);
+    }
+  }
+
+  private ensureSessionCapacity(userId: string, requestedCount: number, context: string): void {
+    if (requestedCount <= 0) return;
+    const currentCount = ptyManager.listByUser(userId).length;
+    const available = Math.max(0, MAX_SESSIONS_PER_USER - currentCount);
+    if (requestedCount > available) {
+      throw new Error(
+        `${context} 失败：需要 ${requestedCount} 个并行会话，但当前仅剩 ${available} 个可用（单用户上限 ${MAX_SESSIONS_PER_USER}）`
+      );
+    }
+  }
+
+  private async rollbackPipelineStepStartFailure(
+    pipeline: TerminalPipeline,
+    stepIndex: number,
+    startedMetas: Array<AgentSessionMeta & { shell: string }>,
+    err: Error,
+  ): Promise<void> {
+    const step = pipeline.steps[stepIndex];
+    if (!step) return;
+
+    const now = new Date().toISOString();
+    const startedSessionIds = new Set(startedMetas.map((meta) => meta.sessionId));
+    const updatePromises: Array<Promise<unknown>> = [];
+
+    pipeline.status = 'failed';
+    this.pipelineFinishedAt.set(pipeline.pipelineId, Date.now());
+    step.status = 'failed';
+
+    for (const node of step.nodes) {
+      if (node.sessionId && startedSessionIds.has(node.sessionId)) {
+        this.cancelAgentSession(node.sessionId);
+        node.status = 'cancelled';
+        updatePromises.push(
+          db.update(tasks)
+            .set({ status: 'cancelled', completedAt: now })
+            .where(eq(tasks.id, node.taskId))
+        );
+        continue;
+      }
+
+      if (node.status === 'running' || node.status === 'draft') {
+        node.status = 'failed';
+        updatePromises.push(
+          db.update(tasks)
+            .set({ status: 'failed', completedAt: now })
+            .where(eq(tasks.id, node.taskId))
+        );
+      }
+    }
+
+    for (let i = stepIndex + 1; i < pipeline.steps.length; i++) {
+      const nextStep = pipeline.steps[i];
+      nextStep.status = nextStep.status === 'completed' ? 'completed' : 'cancelled';
+      for (const node of nextStep.nodes) {
+        if (node.status === 'draft' || node.status === 'running') {
+          node.status = 'cancelled';
+          updatePromises.push(
+            db.update(tasks)
+              .set({ status: 'cancelled', completedAt: now })
+              .where(eq(tasks.id, node.taskId))
+          );
+        }
+      }
+    }
+
+    await Promise.allSettled(updatePromises);
+    this.cleanupPipelineHooks(pipeline.pipelineId);
+    this.cleanupPipelineCallbackTokens(pipeline.pipelineId);
+    console.warn(
+      `[Pipeline] 步骤启动失败，已回滚: ${pipeline.pipelineId} (step=${stepIndex + 1}, error=${err.message})`
+    );
+  }
 
   /** 启动指定步骤的所有并行节点 */
   private async startPipelineStepNodes(
@@ -994,54 +1266,62 @@ class AgentSessionManager {
     }
 
     const started: Array<AgentSessionMeta & { shell: string }> = [];
-    for (let nodeIndex = 0; nodeIndex < step.nodes.length; nodeIndex++) {
-      const node = step.nodes[nodeIndex];
-      const nodeAgentId = node.agentDefinitionId || step.agentDefinitionId || pipeline.agentDefinitionId;
-      const renderedPrompt = this.buildPipelineNodePrompt({
-        pipeline,
-        step,
-        node,
-        stepIndex,
-        nodeIndex,
-        stepDir,
-        prevStepDir,
-      });
+    try {
+      // 启动前容量检查：步骤内并行节点必须可一次性启动
+      this.ensureSessionCapacity(user.id, step.nodes.length, `启动流水线步骤 ${stepIndex + 1}`);
 
-      // Claude Code：注入 Stop hook，使用交互模式；其他 Agent：使用 autoExit
-      const nodeHooked = await this.injectStepHook(
-        nodeAgentId,
-        pipeline.repoPath,
-        pipeline.pipelineId,
-        node.taskId,
-        stepIndex,
-        nodeIndex,
-      );
+      for (let nodeIndex = 0; nodeIndex < step.nodes.length; nodeIndex++) {
+        const node = step.nodes[nodeIndex];
+        const nodeAgentId = node.agentDefinitionId || step.agentDefinitionId || pipeline.agentDefinitionId;
+        const renderedPrompt = this.buildPipelineNodePrompt({
+          pipeline,
+          step,
+          node,
+          stepIndex,
+          nodeIndex,
+          stepDir,
+          prevStepDir,
+        });
 
-      const sessionMeta = await this.createAgentSession(
-        {
-          agentDefinitionId: nodeAgentId,
-          prompt: renderedPrompt,
-          repoUrl: pipeline.repoUrl,
-          baseBranch: pipeline.baseBranch,
-          workDir: pipeline.workDir || pipeline.repoPath,
-          cols: pipeline.cols,
-          rows: pipeline.rows,
-          autoExit: !nodeHooked,
-          _pipelineTaskId: node.taskId,
-          _pipelineId: pipeline.pipelineId,
-        },
-        user,
-      );
+        // Claude Code：注入 Stop hook，使用交互模式；其他 Agent：使用 autoExit
+        const nodeHooked = await this.injectStepHook(
+          nodeAgentId,
+          pipeline.repoPath,
+          pipeline.pipelineId,
+          node.taskId,
+          stepIndex,
+          nodeIndex,
+        );
 
-      node.sessionId = sessionMeta.sessionId;
-      node.status = 'running';
-      started.push(sessionMeta);
+        const sessionMeta = await this.createAgentSession(
+          {
+            agentDefinitionId: nodeAgentId,
+            prompt: renderedPrompt,
+            repoUrl: pipeline.repoUrl,
+            baseBranch: pipeline.baseBranch,
+            workDir: pipeline.workDir || pipeline.repoPath,
+            cols: pipeline.cols,
+            rows: pipeline.rows,
+            autoExit: !nodeHooked,
+            _pipelineTaskId: node.taskId,
+            _pipelineId: pipeline.pipelineId,
+          },
+          user,
+        );
 
-      try {
-        await writeFile(path.join(stepDir, `agent-${nodeIndex + 1}-task.md`), renderedPrompt, 'utf-8');
-      } catch (err) {
-        console.warn(`[Pipeline] 写入并行节点任务文件失败(step=${stepIndex + 1}, node=${nodeIndex + 1}): ${(err as Error).message}`);
+        node.sessionId = sessionMeta.sessionId;
+        node.status = 'running';
+        started.push(sessionMeta);
+
+        try {
+          await writeFile(path.join(stepDir, `agent-${nodeIndex + 1}-task.md`), renderedPrompt, 'utf-8');
+        } catch (err) {
+          console.warn(`[Pipeline] 写入并行节点任务文件失败(step=${stepIndex + 1}, node=${nodeIndex + 1}): ${(err as Error).message}`);
+        }
       }
+    } catch (err) {
+      await this.rollbackPipelineStepStartFailure(pipeline, stepIndex, started, err as Error);
+      throw err;
     }
 
     return started;
@@ -1103,7 +1383,8 @@ class AgentSessionManager {
    */
   private startTerminalTaskLogPersistence(sessionId: string, taskId: string): void {
     // 幂等防护：重复启动时先清理旧状态
-    this.stopTerminalTaskLogPersistence(sessionId);
+    void this.stopTerminalTaskLogPersistence(sessionId);
+    this.terminalLogDrainPromises.delete(sessionId);
 
     const timer = setInterval(() => {
       void this.flushTerminalTaskLogs(sessionId);
@@ -1151,25 +1432,56 @@ class AgentSessionManager {
   }
 
   /** 停止并清理 terminal 日志持久化，退出时强制 flush 一次 */
-  private stopTerminalTaskLogPersistence(sessionId: string): void {
+  private stopTerminalTaskLogPersistence(sessionId: string): Promise<void> {
+    const existingDrainPromise = this.terminalLogDrainPromises.get(sessionId);
     const state = this.terminalLogPersisters.get(sessionId);
-    if (!state) return;
+    if (!state) {
+      return existingDrainPromise ?? Promise.resolve();
+    }
 
     clearInterval(state.timer);
     ptyManager.removeDataTap(sessionId, state.tapId);
     this.terminalLogPersisters.delete(sessionId);
-    if (state.flushInFlight) {
-      const waitAndFlush = (): void => {
-        if (state.flushInFlight) {
-          setTimeout(waitAndFlush, 50);
-          return;
-        }
-        void this.flushTerminalTaskLogsForState(state, true);
-      };
-      waitAndFlush();
-      return;
+
+    const drainPromise = (async () => {
+      while (state.flushInFlight) {
+        await sleep(50);
+      }
+      await this.flushTerminalTaskLogsForState(state, true);
+    })().finally(() => {
+      if (this.terminalLogDrainPromises.get(sessionId) === drainPromise) {
+        this.terminalLogDrainPromises.delete(sessionId);
+      }
+    });
+
+    this.terminalLogDrainPromises.set(sessionId, drainPromise);
+    return drainPromise;
+  }
+
+  /** 等待指定会话的 terminal 日志持久化收尾（超时返回 false） */
+  private async waitForTerminalLogDrain(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const drainPromise = this.stopTerminalTaskLogPersistence(sessionId);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+    const result = await Promise.race([drainPromise.then(() => 'drained' as const), timeoutPromise]);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
     }
-    void this.flushTerminalTaskLogsForState(state, true);
+    return result === 'drained';
+  }
+
+  /** 等待 PTY 会话退出（超时返回 false） */
+  private async waitForSessionExit(sessionId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!ptyManager.has(sessionId)) {
+        return true;
+      }
+      await sleep(50);
+    }
+    return !ptyManager.has(sessionId);
   }
 
   private enqueueTerminalTaskLogLine(state: TerminalLogPersistState, line: string): void {
@@ -1211,6 +1523,15 @@ class AgentSessionManager {
 
     state.flushInFlight = true;
     try {
+      // 任务可能在日志落库前被删除，先做存在性校验避免 FK 冲突重试风暴
+      const taskExists = await this.taskExists(state.taskId);
+      if (!taskExists) {
+        state.pendingLines = [];
+        state.partialLine = '';
+        state.droppedLines = 0;
+        return;
+      }
+
       while (state.pendingLines.length > 0) {
         const batchSize = Math.min(TERMINAL_LOG_BATCH_SIZE, state.pendingLines.length);
         const batch = state.pendingLines.slice(0, batchSize);
@@ -1233,6 +1554,13 @@ class AgentSessionManager {
         state.droppedLines = 0;
       }
     } catch (err) {
+      if ((err as Error).message.includes('FOREIGN KEY constraint failed')) {
+        // 任务已被删除或正在删除，清空缓冲避免后续重复报错
+        state.pendingLines = [];
+        state.partialLine = '';
+        state.droppedLines = 0;
+        return;
+      }
       console.warn(`[AgentSession] terminal 日志持久化失败: ${(err as Error).message}`);
     } finally {
       state.flushInFlight = false;
@@ -1286,6 +1614,25 @@ class AgentSessionManager {
       cleanup().catch(() => {});
       this.hookCleanups.delete(key);
     }
+  }
+
+  /** 清理流水线关联的 hook 回调令牌 */
+  private cleanupPipelineCallbackTokens(pipelineId: string): void {
+    for (const [token, info] of this.callbackTokens.entries()) {
+      if (info.pipelineId === pipelineId) {
+        this.callbackTokens.delete(token);
+      }
+    }
+  }
+
+  /** 检查任务是否仍存在（日志写入前防 FK 竞态） */
+  private async taskExists(taskId: string): Promise<boolean> {
+    const [task] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1);
+    return Boolean(task);
   }
 
   /** 解析仓库本地路径 */

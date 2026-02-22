@@ -22,9 +22,9 @@ import type { ClientMessage } from '@/lib/terminal/protocol';
 import {
   buildExportDataFromForm,
   downloadPipelineJson,
-  findMissingPipelineAgentIds,
   openPipelineFile,
   parsePipelineImport,
+  sanitizePipelineImportAgentIds,
 } from '@/lib/pipeline-io';
 import { resolveKnownAgentIdsForImport } from '@/lib/agents/known-agent-ids';
 
@@ -371,20 +371,15 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
 
     const { data } = result;
     const knownAgentIds = await resolveKnownAgentIdsForImport(agents.map((a) => a.id));
-    if (knownAgentIds.length > 0) {
-      const missingAgentIds = findMissingPipelineAgentIds(data, knownAgentIds);
-      if (missingAgentIds.length > 0) {
-        setError(MSG.pipeline.importUnknownAgent(missingAgentIds[0]));
-        return;
-      }
-    }
+    const sanitized = sanitizePipelineImportAgentIds(data, knownAgentIds);
+    const imported = sanitized.data;
 
     // 填充表单
-    if (data.agentDefinitionId) setDefaultAgent(data.agentDefinitionId);
-    if (data.repoUrl) setRepoUrl(data.repoUrl);
-    if (data.baseBranch) setBaseBranch(data.baseBranch);
-    if (data.workDir) setWorkDir(data.workDir);
-    setSteps(data.steps.map((s) => ({
+    if (imported.agentDefinitionId) setDefaultAgent(imported.agentDefinitionId);
+    if (imported.repoUrl) setRepoUrl(imported.repoUrl);
+    if (imported.baseBranch) setBaseBranch(imported.baseBranch);
+    if (imported.workDir) setWorkDir(imported.workDir);
+    setSteps(imported.steps.map((s) => ({
       title: s.title,
       prompt: s.description,
       agentDefinitionId: s.agentDefinitionId || '',
@@ -397,6 +392,10 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         agentDefinitionId: node.agentDefinitionId || '',
       })),
     })));
+    if (sanitized.missingAgentIds.length > 0) {
+      setError(`已导入配置，但以下智能体不存在，已回退为默认/空：${sanitized.missingAgentIds.join(', ')}`);
+      return;
+    }
     setError('');
   }, [agents]);
 

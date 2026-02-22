@@ -31,6 +31,7 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   adminOnly?: boolean;
+  exact?: boolean;
   /** 动态 badge 值（> 0 时显示） */
   badge?: number;
 }
@@ -56,7 +57,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/events', label: SIDEBAR_UI_MESSAGES.nav.events, icon: Activity },
       { href: '/agents', label: SIDEBAR_UI_MESSAGES.nav.agents, icon: Bot },
-      { href: '/workers', label: SIDEBAR_UI_MESSAGES.nav.workers, icon: Server },
+      { href: '/workers', label: SIDEBAR_UI_MESSAGES.nav.workersTasks, icon: Server, exact: true },
+      { href: '/workers/terminal', label: SIDEBAR_UI_MESSAGES.nav.workersTerminal, icon: TerminalSquare },
       { href: '/repos', label: SIDEBAR_UI_MESSAGES.nav.repos, icon: GitFork },
     ],
   },
@@ -183,7 +185,11 @@ export function Sidebar() {
                 {group.items.map((item) => {
                   // 点击后立即高亮：优先使用 pendingPath，页面加载完成后回退到 pathname
                   const activePath = pendingPath ?? pathname;
-                  const isActive = item.href === '/' ? activePath === '/' : activePath === item.href || activePath.startsWith(item.href + '/');
+                  const isActive = item.href === '/'
+                    ? activePath === '/'
+                    : item.exact
+                      ? activePath === item.href
+                      : activePath === item.href || activePath.startsWith(item.href + '/');
                   const Icon = item.icon;
                   return (
                     <Link

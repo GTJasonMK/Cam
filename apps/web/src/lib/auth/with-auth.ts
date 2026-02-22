@@ -54,7 +54,7 @@ export function withAuth<P extends Record<string, string> = Record<string, strin
   return async (request, context) => {
     const authMode = await getAuthMode();
 
-    // 无认证模式直接通过，注入虚拟 admin
+    // 显式匿名模式直接通过，注入虚拟 admin
     if (authMode === 'none') {
       const virtualUser: RequestUser = {
         id: '__anonymous__',
