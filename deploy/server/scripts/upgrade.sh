@@ -49,6 +49,10 @@ else
   pnpm --filter @cam/shared build
   pnpm --filter @cam/web build
 
+  # standalone 输出不包含静态资源，需手动复制
+  echo "[INFO] 复制静态资源到 standalone 目录"
+  cp -r "$ROOT_DIR/apps/web/.next/static" "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next/static"
+
   echo "[INFO] 重启服务"
   systemctl restart cam-web
   sleep 3
