@@ -340,6 +340,47 @@ export default function TerminalPanel({
     return () => observer.disconnect();
   }, [handleResize]);
 
+  // 虚拟键盘自适应（iOS Safari 等不支持 interactive-widget 的浏览器回退）
+  // 监听 visualViewport 变化，键盘弹出时缩减面板高度使工具栏保持可见
+  useEffect(() => {
+    if (!showToolbar) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    let rafId = 0;
+    const update = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        // 可视区域底部（视觉视口坐标 → 布局视口坐标）
+        const visibleBottom = vv.offsetTop + vv.height;
+        const available = visibleBottom - rect.top;
+        // 视觉视口高度显著小于窗口高度 → 键盘可能弹出
+        const keyboardOpen = vv.height < window.innerHeight * 0.75;
+
+        if (keyboardOpen && available > 100) {
+          container.style.maxHeight = `${Math.floor(available)}px`;
+        } else {
+          container.style.maxHeight = '';
+        }
+        fitAddonRef.current?.fit();
+      });
+    };
+
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+      cancelAnimationFrame(rafId);
+      container.style.maxHeight = '';
+    };
+  }, [showToolbar]);
+
   return (
     <div
       ref={containerRef}

@@ -31,6 +31,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // 虚拟键盘弹出时缩小布局视口，使 100dvh 自动适应（Chrome Android 108+）
+  interactiveWidget: 'resizes-content',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
