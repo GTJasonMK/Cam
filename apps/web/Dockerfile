@@ -36,6 +36,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
+# 预创建数据/日志/仓库目录并赋予 nextjs 用户写权限
+RUN mkdir -p /app/data /app/logs /app/repos && \
+    chown -R nextjs:nodejs /app/data /app/logs /app/repos
+
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=builder /app/apps/web/builtin ./apps/web/builtin
