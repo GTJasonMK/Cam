@@ -74,10 +74,11 @@ export default function TerminalPanel({
   const [toastText, setToastText] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 移动端输入预览状态
+  // 移动端输入预览状态：实时镜像终端光标所在行
+  const [cursorLine, setCursorLine] = useState('');
+  const cursorLineCache = useRef('');
+  const cursorLineRaf = useRef(0);
   const [composingText, setComposingText] = useState('');
-  const [inputEcho, setInputEcho] = useState('');
-  const inputEchoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isComposingRef = useRef(false);
 
   function showToast(text: string) {
@@ -86,11 +87,20 @@ export default function TerminalPanel({
     toastTimerRef.current = setTimeout(() => setToastText(null), 1200);
   }
 
-  // 更新输入回显（追加可见字符，超时自动清除）
-  function appendEcho(text: string) {
-    setInputEcho((prev) => (prev + text).slice(-40));
-    if (inputEchoTimerRef.current) clearTimeout(inputEchoTimerRef.current);
-    inputEchoTimerRef.current = setTimeout(() => setInputEcho(''), 2000);
+  // 读取终端光标所在行内容（rAF 节流，避免高频输出时过度渲染）
+  function updateCursorLine() {
+    cancelAnimationFrame(cursorLineRaf.current);
+    cursorLineRaf.current = requestAnimationFrame(() => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      const buf = terminal.buffer.active;
+      const line = buf.getLine(buf.baseY + buf.cursorY);
+      const text = line?.translateToString(true) ?? '';
+      if (text !== cursorLineCache.current) {
+        cursorLineCache.current = text;
+        setCursorLine(text);
+      }
+    });
   }
 
   // ---- 复制选中文本 ----
@@ -268,25 +278,13 @@ export default function TerminalPanel({
         return true;
       });
 
-      // 键盘输入 → WebSocket + 移动端输入回显
+      // 键盘输入 → WebSocket
       terminal.onData((data) => {
         send({ type: 'input', sessionId, data });
-        // IME 输入期间不回显（由 composingText 实时显示）
-        if (isComposingRef.current) return;
-        if (data.length === 1) {
-          const code = data.charCodeAt(0);
-          if (code === 13) {
-            // Enter → 显示换行符号并短暂延迟后清空
-            appendEcho(' ↵');
-            setTimeout(() => setInputEcho(''), 500);
-          } else if (code >= 32) {
-            appendEcho(data);
-          }
-        } else if (data.length > 1 && !data.startsWith('\x1b')) {
-          // 多字符输入（IME 确认文本或粘贴内容）
-          appendEcho(data);
-        }
       });
+
+      // 终端缓冲区更新后刷新光标行预览
+      terminal.onWriteParsed(() => updateCursorLine());
 
       // 尺寸变化 → WebSocket（必须在 fit() 之前注册，否则首次 resize 丢失）
       terminal.onResize(({ cols, rows }) => {
@@ -310,7 +308,7 @@ export default function TerminalPanel({
       terminal?.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
-      if (inputEchoTimerRef.current) clearTimeout(inputEchoTimerRef.current);
+      cancelAnimationFrame(cursorLineRaf.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -397,26 +395,22 @@ export default function TerminalPanel({
         </div>
       )}
 
-      {/* 移动端底部区域（输入预览 + 辅助工具栏） */}
+      {/* 移动端底部区域（光标行预览 + 辅助工具栏） */}
       {showToolbar && (
-        <div className="relative shrink-0">
-          {/* 输入预览浮层 — 悬浮在工具栏上方，避免布局跳动 */}
-          {(composingText || inputEcho) && (
-            <div className="absolute bottom-full left-0 right-0 z-10 border-t border-primary/20 bg-[#0f1923]/95 px-3 py-1.5 backdrop-blur-sm">
-              <div
-                className="flex items-center overflow-hidden text-sm"
-                style={{ fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace" }}
-              >
-                {inputEcho && (
-                  <span className="whitespace-pre text-foreground/70">{inputEcho}</span>
-                )}
-                {composingText && (
-                  <span className="border-b border-primary text-primary">{composingText}</span>
-                )}
-                <span className="ml-px animate-pulse text-primary/70">|</span>
-              </div>
+        <div className="shrink-0">
+          {/* 光标行预览 — 实时镜像终端当前光标所在行 */}
+          <div className="border-t border-border/50 bg-[#0f1923] px-3 py-1.5">
+            <div
+              className="flex items-center overflow-hidden text-sm leading-5"
+              style={{ fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace" }}
+            >
+              <span className="min-w-0 truncate whitespace-pre text-foreground/80">{cursorLine}</span>
+              {composingText && (
+                <span className="shrink-0 border-b border-primary text-primary">{composingText}</span>
+              )}
+              <span className="ml-px shrink-0 animate-pulse text-primary/70">▎</span>
             </div>
-          )}
+          </div>
           {/* 辅助工具栏 */}
           <div className="border-t border-border bg-[#111b27] px-1 py-1">
             <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
