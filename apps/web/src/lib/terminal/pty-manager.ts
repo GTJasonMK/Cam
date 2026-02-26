@@ -6,6 +6,7 @@
 
 import * as pty from 'node-pty';
 import crypto from 'crypto';
+import fs from 'fs';
 import type { SessionInfo } from './protocol';
 import { toWSLPath, buildWSLEnvArgs } from './wsl';
 
@@ -77,7 +78,20 @@ class PtyManager {
     }
 
     const sessionId = crypto.randomUUID();
-    const cwd = opts.cwd || process.env.HOME || process.env.USERPROFILE || process.cwd();
+    const cwdCandidates = [opts.cwd, process.env.HOME, process.env.USERPROFILE, process.cwd()];
+    let cwd = '/tmp';
+    for (const candidate of cwdCandidates) {
+      if (candidate) {
+        try {
+          if (fs.existsSync(candidate)) {
+            cwd = candidate;
+            break;
+          }
+        } catch {
+          // 忽略检测错误，尝试下一个候选目录
+        }
+      }
+    }
 
     // command 模式：直接 spawn 命令；否则 spawn shell
     let file: string;

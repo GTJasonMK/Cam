@@ -37,11 +37,13 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
+    adduser --system --uid 1001 --home /home/nextjs --ingroup nodejs nextjs
 
 # 预创建数据/日志/仓库目录并赋予 nextjs 用户写权限
 RUN mkdir -p /app/data /app/logs /app/repos && \
     chown -R nextjs:nodejs /app/data /app/logs /app/repos
+
+ENV HOME=/home/nextjs
 
 # 复制依赖（含原生模块）
 COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml /app/tsconfig.base.json ./
