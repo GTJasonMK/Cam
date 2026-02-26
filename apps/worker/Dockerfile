@@ -16,7 +16,7 @@ FROM base AS builder
 
 COPY apps/worker/package.json apps/worker/tsconfig.json ./apps/worker/
 COPY packages/shared/package.json ./packages/shared/
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 
 RUN corepack enable && pnpm install --frozen-lockfile
 
