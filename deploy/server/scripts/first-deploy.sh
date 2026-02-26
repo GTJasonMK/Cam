@@ -133,17 +133,10 @@ if [[ "$CAM_DEPLOY_MODE" == "docker" ]]; then
 
 else
   # ---- 宿主机模式 ----
+  # 使用自定义 server.ts（含 WebSocket 终端），直接用 .next 构建产物 + 完整 node_modules
   echo "[INFO] 宿主机模式：构建 Next.js"
   pnpm --filter @cam/shared build
   pnpm --filter @cam/web build
-
-  # standalone 输出不包含静态资源和原生 .node 二进制，需补充
-  echo "[INFO] 补充 standalone 缺失资源"
-  mkdir -p "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next"
-  cp -r "$ROOT_DIR/apps/web/.next/static" "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next/static"
-  # 用符号链接替换 standalone 的 node_modules，确保原生模块（node-pty 等）可用
-  rm -rf "$ROOT_DIR/apps/web/.next/standalone/node_modules"
-  ln -s "$ROOT_DIR/node_modules" "$ROOT_DIR/apps/web/.next/standalone/node_modules"
 
   echo "[INFO] 安装 systemd 服务"
   mkdir -p /etc/systemd/system

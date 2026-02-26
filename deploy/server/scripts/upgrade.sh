@@ -66,13 +66,6 @@ else
   pnpm --filter @cam/shared build
   pnpm --filter @cam/web build
 
-  # standalone 输出不包含静态资源和原生 .node 二进制，需补充
-  echo "[INFO] 补充 standalone 缺失资源"
-  mkdir -p "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next"
-  cp -r "$ROOT_DIR/apps/web/.next/static" "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next/static"
-  rm -rf "$ROOT_DIR/apps/web/.next/standalone/node_modules"
-  ln -s "$ROOT_DIR/node_modules" "$ROOT_DIR/apps/web/.next/standalone/node_modules"
-
   echo "[INFO] 重启服务"
   systemctl restart cam-web
   sleep 3

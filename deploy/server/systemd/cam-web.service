@@ -1,18 +1,19 @@
 [Unit]
-Description=CAM Web 应用 (Next.js)
+Description=CAM Web 应用 (Next.js + WebSocket)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=__ROOT_DIR__
+WorkingDirectory=__ROOT_DIR__/apps/web
 EnvironmentFile=__ENV_FILE__
 Environment=NODE_ENV=production
 Environment=DATABASE_PATH=__CAM_DATA_DIR__/cam.db
 Environment=CAM_REPOS_DIR=__CAM_REPOS_DIR__
 Environment=PORT=3000
 
-ExecStart=/usr/bin/node __ROOT_DIR__/apps/web/.next/standalone/apps/web/server.js
+# 使用自定义服务器（包含 WebSocket 终端支持）
+ExecStart=__ROOT_DIR__/node_modules/.bin/tsx __ROOT_DIR__/apps/web/server.ts
 
 Restart=on-failure
 RestartSec=5
