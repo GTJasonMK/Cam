@@ -1,0 +1,26 @@
+[Unit]
+Description=CAM Web 应用 (Next.js)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ROOT_DIR__
+EnvironmentFile=__ENV_FILE__
+Environment=NODE_ENV=production
+Environment=DATABASE_PATH=__CAM_DATA_DIR__/cam.db
+Environment=CAM_REPOS_DIR=__CAM_REPOS_DIR__
+Environment=PORT=3000
+
+ExecStart=/usr/bin/node __ROOT_DIR__/apps/web/.next/standalone/apps/web/server.js
+
+Restart=on-failure
+RestartSec=5
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cam-web
+
+[Install]
+WantedBy=multi-user.target
