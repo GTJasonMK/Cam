@@ -10,7 +10,12 @@ WORKDIR /app
 # 构建阶段
 FROM base AS builder
 
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json ./
+# node-pty 需要 python3 + make + gcc 编译原生模块
+RUN apt-get update && apt-get install -y \
+    python3 make gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json turbo.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/web/package.json ./apps/web/
 
