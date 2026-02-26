@@ -1,4 +1,4 @@
-# Web 应用 Dockerfile (Next.js)
+# Web 应用 Dockerfile (Next.js + WebSocket 自定义服务器)
 FROM node:20-slim AS base
 
 RUN apt-get update && apt-get install -y \
@@ -27,8 +27,11 @@ COPY apps/web/ ./apps/web/
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @cam/shared build && pnpm --filter @cam/web build
 
-# 运行阶段
+# 运行阶段：使用自定义 server.ts（包含 WebSocket 终端支持）
 FROM base AS runner
+
+# tsx 运行 TypeScript 需要的最小运行时
+RUN corepack enable
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -40,11 +43,19 @@ RUN addgroup --system --gid 1001 nodejs && \
 RUN mkdir -p /app/data /app/logs /app/repos && \
     chown -R nextjs:nodejs /app/data /app/logs /app/repos
 
-COPY --from=builder /app/apps/web/.next/standalone ./
-COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder /app/apps/web/builtin ./apps/web/builtin
-# standalone 不含原生 .node 二进制，从 builder 补充完整 node_modules
+# 复制依赖（含原生模块）
+COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml /app/tsconfig.base.json ./
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared ./packages/shared
+
+# 复制 web 应用（源码 + 构建产物）
+COPY --from=builder /app/apps/web/package.json ./apps/web/
+COPY --from=builder /app/apps/web/tsconfig.json ./apps/web/
+COPY --from=builder /app/apps/web/server.ts ./apps/web/
+COPY --from=builder /app/apps/web/src ./apps/web/src
+COPY --from=builder /app/apps/web/.next ./apps/web/.next
+COPY --from=builder /app/apps/web/builtin ./apps/web/builtin
+COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 
 USER nextjs
 EXPOSE 3000
@@ -53,4 +64,5 @@ ENV PORT=3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:3000/api/health || exit 1
 
-CMD ["node", "apps/web/server.js"]
+WORKDIR /app/apps/web
+CMD ["npx", "tsx", "server.ts"]
