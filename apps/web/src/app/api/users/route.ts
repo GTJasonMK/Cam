@@ -4,13 +4,14 @@
 // POST — 创建用户（admin）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { users } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { hashPassword } from '@/lib/auth/password';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { parseCreateUserPayload } from '@/lib/validation/user-input';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiCreated, apiError, apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 async function handleGet() {
   try {
@@ -30,25 +31,19 @@ async function handleGet() {
       .orderBy(users.createdAt)
       .all();
 
-    return NextResponse.json({ success: true, data: result });
+    return apiSuccess(result);
   } catch (err) {
     console.error('[API] 获取用户列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '获取用户列表失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('获取用户列表失败');
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseCreateUserPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const { username, displayName, password, email, role } = parsed.data;
@@ -59,10 +54,7 @@ async function handlePost(request: AuthenticatedRequest) {
       .get();
 
     if (existing) {
-      return NextResponse.json(
-        { success: false, error: { code: 'DUPLICATE', message: '用户名已存在' } },
-        { status: 409 }
-      );
+      return apiError('DUPLICATE', '用户名已存在', { status: 409 });
     }
 
     const passwordHash = await hashPassword(password);
@@ -83,24 +75,18 @@ async function handlePost(request: AuthenticatedRequest) {
       .returning()
       .get();
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: newUser.id,
-        username: newUser.username,
-        displayName: newUser.displayName,
-        email: newUser.email,
-        role: newUser.role,
-        status: newUser.status,
-        createdAt: newUser.createdAt,
-      },
-    }, { status: 201 });
+    return apiCreated({
+      id: newUser.id,
+      username: newUser.username,
+      displayName: newUser.displayName,
+      email: newUser.email,
+      role: newUser.role,
+      status: newUser.status,
+      createdAt: newUser.createdAt,
+    });
   } catch (err) {
     console.error('[API] 创建用户失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '创建用户失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('创建用户失败');
   }
 }
 

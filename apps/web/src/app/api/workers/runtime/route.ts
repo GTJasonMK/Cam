@@ -3,9 +3,10 @@
 // GET /api/workers/runtime - 返回当前用户的 Agent 会话与流水线运行状态
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { agentSessionManager } from '@/lib/terminal/agent-session-manager';
+import { isSqliteMissingSchemaError } from '@/lib/db/sqlite-errors';
+import { apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 async function handler(request: AuthenticatedRequest) {
   try {
@@ -36,8 +37,19 @@ async function handler(request: AuthenticatedRequest) {
     const pipelines = agentSessionManager.listPipelinesByUser(userId).map((pipeline) => ({
       pipelineId: pipeline.pipelineId,
       status: pipeline.status,
+      sessionPolicy: pipeline.sessionPolicy,
       currentStepIndex: pipeline.currentStepIndex,
       totalSteps: pipeline.steps.length,
+      preparedSessions: pipeline.preparedSessions.map((session) => ({
+        sessionKey: session.sessionKey,
+        agentDefinitionId: session.agentDefinitionId,
+        mode: session.mode,
+        resumeSessionId: session.resumeSessionId ?? null,
+        source: session.source,
+        status: session.status,
+        usageCount: session.usageCount,
+        leasedByTaskId: session.leasedByTaskId ?? null,
+      })),
       steps: pipeline.steps.map((step, stepIndex) => ({
         stepId: step.stepId,
         stepIndex,
@@ -56,6 +68,39 @@ async function handler(request: AuthenticatedRequest) {
       })),
     }));
 
+    let managedSessions: Array<{
+      sessionKey: string;
+      repoPath: string;
+      agentDefinitionId: string;
+      mode: 'resume' | 'continue';
+      resumeSessionId: string | null;
+      source: 'external' | 'managed';
+      title: string | null;
+      createdAt: string;
+      updatedAt: string;
+      leased: boolean;
+    }> = [];
+    try {
+      managedSessions = (await agentSessionManager.listManagedPipelineSessions(userId)).map((session) => ({
+        sessionKey: session.sessionKey,
+        repoPath: session.repoPath,
+        agentDefinitionId: session.agentDefinitionId,
+        mode: session.mode,
+        resumeSessionId: session.resumeSessionId ?? null,
+        source: session.source,
+        title: session.title ?? null,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        leased: session.leased,
+      }));
+    } catch (err) {
+      if (!isSqliteMissingSchemaError(err, ['terminal_session_pool'])) {
+        throw err;
+      }
+      console.warn('[API] 会话池表缺失，runtime 返回空 managedSessions');
+      managedSessions = [];
+    }
+
     const summary = {
       totalSessions: agentSessions.length,
       runningSessions: agentSessions.filter((item) => item.status === 'running').length,
@@ -63,23 +108,19 @@ async function handler(request: AuthenticatedRequest) {
       activePipelines: pipelines.filter((item) => item.status === 'running' || item.status === 'paused').length,
       runningPipelines: pipelines.filter((item) => item.status === 'running').length,
       pausedPipelines: pipelines.filter((item) => item.status === 'paused').length,
+      managedSessionPoolSize: managedSessions.length,
     };
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        summary,
-        agentSessions,
-        pipelines,
-      },
+    return apiSuccess({
+      summary,
+      agentSessions,
+      pipelines,
+      managedSessions,
     });
   } catch (err) {
     console.error('[API] 获取终端执行单元状态失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '获取终端执行单元状态失败' } },
-      { status: 500 },
-    );
+    return apiInternalError('获取终端执行单元状态失败');
   }
 }
 
-export const GET = withAuth(handler, 'worker:read');
+export const GET = withAuth(handler, 'terminal:access');

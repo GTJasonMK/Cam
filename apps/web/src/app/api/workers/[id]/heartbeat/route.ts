@@ -3,126 +3,116 @@
 // POST /api/workers/[id]/heartbeat  - Worker 心跳上报
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { workers } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { parseWorkerStatus } from '@/lib/workers/status';
-
-type ClaudeAuthStatus = { loggedIn: boolean; authMethod: string; apiProvider: string };
-
-function parseWorkerMode(value: unknown): 'daemon' | 'task' | 'unknown' | null {
-  if (value === undefined) return null;
-  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (raw === 'daemon') return 'daemon';
-  if (raw === 'task') return 'task';
-  return 'unknown';
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function parseReportedEnvVars(value: unknown): string[] | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value)) return [];
-
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const name = item.trim();
-    if (!name) continue;
-    if (!/^[A-Z0-9_]{2,100}$/.test(name)) continue;
-    out.push(name);
-    if (out.length >= 200) break;
-  }
-  return Array.from(new Set(out)).sort();
-}
-
-function parseClaudeAuthStatus(value: unknown): ClaudeAuthStatus | null | undefined {
-  if (value === undefined) return undefined;
-  if (!isPlainObject(value)) return null;
-
-  const loggedIn = value.loggedIn;
-  if (typeof loggedIn !== 'boolean') return null;
-
-  const authMethod = typeof value.authMethod === 'string' ? value.authMethod.trim() : '';
-  const apiProvider = typeof value.apiProvider === 'string' ? value.apiProvider.trim() : '';
-
-  return {
-    loggedIn,
-    authMethod: authMethod.slice(0, 50),
-    apiProvider: apiProvider.slice(0, 50),
-  };
-}
+import { isPlainObject } from '@/lib/validation/objects';
+import { readJsonBodyOrDefault } from '@/lib/http/read-json';
+import {
+  apiBadRequest,
+  apiConflict,
+  apiInternalError,
+  apiNotFound,
+  apiSuccess,
+} from '@/lib/http/api-response';
+import {
+  parseClaudeAuthStatus,
+  parseReportedEnvVars,
+  parseWorkerMode,
+} from '@/lib/workers/payload';
 
 async function handler(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const bodyRaw = await request.json().catch(() => null);
+    const bodyRaw = await readJsonBodyOrDefault<Record<string, unknown> | null>(request, null);
     if (!isPlainObject(bodyRaw)) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: '请求体必须是 JSON object' } },
-        { status: 400 }
-      );
+      return apiBadRequest('请求体必须是 JSON object');
     }
     const body = bodyRaw;
-    const existing = await db.select({ status: workers.status }).from(workers).where(eq(workers.id, id)).limit(1);
-
-    if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: WORKER_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
-    }
-
     const reportedStatus = body.status === undefined ? 'busy' : parseWorkerStatus(body.status);
     if (reportedStatus === null) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: 'status 仅支持 idle/busy/offline/draining' } },
-        { status: 400 }
-      );
-    }
-    const shouldKeepDraining =
-      existing[0].status === 'draining' &&
-      (reportedStatus === 'idle' || reportedStatus === 'busy');
-    const nextStatus = shouldKeepDraining ? 'draining' : reportedStatus;
-
-    const updateData: Record<string, unknown> = {
-      status: nextStatus,
-      currentTaskId: body.currentTaskId ?? null,
-      cpuUsage: body.cpuUsage ?? null,
-      memoryUsageMb: body.memoryUsageMb ?? null,
-      diskUsageMb: body.diskUsageMb ?? null,
-      lastHeartbeatAt: new Date().toISOString(),
-    };
-    // 仅在上报时更新，避免空心跳覆盖已有日志
-    if (body.logTail !== undefined) {
-      updateData.logTail = body.logTail ?? null;
+      return apiBadRequest('status 仅支持 idle/busy/offline/draining');
     }
 
-    const mode = parseWorkerMode(body.mode);
-    if (mode !== null) {
-      updateData.mode = mode;
-    }
-
+    const parsedCurrentTaskId =
+      typeof body.currentTaskId === 'string'
+        ? body.currentTaskId
+        : body.currentTaskId === null || body.currentTaskId === undefined
+          ? null
+          : null;
+    const mode = parseWorkerMode(body.mode, { allowUndefinedAsNull: true });
     const reportedEnvVars = parseReportedEnvVars(body.reportedEnvVars);
-    if (reportedEnvVars !== null) {
-      updateData.reportedEnvVars = reportedEnvVars;
-    }
-
     const claudeAuthStatus = parseClaudeAuthStatus(body.claudeAuthStatus);
-    if (claudeAuthStatus !== undefined) {
-      updateData.reportedClaudeAuth = claudeAuthStatus;
+
+    // CAS + 重试：避免并发下覆盖管理端状态（尤其 offline 粘性）
+    // 典型竞态：读取到 busy 后，管理员将其 offline；旧心跳若无条件更新会把状态“拉回在线”。
+    let nextStatus: 'idle' | 'busy' | 'offline' | 'draining' = reportedStatus;
+    let nextCurrentTaskId: string | null = parsedCurrentTaskId;
+    let updated = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = await db.select({ status: workers.status }).from(workers).where(eq(workers.id, id)).limit(1);
+      if (existing.length === 0) {
+        return apiNotFound(WORKER_MESSAGES.notFound(id));
+      }
+
+      const shouldKeepDraining =
+        existing[0].status === 'draining' &&
+        (reportedStatus === 'idle' || reportedStatus === 'busy');
+      // 管理员手动 offline 后，心跳不应把 Worker 自动“拉回在线”。
+      // 只有显式 activate（走管理接口）才允许恢复到 idle/busy。
+      const shouldKeepOffline =
+        existing[0].status === 'offline' &&
+        reportedStatus !== 'offline';
+      nextStatus = shouldKeepOffline
+        ? 'offline'
+        : shouldKeepDraining
+          ? 'draining'
+          : reportedStatus;
+      nextCurrentTaskId =
+        nextStatus === 'offline' || nextStatus === 'idle'
+          ? null
+          : parsedCurrentTaskId;
+
+      const updateData: Record<string, unknown> = {
+        status: nextStatus,
+        currentTaskId: nextCurrentTaskId,
+        cpuUsage: body.cpuUsage ?? null,
+        memoryUsageMb: body.memoryUsageMb ?? null,
+        diskUsageMb: body.diskUsageMb ?? null,
+        lastHeartbeatAt: new Date().toISOString(),
+      };
+      // 仅在上报时更新，避免空心跳覆盖已有日志
+      if (body.logTail !== undefined) {
+        updateData.logTail = body.logTail ?? null;
+      }
+      if (mode !== null) {
+        updateData.mode = mode;
+      }
+      if (reportedEnvVars !== null) {
+        updateData.reportedEnvVars = reportedEnvVars;
+      }
+      if (claudeAuthStatus !== undefined) {
+        updateData.reportedClaudeAuth = claudeAuthStatus;
+      }
+
+      const casUpdated = await db
+        .update(workers)
+        .set(updateData)
+        .where(and(eq(workers.id, id), eq(workers.status, existing[0].status)))
+        .returning({ id: workers.id });
+      if (casUpdated.length > 0) {
+        updated = true;
+        break;
+      }
     }
 
-    await db
-      .update(workers)
-      .set(updateData)
-      .where(eq(workers.id, id));
+    if (!updated) {
+      return apiConflict('Worker 状态并发变更，请重试');
+    }
 
     // 广播心跳事件给前端
     sseManager.broadcast('worker.heartbeat', {
@@ -130,17 +120,14 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
       status: nextStatus,
       cpuUsage: body.cpuUsage,
       memoryUsageMb: body.memoryUsageMb,
-      currentTaskId: body.currentTaskId,
+      currentTaskId: nextCurrentTaskId,
       logTail: body.logTail,
     });
 
-    return NextResponse.json({ success: true });
+    return apiSuccess(null);
   } catch (err) {
     console.error(`[API] Worker ${id} 心跳失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.heartbeatUpdateFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.heartbeatUpdateFailed);
   }
 }
 

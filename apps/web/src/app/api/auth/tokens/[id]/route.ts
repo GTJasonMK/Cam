@@ -3,11 +3,11 @@
 // DELETE — 删除指定 API Token（仅限所有者）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { apiTokens } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 type RouteContext = { params: Promise<Record<string, string>> };
 
@@ -27,13 +27,10 @@ async function handleDelete(request: AuthenticatedRequest, context: RouteContext
     .run();
 
   if (result.changes === 0) {
-    return NextResponse.json(
-      { success: false, error: { code: 'NOT_FOUND', message: 'Token 不存在或无权删除' } },
-      { status: 404 }
-    );
+    return apiNotFound('Token 不存在或无权删除');
   }
 
-  return NextResponse.json({ success: true });
+  return apiSuccess(null);
 }
 
 export const DELETE = withAuth(handleDelete);

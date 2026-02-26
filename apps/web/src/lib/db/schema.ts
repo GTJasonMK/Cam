@@ -221,6 +221,31 @@ export const workers = sqliteTable(
   (table) => [index('idx_workers_status').on(table.status)]
 );
 
+// ----- 终端托管会话池（用于流水线会话治理） -----
+export const terminalSessionPool = sqliteTable(
+  'terminal_session_pool',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    userId: text('user_id').notNull(),
+    sessionKey: text('session_key').notNull(),
+    repoPath: text('repo_path').notNull(),
+    agentDefinitionId: text('agent_definition_id').notNull(),
+    mode: text('mode').notNull().$type<'resume' | 'continue'>(),
+    resumeSessionId: text('resume_session_id'),
+    source: text('source').notNull().default('external').$type<'external' | 'managed'>(),
+    title: text('title'),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_terminal_session_pool_user_key').on(table.userId, table.sessionKey),
+    index('idx_terminal_session_pool_user').on(table.userId),
+    index('idx_terminal_session_pool_repo').on(table.repoPath),
+    index('idx_terminal_session_pool_agent').on(table.agentDefinitionId),
+    index('idx_terminal_session_pool_updated').on(table.updatedAt),
+  ]
+);
+
 // ----- 用户表 -----
 export const users = sqliteTable(
   'users',

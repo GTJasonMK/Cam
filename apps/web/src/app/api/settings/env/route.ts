@@ -3,28 +3,23 @@
 // GET /api/settings/env
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions, workers } from '@/lib/db/schema';
-import fs from 'fs';
 import { hasUsableSecretValue } from '@/lib/secrets/resolve';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { isEligibleCapabilityWorker, workerSupportsAgent, type WorkerCapabilitySnapshot } from '@/lib/workers/capabilities';
+import { getWorkerStaleTimeoutMs } from '@/lib/workers/stale-timeout';
 import { withAuth } from '@/lib/auth/with-auth';
-
-const dockerSocketPath = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
-
-function isPresent(name: string): boolean {
-  const v = process.env[name];
-  return typeof v === 'string' && v.trim().length > 0;
-}
+import { getDockerSocketPath, isDockerSocketAvailable } from '@/lib/docker/task-containers';
+import { isEnvVarPresent } from '@/lib/validation/strings';
+import { apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 async function handler() {
   try {
     const defs = await db.select().from(agentDefinitions).orderBy(agentDefinitions.createdAt);
 
     const nowMs = Date.now();
-    const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
+    const staleTimeoutMs = getWorkerStaleTimeoutMs();
 
     const workerRows = await db
       .select({
@@ -75,7 +70,7 @@ async function handler() {
 
       const rows: Array<{ name: string; required: boolean; sensitive: boolean; present: boolean }> = [];
       for (const ev of requiredEnvVars) {
-        const presentOnServer = isPresent(ev.name) || (await hasUsableSecretValue(ev.name, { agentDefinitionId: a.id }));
+        const presentOnServer = isEnvVarPresent(ev.name) || (await hasUsableSecretValue(ev.name, { agentDefinitionId: a.id }));
         const presentOnWorker = isPresentOnAnyWorkerForAgent(a.id, ev.name);
         const present = presentOnServer || presentOnWorker;
         rows.push({
@@ -126,42 +121,36 @@ async function handler() {
     const keyStatus: Array<{ name: string; present: boolean }> = [];
     for (const name of keyVars) {
       if (name === 'CAM_MASTER_KEY') {
-        keyStatus.push({ name, present: isPresent(name) });
+        keyStatus.push({ name, present: isEnvVarPresent(name) });
         continue;
       }
-      const presentOnServer = isPresent(name) || (await hasUsableSecretValue(name, {}));
+      const presentOnServer = isEnvVarPresent(name) || (await hasUsableSecretValue(name, {}));
       const presentOnWorker = isPresentOnAnyWorker(name);
       keyStatus.push({ name, present: presentOnServer || presentOnWorker });
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        docker: {
-          socketPath: dockerSocketPath,
-          available: fs.existsSync(dockerSocketPath),
-        },
-        workers: {
-          staleTimeoutMs,
-          daemonCount: eligibleDaemonWorkers.length,
-          daemonWorkers: eligibleDaemonWorkers.map((w) => ({
-            id: w.id,
-            name: w.name,
-            status: w.status,
-            lastHeartbeatAt: w.lastHeartbeatAt,
-            reportedEnvVars: w.reportedEnvVars || [],
-          })),
-        },
-        keys: keyStatus,
-        agents,
+    return apiSuccess({
+      docker: {
+        socketPath: getDockerSocketPath(),
+        available: isDockerSocketAvailable(),
       },
+      workers: {
+        staleTimeoutMs,
+        daemonCount: eligibleDaemonWorkers.length,
+        daemonWorkers: eligibleDaemonWorkers.map((w) => ({
+          id: w.id,
+          name: w.name,
+          status: w.status,
+          lastHeartbeatAt: w.lastHeartbeatAt,
+          reportedEnvVars: w.reportedEnvVars || [],
+        })),
+      },
+      keys: keyStatus,
+      agents,
     });
   } catch (err) {
     console.error('[API] 获取环境状态失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.fetchFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.fetchFailed);
   }
 }
 

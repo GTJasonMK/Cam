@@ -15,6 +15,8 @@ import { PageHeader } from '@/components/ui/page-header';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { formatTimeZhCn } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
 import { Trash2 } from 'lucide-react';
 import { InlineBar } from '@/components/ui/inline-bar';
 
@@ -23,6 +25,15 @@ export default function WorkersPage() {
   const { confirm: confirmDialog, notify } = useFeedback();
   const [pendingActionKey, setPendingActionKey] = useState<string | null>(null);
   const [pruningOffline, setPruningOffline] = useState(false);
+
+  const notifyWorkerMutationFailure = useCallback(
+    (title: string, result: { success: boolean; errorMessage?: string }) => {
+      if (result.success) return false;
+      notify({ type: 'error', title, message: result.errorMessage || '请求失败' });
+      return true;
+    },
+    [notify],
+  );
 
   useEffect(() => {
     void fetchWorkers();
@@ -49,15 +60,12 @@ export default function WorkersPage() {
       const res = await updateWorkerStatus(worker.id, action);
       setPendingActionKey(null);
 
-      if (!res.success) {
-        notify({ type: 'error', title: '节点操作失败', message: res.errorMessage || '请求失败' });
-        return;
-      }
+      if (notifyWorkerMutationFailure('节点操作失败', res)) return;
 
       const actionText = action === 'drain' ? '已切换为排空中' : action === 'offline' ? '已强制离线' : '已恢复可调度';
       notify({ type: 'success', title: '节点状态已更新', message: `${worker.name} ${actionText}` });
     },
-    [confirmDialog, notify, updateWorkerStatus]
+    [confirmDialog, notify, updateWorkerStatus, notifyWorkerMutationFailure]
   );
 
   const handlePruneOfflineWorkers = useCallback(async () => {
@@ -79,12 +87,9 @@ export default function WorkersPage() {
     const result = await pruneOfflineWorkers();
     setPruningOffline(false);
 
-    if (!result.success) {
-      notify({ type: 'error', title: '清理失败', message: result.errorMessage || '请求失败' });
-      return;
-    }
+    if (notifyWorkerMutationFailure('清理失败', result)) return;
     notify({ type: 'success', title: '清理完成', message: `已删除 ${result.removed ?? 0} 个离线节点记录。` });
-  }, [confirmDialog, notify, pruneOfflineWorkers, workers]);
+  }, [confirmDialog, notify, pruneOfflineWorkers, workers, notifyWorkerMutationFailure]);
 
   const statusCounts: Record<string, number> = {};
   for (const worker of workers) {
@@ -114,7 +119,7 @@ export default function WorkersPage() {
       className: 'w-[130px]',
       cell: (row) =>
         row.currentTaskId ? (
-          <span className="font-mono text-sm text-muted-foreground">{row.currentTaskId.slice(0, 8)}...</span>
+          <span className="font-mono text-sm text-muted-foreground">{truncateText(row.currentTaskId, 8)}</span>
         ) : (
           <span className="text-sm text-muted-foreground/50">-</span>
         ),
@@ -149,7 +154,7 @@ export default function WorkersPage() {
       className: 'w-[100px]',
       cell: (row) =>
         row.lastHeartbeatAt ? (
-          <span className="text-sm text-muted-foreground">{new Date(row.lastHeartbeatAt).toLocaleTimeString('zh-CN')}</span>
+          <span className="text-sm text-muted-foreground">{formatTimeZhCn(row.lastHeartbeatAt)}</span>
         ) : (
           <span className="text-sm text-muted-foreground/50">-</span>
         ),
@@ -203,6 +208,9 @@ export default function WorkersPage() {
         <div className="flex items-center gap-2">
           <Link href="/workers/terminal" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
             终端节点详情
+          </Link>
+          <Link href="/workers/sessions" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
+            托管会话池
           </Link>
           <Button
             size="sm"

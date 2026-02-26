@@ -3,6 +3,8 @@
 // 纯函数模块：构造导出数据、触发下载、解析导入文件
 // ============================================================
 
+import { normalizeOptionalString, normalizeTrimmedString } from './validation/strings.ts';
+
 /** 导出文件格式 */
 export interface PipelineExportData {
   version: number;
@@ -92,47 +94,51 @@ export function buildExportDataFromForm(form: {
     exportedAt: new Date().toISOString(),
     name: form.name || '未命名流水线',
     agentDefinitionId: form.defaultAgent || null,
-    repoUrl: form.repoUrl.trim() || null,
-    baseBranch: form.baseBranch.trim() || null,
-    workDir: form.workDir.trim() || null,
+    repoUrl: normalizeOptionalString(form.repoUrl),
+    baseBranch: normalizeOptionalString(form.baseBranch),
+    workDir: normalizeOptionalString(form.workDir),
     maxRetries: null,
-    steps: form.steps.map((s) => ({
-      title: s.title.trim(),
-      description: s.prompt.trim(),
-      ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
-      ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0
-        ? { inputFiles: s.inputFiles }
-        : {}),
-      ...(typeof s.inputCondition === 'string'
-        && s.inputCondition.trim().length > 0
-        ? { inputCondition: s.inputCondition.trim() }
-        : {}),
-      ...(Array.isArray(s.parallelAgents) && s.parallelAgents.length > 0
-        ? {
-            parallelAgents: s.parallelAgents
-              .map((node) => ({
-                ...(node.title ? { title: node.title.trim() } : {}),
-                description: node.prompt.trim(),
-                ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId.trim() } : {}),
-              }))
-              .filter((node) => node.description.length > 0),
-          }
-        : {}),
-    })),
+    steps: form.steps.map((s) => {
+      const inputCondition = normalizeOptionalString(s.inputCondition);
+      return {
+        title: s.title.trim(),
+        description: s.prompt.trim(),
+        ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+        ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0
+          ? { inputFiles: s.inputFiles }
+          : {}),
+        ...(inputCondition ? { inputCondition } : {}),
+        ...(Array.isArray(s.parallelAgents) && s.parallelAgents.length > 0
+          ? {
+              parallelAgents: s.parallelAgents
+                .map((node) => {
+                  const nodeTitle = normalizeOptionalString(node.title);
+                  const nodeAgentId = normalizeOptionalString(node.agentDefinitionId);
+                  return {
+                    ...(nodeTitle ? { title: nodeTitle } : {}),
+                    description: node.prompt.trim(),
+                    ...(nodeAgentId ? { agentDefinitionId: nodeAgentId } : {}),
+                  };
+                })
+                .filter((node) => node.description.length > 0),
+            }
+          : {}),
+      };
+    }),
   };
 }
 
 /** 收集流水线配置里引用到的所有 Agent ID（去重 + 去空白） */
 export function collectPipelineReferencedAgentIds(data: PipelineAgentRefSource): string[] {
   const ids = new Set<string>();
-  const rootAgentId = data.agentDefinitionId?.trim();
+  const rootAgentId = normalizeOptionalString(data.agentDefinitionId);
   if (rootAgentId) ids.add(rootAgentId);
 
   for (const step of data.steps) {
-    const stepAgentId = step.agentDefinitionId?.trim();
+    const stepAgentId = normalizeOptionalString(step.agentDefinitionId);
     if (stepAgentId) ids.add(stepAgentId);
     for (const node of step.parallelAgents ?? []) {
-      const nodeAgentId = node.agentDefinitionId?.trim();
+      const nodeAgentId = normalizeOptionalString(node.agentDefinitionId);
       if (nodeAgentId) ids.add(nodeAgentId);
     }
   }
@@ -147,7 +153,7 @@ export function findMissingPipelineAgentIds(
 ): string[] {
   const knownIds = new Set<string>();
   for (const id of knownAgentIds) {
-    const normalized = id.trim();
+    const normalized = normalizeOptionalString(id);
     if (normalized) knownIds.add(normalized);
   }
 
@@ -165,7 +171,7 @@ export function sanitizePipelineImportAgentIds(
 ): { data: PipelineExportData; missingAgentIds: string[] } {
   const knownIds = new Set<string>();
   for (const id of knownAgentIds) {
-    const normalized = id.trim();
+    const normalized = normalizeOptionalString(id);
     if (normalized) knownIds.add(normalized);
   }
 
@@ -180,8 +186,7 @@ export function sanitizePipelineImportAgentIds(
   }
 
   const normalizeKnownAgent = (id?: string | null): string | undefined => {
-    if (!id) return undefined;
-    const normalized = id.trim();
+    const normalized = normalizeOptionalString(id);
     if (!normalized) return undefined;
     return knownIds.has(normalized) ? normalized : undefined;
   };
@@ -342,10 +347,7 @@ export function parsePipelineImport(jsonString: string): ParseResult {
     type: 'cam-pipeline',
     exportedAt: typeof obj.exportedAt === 'string' ? obj.exportedAt : '',
     name: typeof obj.name === 'string' ? obj.name : '导入的流水线',
-    agentDefinitionId:
-      typeof obj.agentDefinitionId === 'string' && obj.agentDefinitionId.trim()
-        ? obj.agentDefinitionId.trim()
-        : null,
+    agentDefinitionId: normalizeOptionalString(obj.agentDefinitionId),
     repoUrl: typeof obj.repoUrl === 'string' ? obj.repoUrl : null,
     baseBranch: typeof obj.baseBranch === 'string' ? obj.baseBranch : null,
     workDir: typeof obj.workDir === 'string' ? obj.workDir : null,
@@ -353,46 +355,46 @@ export function parsePipelineImport(jsonString: string): ParseResult {
       typeof obj.maxRetries === 'number' && Number.isFinite(obj.maxRetries)
         ? Math.max(0, Math.min(20, Math.floor(obj.maxRetries)))
         : null,
-    steps: (rawSteps as Array<Record<string, unknown>>).map((s) => ({
-      title: String(s.title).trim(),
-      description: (typeof s.description === 'string'
-        ? s.description
-        : (typeof s.prompt === 'string' ? s.prompt : '')).trim(),
-      ...(typeof s.agentDefinitionId === 'string' && s.agentDefinitionId.trim()
-        ? { agentDefinitionId: s.agentDefinitionId.trim() }
-        : {}),
-      ...(Array.isArray(s.inputFiles)
-        ? {
-            inputFiles: s.inputFiles
-              .map((v) => (typeof v === 'string' ? v.trim() : ''))
-              .filter((v) => v.length > 0),
-          }
-        : {}),
-      ...(typeof s.inputCondition === 'string' && s.inputCondition.trim()
-        ? { inputCondition: s.inputCondition.trim() }
-        : {}),
-      ...(Array.isArray(s.parallelAgents)
-        ? {
-            parallelAgents: (s.parallelAgents as Array<Record<string, unknown>>)
-              .map((node) => {
-                const description = typeof node.description === 'string' ? node.description.trim() : '';
-                const legacyPrompt = typeof node.prompt === 'string' ? node.prompt.trim() : '';
-                const normalizedDescription = description || legacyPrompt;
-                if (!normalizedDescription) return null;
-                const title = typeof node.title === 'string' ? node.title.trim() : '';
-                const agentDefinitionId = typeof node.agentDefinitionId === 'string'
-                  ? node.agentDefinitionId.trim()
-                  : '';
-                return {
-                  ...(title ? { title } : {}),
-                  description: normalizedDescription,
-                  ...(agentDefinitionId ? { agentDefinitionId } : {}),
-                };
-              })
-              .filter((node): node is { title?: string; description: string; agentDefinitionId?: string } => Boolean(node)),
-          }
-        : {}),
-    })),
+    steps: (rawSteps as Array<Record<string, unknown>>).map((s) => {
+      const agentDefinitionId = normalizeOptionalString(s.agentDefinitionId) ?? undefined;
+      const inputCondition = normalizeOptionalString(s.inputCondition) ?? undefined;
+      return {
+        title: String(s.title).trim(),
+        description: normalizeTrimmedString(
+          typeof s.description === 'string'
+            ? s.description
+            : (typeof s.prompt === 'string' ? s.prompt : ''),
+        ),
+        ...(agentDefinitionId ? { agentDefinitionId } : {}),
+        ...(Array.isArray(s.inputFiles)
+          ? {
+              inputFiles: s.inputFiles
+                .map((v) => normalizeTrimmedString(v))
+                .filter((v) => v.length > 0),
+            }
+          : {}),
+        ...(inputCondition ? { inputCondition } : {}),
+        ...(Array.isArray(s.parallelAgents)
+          ? {
+              parallelAgents: (s.parallelAgents as Array<Record<string, unknown>>)
+                .map((node) => {
+                  const description = normalizeTrimmedString(node.description);
+                  const legacyPrompt = normalizeTrimmedString(node.prompt);
+                  const normalizedDescription = description || legacyPrompt;
+                  if (!normalizedDescription) return null;
+                  const title = normalizeTrimmedString(node.title);
+                  const normalizedAgentId = normalizeTrimmedString(node.agentDefinitionId);
+                  return {
+                    ...(title ? { title } : {}),
+                    description: normalizedDescription,
+                    ...(normalizedAgentId ? { agentDefinitionId: normalizedAgentId } : {}),
+                  };
+                })
+                .filter((node): node is { title?: string; description: string; agentDefinitionId?: string } => Boolean(node)),
+            }
+          : {}),
+      };
+    }),
   };
 
   return { ok: true, data };

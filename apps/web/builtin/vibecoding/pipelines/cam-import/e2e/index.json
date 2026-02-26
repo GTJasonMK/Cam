@@ -1,0 +1,172 @@
+{
+  "generatedAt": "2026-02-23T01:21:43.572Z",
+  "total": 11,
+  "items": [
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜一键工作流分析到脚本落地",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/01-一键部署运行测试打包/关于项目构建的工作流.txt",
+        "prompts/by-demand/01-一键部署运行测试打包/关于跨平台一键脚本.txt",
+        "prompts/by-demand/01-一键部署运行测试打包/关于一键流程落地结果复审.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/01-一键工作流分析到脚本落地.json",
+      "handoffDir": ".conversations/pipeline-handoffs/01-一键工作流分析到脚本落地",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜重构方案分析到模块重构执行",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/02-项目重构/关于重构方案分析.txt",
+        "prompts/by-demand/02-项目重构/关于模块的重构.txt",
+        "prompts/by-demand/02-项目重构/关于重构结果回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/02-重构方案分析到模块重构执行.json",
+      "handoffDir": ".conversations/pipeline-handoffs/02-重构方案分析到模块重构执行",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜冗余审查到重复治理执行",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/03-冗余度检查并修复/关于冗余与重复审查.txt",
+        "prompts/by-demand/03-冗余度检查并修复/关于重构与消除重复.txt",
+        "prompts/by-demand/03-冗余度检查并修复/关于冗余治理回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/03-冗余审查到重复治理执行.json",
+      "handoffDir": ".conversations/pipeline-handoffs/03-冗余审查到重复治理执行",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜代码审查到缺陷修复",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/04-Bug审查并修复/关于代码审查与PR自检.txt",
+        "prompts/by-demand/04-Bug审查并修复/关于根据审查报告执行修复.txt",
+        "prompts/by-demand/04-Bug审查并修复/关于修复结果回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/04-代码审查到缺陷修复.json",
+      "handoffDir": ".conversations/pipeline-handoffs/04-代码审查到缺陷修复",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜UI审查到整改落地",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/06-前端美化设计并执行/关于ui的审查.txt",
+        "prompts/by-demand/06-前端美化设计并执行/关于ui问题整改落地.txt",
+        "prompts/by-demand/06-前端美化设计并执行/关于ui整改结果复审.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/05-UI审查到整改落地.json",
+      "handoffDir": ".conversations/pipeline-handoffs/05-UI审查到整改落地",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜后端性能分析到优化落地",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于性能分析.txt",
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于根据性能分析报告执行优化.txt",
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于后端性能优化结果复审.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/06-后端性能分析到优化落地.json",
+      "handoffDir": ".conversations/pipeline-handoffs/06-后端性能分析到优化落地",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜前端性能分析到优化落地",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于前端性能与包体积优化.txt",
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于根据前端性能分析执行优化.txt",
+        "prompts/by-demand/05-前后端性能提升审查并修复/关于前端性能优化结果复审.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/07-前端性能分析到优化落地.json",
+      "handoffDir": ".conversations/pipeline-handoffs/07-前端性能分析到优化落地",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜功能扩展分析到开发交付",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/07-功能盘点扩展发现与实现/关于功能扩展机会分析.txt",
+        "prompts/by-demand/07-功能盘点扩展发现与实现/关于根据功能扩展方案执行落地.txt",
+        "prompts/by-demand/07-功能盘点扩展发现与实现/关于功能扩展落地回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/08-功能扩展分析到开发交付.json",
+      "handoffDir": ".conversations/pipeline-handoffs/08-功能扩展分析到开发交付",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜跨项目对标分析到借鉴落地",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/09-跨项目功能借鉴落地/关于跨项目对标分析.txt",
+        "prompts/by-demand/09-跨项目功能借鉴落地/关于跨项目功能借鉴落地.txt",
+        "prompts/by-demand/09-跨项目功能借鉴落地/关于借鉴落地回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/09-跨项目对标分析到借鉴落地.json",
+      "handoffDir": ".conversations/pipeline-handoffs/09-跨项目对标分析到借鉴落地",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜上传前风险审查到仓库整理",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/10-GitHub上传前准备/关于上传前扫描与风险审查.txt",
+        "prompts/by-demand/10-GitHub上传前准备/关于仓库清理与GitHub上传准备.txt",
+        "prompts/by-demand/10-GitHub上传前准备/关于上传前最终核验.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/10-上传前风险审查到仓库整理.json",
+      "handoffDir": ".conversations/pipeline-handoffs/10-上传前风险审查到仓库整理",
+      "stepCount": 4,
+      "type": "cam-pipeline",
+      "version": 1
+    },
+    {
+      "pipelineKind": "e2e",
+      "name": "端到端｜从文档到 MVP 实现交付",
+      "category": "e2e",
+      "promptFiles": [
+        "prompts/by-demand/11-从文档到MVP实现/关于MVP需求澄清与验收定义.txt",
+        "prompts/by-demand/11-从文档到MVP实现/关于MVP实施计划制定.txt",
+        "prompts/by-demand/11-从文档到MVP实现/关于根据计划实现MVP.txt",
+        "prompts/by-demand/11-从文档到MVP实现/关于MVP交付回归审查.txt"
+      ],
+      "pipelineFile": "pipelines/cam-import/e2e/11-从文档到MVP实现交付.json",
+      "handoffDir": ".conversations/pipeline-handoffs/11-从文档到MVP实现交付",
+      "stepCount": 5,
+      "type": "cam-pipeline",
+      "version": 1
+    }
+  ]
+}

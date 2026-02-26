@@ -5,6 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
+import fs from 'fs/promises';
 import { cloneRepo, createBranch, commitAndPush } from './git-ops.js';
 import { appendTaskLogs, getTask, updateTaskStatus, sendHeartbeat } from './api-client.js';
 
@@ -47,6 +48,62 @@ function renderArgs(args: string[], variables: Record<string, string>): string[]
   });
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<number> {
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  await fs.mkdir(targetDir, { recursive: true });
+
+  let copiedFiles = 0;
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+
+    if (entry.isDirectory()) {
+      copiedFiles += await copyDirectoryContents(sourcePath, targetPath);
+      continue;
+    }
+
+    if (entry.isFile()) {
+      await fs.copyFile(sourcePath, targetPath);
+      copiedFiles += 1;
+    }
+  }
+  return copiedFiles;
+}
+
+async function syncDirectory(sourceDir: string, targetDir: string): Promise<number> {
+  // 镜像同步：先清空目标，避免陈旧文件残留影响后续步骤
+  await fs.rm(targetDir, { recursive: true, force: true });
+  if (!(await pathExists(sourceDir))) return 0;
+  return copyDirectoryContents(sourceDir, targetDir);
+}
+
+async function restorePipelineConversations(artifactRoot: string, repoDir: string): Promise<void> {
+  const sourceDir = path.join(artifactRoot, '.conversations');
+  const targetDir = path.join(repoDir, '.conversations');
+  const copiedFiles = await syncDirectory(sourceDir, targetDir);
+  appendLog(`[Executor] 已恢复流水线协作目录: ${copiedFiles} 个文件`);
+}
+
+async function persistPipelineConversations(repoDir: string, artifactRoot: string): Promise<void> {
+  const sourceDir = path.join(repoDir, '.conversations');
+  const targetDir = path.join(artifactRoot, '.conversations');
+  if (!(await pathExists(sourceDir))) {
+    appendLog('[Executor] 跳过回写流水线协作目录: 源目录不存在');
+    return;
+  }
+  const copiedFiles = await syncDirectory(sourceDir, targetDir);
+  appendLog(`[Executor] 已回写流水线协作目录: ${copiedFiles} 个文件`);
+}
+
 /** 执行任务 */
 export async function executeTask(
   task: Record<string, unknown>,
@@ -76,6 +133,8 @@ export async function executeTask(
   const baseDir = `/tmp/cam-tasks/${taskId}`;
   const repoDir = path.join(baseDir, 'repo');
   const agentWorkDir = workDir ? path.join(repoDir, workDir) : repoDir;
+  const pipelineArtifactDir = (process.env.CAM_PIPELINE_ARTIFACT_DIR || '').trim();
+  const shouldSyncPipelineArtifacts = pipelineArtifactDir.length > 0;
 
   let pendingPersistedLines: string[] = [];
   let droppedPersistedLines = 0;
@@ -184,6 +243,14 @@ export async function executeTask(
     await createBranch(repoDir, workBranch);
     if (abortController.signal.aborted) return;
 
+    if (shouldSyncPipelineArtifacts) {
+      try {
+        await restorePipelineConversations(pipelineArtifactDir, repoDir);
+      } catch (err) {
+        appendLog(`[Executor] 恢复流水线协作目录失败: ${(err as Error).message}`);
+      }
+    }
+
     // 3. 渲染命令模板
     const renderedArgs = renderArgs(args, {
       prompt: description,
@@ -241,6 +308,13 @@ export async function executeTask(
       summary: `Execution error: ${(err as Error).message}`,
     });
   } finally {
+    if (shouldSyncPipelineArtifacts) {
+      try {
+        await persistPipelineConversations(repoDir, pipelineArtifactDir);
+      } catch (err) {
+        appendLog(`[Executor] 回写流水线协作目录失败: ${(err as Error).message}`);
+      }
+    }
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
     }

@@ -4,24 +4,20 @@
 // POST   /api/tasks         - 创建任务
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { tasks, systemEvents, agentDefinitions, repositories, workers } from '@/lib/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { tasks, repositories } from '@/lib/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { sseManager } from '@/lib/sse/manager';
-import { hasUsableSecretValue } from '@/lib/secrets/resolve';
-import { collectWorkerEnvVarsForAgent, type WorkerCapabilitySnapshot } from '@/lib/workers/capabilities';
+import { writeSystemEvent } from '@/lib/audit/system-event';
+import { loadAgentRequirements, validateAgentRequiredEnvVars } from '@/lib/tasks/agent-env-validation';
 import { parseCreateTaskPayload } from '@/lib/validation/task-input';
 
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-function isPresent(name: string): boolean {
-  const v = process.env[name];
-  return typeof v === 'string' && v.trim().length > 0;
-}
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiCreated, apiError, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 async function handleGet(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
@@ -36,10 +32,7 @@ async function handleGet(request: AuthenticatedRequest) {
         : 'invalid';
 
     if (sourceFilter === 'invalid') {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: 'source 仅支持 scheduler、terminal、all' } },
-        { status: 400 },
-      );
+      return apiBadRequest('source 仅支持 scheduler、terminal、all');
     }
 
     const filters: Array<ReturnType<typeof eq>> = [];
@@ -55,30 +48,25 @@ async function handleGet(request: AuthenticatedRequest) {
       : filters.length === 1
         ? await db.select().from(tasks).where(filters[0]).orderBy(tasks.createdAt)
         : await db.select().from(tasks).where(and(...filters)).orderBy(tasks.createdAt);
-    return NextResponse.json({ success: true, data: result });
+    return apiSuccess(result);
   } catch (err) {
     console.error('[API] 获取任务列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.queryFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.queryFailed);
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseCreateTaskPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
     const payload = parsed.data;
 
     const repositoryId = payload.repositoryId;
+    const dependsOn = payload.dependsOn;
 
     if (repositoryId) {
       const repo = await db
@@ -87,97 +75,64 @@ async function handlePost(request: AuthenticatedRequest) {
         .where(eq(repositories.id, repositoryId))
         .limit(1);
       if (repo.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: REPO_MESSAGES.notFound(repositoryId) } },
-          { status: 404 }
+        return apiNotFound(REPO_MESSAGES.notFound(repositoryId));
+      }
+    }
+
+    // 依赖校验：必须都存在，且只能依赖调度任务（避免依赖 terminal 任务导致永久 waiting）
+    if (dependsOn.length > 0) {
+      const dependencyRows = await db
+        .select({
+          id: tasks.id,
+          source: tasks.source,
+        })
+        .from(tasks)
+        .where(inArray(tasks.id, dependsOn));
+
+      if (dependencyRows.length !== dependsOn.length) {
+        const existingIds = new Set(dependencyRows.map((item) => item.id));
+        const missingIds = dependsOn.filter((item) => !existingIds.has(item));
+        return apiError('INVALID_DEPENDENCIES', `dependsOn 包含不存在的任务: ${missingIds.join(', ')}`, { status: 400 });
+      }
+
+      const nonSchedulerDeps = dependencyRows.filter((item) => item.source !== 'scheduler').map((item) => item.id);
+      if (nonSchedulerDeps.length > 0) {
+        return apiError(
+          'INVALID_DEPENDENCIES',
+          `dependsOn 仅支持调度任务，以下依赖来源非法: ${nonSchedulerDeps.join(', ')}`,
+          { status: 400 },
         );
       }
     }
 
-    // Agent 必需环境变量前置校验：缺失时直接阻止入队，避免跑到一半才失败
-    const agent = await db
-      .select({
-        id: agentDefinitions.id,
-        displayName: agentDefinitions.displayName,
-        requiredEnvVars: agentDefinitions.requiredEnvVars,
-      })
-      .from(agentDefinitions)
-      .where(eq(agentDefinitions.id, payload.agentDefinitionId))
-      .limit(1);
-
-    if (agent.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFoundDefinition(payload.agentDefinitionId) } },
-        { status: 404 }
-      );
+    // Agent 存在性 + 必需环境变量前置校验：缺失时直接阻止入队，避免跑到一半才失败
+    const { orderedAgentRequirements, missingAgentIds } = await loadAgentRequirements([payload.agentDefinitionId]);
+    if (missingAgentIds.length > 0 || orderedAgentRequirements.length === 0) {
+      return apiNotFound(AGENT_MESSAGES.notFoundDefinition(payload.agentDefinitionId));
     }
-
-    const requiredEnvVars =
-      (agent[0].requiredEnvVars as Array<{ name: string; description?: string; required?: boolean }>) || [];
-
-    const missingEnvVars: string[] = [];
-    for (const ev of requiredEnvVars.filter((r) => Boolean(r.required))) {
-      if (isPresent(ev.name)) continue;
-      const ok = await hasUsableSecretValue(ev.name, {
-        agentDefinitionId: payload.agentDefinitionId,
-        repositoryId,
-        repoUrl: payload.repoUrl,
-      });
-      if (!ok) missingEnvVars.push(ev.name);
-    }
-
-    // 如果服务端未配置，但某个在线 daemon Worker 已上报该变量存在，则允许创建任务
-    let finalMissingEnvVars = missingEnvVars;
-    if (missingEnvVars.length > 0) {
-      const nowMs = Date.now();
-      const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
-      const workerRows = await db
-        .select({
-          id: workers.id,
-          status: workers.status,
-          mode: workers.mode,
-          lastHeartbeatAt: workers.lastHeartbeatAt,
-          supportedAgentIds: workers.supportedAgentIds,
-          reportedEnvVars: workers.reportedEnvVars,
-        })
-        .from(workers);
-
-      const snapshots: WorkerCapabilitySnapshot[] = workerRows.map((w) => ({
-        id: w.id,
-        status: w.status,
-        mode: w.mode,
-        lastHeartbeatAt: w.lastHeartbeatAt,
-        supportedAgentIds: (w.supportedAgentIds as string[]) || [],
-        reportedEnvVars: (w.reportedEnvVars as string[]) || [],
-      }));
-
-      const availableOnWorkers = collectWorkerEnvVarsForAgent(snapshots, {
-        agentDefinitionId: payload.agentDefinitionId,
-        nowMs,
-        staleTimeoutMs,
-      });
-
-      finalMissingEnvVars = missingEnvVars.filter((name) => !availableOnWorkers.has(name));
-    }
-
-    if (finalMissingEnvVars.length > 0) {
-      return NextResponse.json(
+    const agentRequirement = orderedAgentRequirements[0];
+    const envValidation = await validateAgentRequiredEnvVars({
+      agentRequirements: [agentRequirement],
+      repositoryId,
+      repoUrl: payload.repoUrl,
+    });
+    if (envValidation.missingEnvVars.length > 0) {
+      return apiError(
+        'MISSING_ENV_VARS',
+        TASK_MESSAGES.missingAgentEnvVars(
+          envValidation.firstMissingAgentDisplayName || agentRequirement.displayName,
+          envValidation.missingEnvVars,
+        ),
         {
-          success: false,
-          error: {
-            code: 'MISSING_ENV_VARS',
-            message: TASK_MESSAGES.missingAgentEnvVars(agent[0].displayName, finalMissingEnvVars),
-            missingEnvVars: finalMissingEnvVars,
-          },
+          status: 400,
+          extra: { missingEnvVars: envValidation.missingEnvVars },
         },
-        { status: 400 }
       );
     }
 
     const taskId = uuidv4();
     // 自动生成工作分支名
     const workBranch = `cam/task-${taskId.slice(0, 8)}`;
-    const dependsOn = payload.dependsOn;
     const initialStatus = dependsOn.length > 0 ? 'waiting' : 'queued';
 
     const result = await db
@@ -201,7 +156,7 @@ async function handlePost(request: AuthenticatedRequest) {
       .returning();
 
     // 记录事件
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task.created',
       payload: { taskId, title: payload.title, agentDefinitionId: payload.agentDefinitionId },
     });
@@ -210,13 +165,10 @@ async function handlePost(request: AuthenticatedRequest) {
     sseManager.broadcast(initialStatus === 'queued' ? 'task.queued' : 'task.waiting', { taskId, title: payload.title });
     sseManager.broadcast('task.progress', { taskId, status: initialStatus });
 
-    return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
+    return apiCreated(result[0]);
   } catch (err) {
     console.error('[API] 创建任务失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.createFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.createFailed);
   }
 }
 

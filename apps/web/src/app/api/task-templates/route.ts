@@ -4,21 +4,24 @@
 // POST /api/task-templates  - 创建任务模板
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
+import { repositories, taskTemplates } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { API_COMMON_MESSAGES, REPO_MESSAGES, AGENT_MESSAGES } from '@/lib/i18n/messages';
 import { parseCreateTaskTemplatePayload } from '@/lib/validation/task-template-input';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { writeSystemEvent } from '@/lib/audit/system-event';
 import { sseManager } from '@/lib/sse/manager';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { collectReferencedAgentIds, findMissingAgentIds } from './_agent-validation';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiCreated, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 
 async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const q = (searchParams.get('q') || '').trim().toLowerCase();
+    const q = (normalizeOptionalString(searchParams.get('q')) ?? '').toLowerCase();
     const rows = await db.select().from(taskTemplates).orderBy(taskTemplates.updatedAt);
     const data = q
       ? rows.filter((row) => {
@@ -28,26 +31,20 @@ async function handleGet(request: AuthenticatedRequest) {
           return text.includes(q);
         })
       : rows;
-    return NextResponse.json({ success: true, data });
+    return apiSuccess(data);
   } catch (err) {
     console.error('[API] 获取任务模板列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.listFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.listFailed);
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
     const actor = resolveAuditActor(request);
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseCreateTaskTemplatePayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const payload = parsed.data;
@@ -58,20 +55,14 @@ async function handlePost(request: AuthenticatedRequest) {
         .where(eq(repositories.id, payload.repositoryId))
         .limit(1);
       if (repo.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: REPO_MESSAGES.notFound(payload.repositoryId) } },
-          { status: 404 }
-        );
+        return apiNotFound(REPO_MESSAGES.notFound(payload.repositoryId));
       }
     }
 
     const referencedAgentIds = collectReferencedAgentIds(payload);
     const missingAgentIds = await findMissingAgentIds(referencedAgentIds);
     if (missingAgentIds.length > 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(missingAgentIds[0]) } },
-        { status: 404 }
-      );
+      return apiNotFound(AGENT_MESSAGES.notFound(missingAgentIds[0]));
     }
 
     const now = new Date().toISOString();
@@ -93,7 +84,7 @@ async function handlePost(request: AuthenticatedRequest) {
       })
       .returning();
 
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task_template.created',
       actor,
       payload: {
@@ -103,13 +94,10 @@ async function handlePost(request: AuthenticatedRequest) {
     });
     sseManager.broadcast('task_template.created', { templateId: created[0].id, name: created[0].name });
 
-    return NextResponse.json({ success: true, data: created[0] }, { status: 201 });
+    return apiCreated(created[0]);
   } catch (err) {
     console.error('[API] 创建任务模板失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.createFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.createFailed);
   }
 }
 

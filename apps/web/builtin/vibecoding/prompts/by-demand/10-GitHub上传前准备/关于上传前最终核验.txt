@@ -1,0 +1,30 @@
+# 上传前最终核验（仅审查版）
+
+【输入】
+- scope：核验范围（默认全仓库；可留空为指定目录）。
+- report_path：报告路径（默认 `.conversations/reports/github-upload-final-review-report.md`）。
+- execution_handoff_path：执行步骤交接文件路径（如 `.conversations/pipeline-handoffs/<pipeline_id>/step-handoff.json`）。
+- acceptance_criteria：至少包含“上传阻塞项、可上传结论、剩余风险、后续建议”。
+- constraints：审查深度、时间预算、是否允许运行检查命令。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 仅做 GitHub 上传前最终核验：确认清理动作、忽略规则与基础文档已满足上传条件（不改代码）。
+
+【注意事项】
+- 通用审查基线（必须）：先扫描事实→再分级问题→最后给结论；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；按【输出】原样输出。
+- 严格单一职责：仅审查不改代码。
+- 必须读取 `execution_handoff_path`，并核对执行步骤宣称的改动与当前仓库状态是否一致。
+- 关键核验：`.gitignore` 覆盖、敏感信息残留、README/Quickstart 可读、上传前命令可执行。
+- 报告必须落盘到 `report_path`；如提供 `handoff_output_dir`，结束时写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 扫描结论（核验范围、输入来源、可用命令）。
+- 问题清单（P0/P1/P2：位置/影响/证据/修复建议/验证方式）。
+- 上传就绪清单（目录结构、忽略规则、敏感信息、文档入口、命令校验）。
+- 验证清单（已执行命令 + 结果摘要；未执行项手工步骤）。
+- 审查报告（已保存路径 + 报告摘要）。
+- 最终结论（可上传/修复后上传/阻塞）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"blocking_items":[],"ready_items":[],"next_actions":[]}。

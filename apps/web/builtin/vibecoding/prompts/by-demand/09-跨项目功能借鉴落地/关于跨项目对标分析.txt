@@ -1,0 +1,30 @@
+# 跨项目对标分析（仅分析版）
+
+【输入】
+- scope：当前项目分析范围（默认全仓库；可留空模块/目录）。
+- reference_project：参考项目路径/仓库地址/可访问代码目录（必填）。
+- report_path：报告路径（默认 `.conversations/reports/cross-project-benchmark-analysis-report.md`）。
+- acceptance_criteria：至少包含“优缺点对比、可借鉴项候选池、排除项、Top 1-3 落地计划”。
+- constraints：时间预算、不可触碰范围、是否允许运行对比命令。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 仅做跨项目对标分析：比较当前项目与参考项目的实现差异，输出可借鉴清单与落地计划（不改代码）。
+
+【注意事项】
+- 通用分析基线（必须）：先范围与现状→再结论与方案→最后验证设计；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；按【输出】原样输出。
+- 严格单一职责：仅分析不改代码。
+- 必须给“同构映射”：参考项目实现位置 → 当前项目落点 → 适配理由。
+- 明确排除项：不适配方案必须写清原因（技术栈/复杂度/维护成本/风险）。
+- 报告必须落盘到 `report_path`；如提供 `handoff_output_dir`，结束时写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 扫描结论（双方技术栈、关键入口、对比范围、证据路径）。
+- 对标清单（优点/缺点：位置/影响/证据）。
+- 可借鉴候选池（至少 5 项：收益/风险/改造成本/依赖）。
+- 排除项清单（不采纳原因与替代建议）。
+- 优先级决策（Top 1-3：入选理由、实施顺序、验证方式）。
+- 分析报告（已保存路径 + 报告摘要）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"benchmark_findings":[],"candidate_features":[],"next_actions":[]}。

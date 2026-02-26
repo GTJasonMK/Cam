@@ -4,12 +4,12 @@
 // DELETE — 清除当前用户的其他 Session（保留当前）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { sessions } from '@/lib/db/schema';
 import { eq, and, ne, gt, desc } from 'drizzle-orm';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
+import { apiError, apiSuccess } from '@/lib/http/api-response';
 
 async function handleGet(request: AuthenticatedRequest) {
   const now = new Date().toISOString();
@@ -59,17 +59,14 @@ async function handleGet(request: AuthenticatedRequest) {
     isCurrent: row.id === currentSessionId,
   }));
 
-  return NextResponse.json({ success: true, data });
+  return apiSuccess(data);
 }
 
 async function handleDelete(request: AuthenticatedRequest) {
   const currentToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   if (!currentToken) {
-    return NextResponse.json(
-      { success: false, error: { code: 'NO_SESSION', message: '无法识别当前 Session' } },
-      { status: 400 }
-    );
+    return apiError('NO_SESSION', '无法识别当前 Session', { status: 400 });
   }
 
   // 删除当前用户的其他所有 Session（保留当前 token）
@@ -83,7 +80,7 @@ async function handleDelete(request: AuthenticatedRequest) {
     )
     .run();
 
-  return NextResponse.json({ success: true, data: { removed: result.changes } });
+  return apiSuccess({ removed: result.changes });
 }
 
 export const GET = withAuth(handleGet);

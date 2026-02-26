@@ -376,6 +376,9 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
               cols: msg.cols,
               rows: msg.rows,
               steps: msg.steps,
+              sessionPolicy: msg.sessionPolicy,
+              preparedSessions: msg.preparedSessions,
+              allowCreateSteps: msg.allowCreateSteps,
             },
             { id: user.id, username: user.username },
           );
@@ -398,6 +401,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
             currentStep: 0,
             sessionIds: startedSessionMetas.map((meta) => meta.sessionId),
             repoPath: pipeline.repoPath,
+            sessionPolicy: pipeline.sessionPolicy,
           });
 
           // 同时发送 agent-created 让前端添加会话条目
@@ -432,6 +436,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
           })),
           currentStep: pipeline.currentStepIndex,
           status: pipeline.status,
+          sessionPolicy: pipeline.sessionPolicy,
         }));
         send(ws, { type: 'pipelines', pipelines });
         break;

@@ -3,13 +3,13 @@
 // GET — 返回系统初始化状态（是否有用户、是否有 Legacy Token、OAuth 提供商）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { users } from '@/lib/db/schema';
 import { sql } from 'drizzle-orm';
 import { getConfiguredAuthToken } from '@/lib/auth/constants';
 import { getEnabledProviders } from '@/lib/auth/oauth/providers';
 import { getAuthMode } from '@/lib/auth/config';
+import { apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 export async function GET() {
   try {
@@ -26,20 +26,14 @@ export async function GET() {
       displayName: p.displayName,
     }));
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        hasUsers,
-        hasLegacyToken,
-        authMode,
-        oauthProviders,
-      },
+    return apiSuccess({
+      hasUsers,
+      hasLegacyToken,
+      authMode,
+      oauthProviders,
     });
   } catch (err) {
     console.error('[API] 获取 setup-status 失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '获取系统状态失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('获取系统状态失败');
   }
 }

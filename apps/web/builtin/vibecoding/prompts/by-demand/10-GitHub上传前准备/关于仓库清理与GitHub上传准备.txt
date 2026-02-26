@@ -1,0 +1,42 @@
+# 仓库清理与 GitHub 上传准备（执行版）
+
+【输入】
+- scope：清理与准备范围（默认全仓库；可留空为指定目录/模块）。
+- review_report_path：上传前扫描报告路径（默认 `.conversations/reports/github-upload-precheck-report.md`）。
+- acceptance_criteria：
+  - 目录结构清晰，临时文件/无用产物已处理。
+  - `.gitignore` 完整覆盖不应入库内容。
+  - README 与最小协作文件（如 `.env.example`/贡献说明）满足最小可用。
+  - 上传前检查命令有结果留痕（如 `git status`、`rg --files`、基础验证命令）。
+- constraints：
+  - **不要删除构建产物目录和依赖目录**（例如 `dist/`、`build/`、`node_modules/`、`.venv/`）；改为写入 `.gitignore`。
+  - 涉及删除文件/目录时，先列清单并在输出中明确风险与影响。
+  - 不得提交密钥、Token、证书、真实凭据。
+- （可留空）must_keep：必须保留的目录/文件。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 基于上传前扫描报告执行仓库整理：完成清理与配置补齐，并保留可追溯证据。
+
+【注意事项】
+- 通用执行基线（必须）：仅执行落地（不做全面审查/分析）；先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；非本轮问题写入“风险补充”；按【输出】原样输出。
+- 必须先读取 `review_report_path`（以及可选的 `upstream_handoff_path`），优先处理 P0/P1 风险项。
+- 优先“可追溯清理”：每项清理都要说明依据（为何冗余、影响范围、是否可恢复）。
+- `.gitignore` 优先级高于物理删除：能忽略就不删除。
+- 必查项：大文件、临时缓存、IDE 配置、日志与报告、系统特有文件（如 `.DS_Store`、`Thumbs.db`）。
+- 必补项：README 最小说明、运行/验证入口、必要示例配置（如 `.env.example`）。
+- 能跑就跑验证命令并留痕；不能跑写阻塞原因与最小手工检查清单。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、报告来源、验收口径、约束）。
+- 扫描结论（待处理风险项、应忽略项、敏感风险点）。
+- 执行计划（3-7 步，每步含影响面/验证/回滚点）。
+- 变更清单（按文件：改动内容/原因；`.gitignore` 规则需单列）。
+- 验证命令与结果摘要（含 `git status`、关键检查命令）。
+- 风险补充（未完成项/原因/下一步）。
+- 上传前检查清单（结构、忽略规则、敏感信息、文档入口）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

@@ -1,0 +1,29 @@
+# 模块重构方案分析（仅分析版）
+
+【输入】
+- scope：重构分析范围（模块/目录/子系统）。
+- report_path：报告路径（默认 `.conversations/reports/refactor-analysis-report.md`）。
+- acceptance_criteria：至少包含“现状结构图、问题分级、目标结构、3-7 步改造计划、验证设计”。
+- constraints：不可触碰范围、时间预算、兼容性要求、是否允许运行扫描命令。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 仅做重构方案分析：梳理模块边界、依赖关系与主要坏味道，输出可执行重构方案（不改代码）。
+
+【注意事项】
+- 通用分析基线（必须）：先范围与现状→再问题与方案→最后验证设计；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；按【输出】原样输出。
+- 严格单一职责：仅分析不改代码；不输出“已完成修复”类结论。
+- 证据优先：每个问题都要给定位证据（文件/符号/调用链/依赖关系）。
+- 能跑就跑静态分析与测试探测命令并留痕；不能跑写阻塞原因与可信度影响。
+- 报告必须落盘到 `report_path`；如提供 `handoff_output_dir`，结束时写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 扫描结论（模块边界、入口、调用链、依赖图、证据路径）。
+- 问题清单（P0/P1/P2：位置/影响/证据/建议处理策略）。
+- 目标结构方案（分层、职责、模块边界、迁移顺序）。
+- 重构执行计划（3-7 步：目标/影响面/验证方式/回滚点）。
+- 验证设计（测试补位、回归路径、失败路径检查）。
+- 分析报告（已保存路径 + 报告摘要）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"key_findings":[],"refactor_plan":[],"risks":[],"next_actions":[]}。

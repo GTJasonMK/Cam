@@ -1,0 +1,32 @@
+# 重构与消除重复（执行版）
+
+【输入】
+- scope：模块/目录/功能点范围。
+- review_report_path：冗余审查报告路径（默认 `.conversations/reports/redundancy-review-report.md`）。
+- acceptance_criteria：1-3 条治理目标（去重复/降耦合/提升可测性等）与回归通过标准。
+- constraints：不可改动项、必须保持项。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 基于冗余审查报告执行治理：小步消除重复与耦合，保证功能不回退。
+
+【注意事项】
+- 通用执行基线（必须）：先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；按【输出】原样输出。
+- 必须先读取 `review_report_path`（以及可选的 `upstream_handoff_path`），再实施改造。
+- 先补最小护栏（测试/回归清单），避免“重构后无验证”。
+- 每步可验证、可回滚；避免无必要抽象与一次性大重写。
+- 能跑就跑相关命令并留痕；不能跑给阻塞原因与最小手工回归。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、验收口径、约束）。
+- 扫描结论（报告输入、重复点范围、可用命令）。
+- 执行计划（3-7 步，每步含验证与回滚点）。
+- 变更清单（按文件：改动内容/原因/对应问题编号）。
+- 验证命令与结果摘要。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（核心路径）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

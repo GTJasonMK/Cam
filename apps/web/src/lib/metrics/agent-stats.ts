@@ -3,6 +3,8 @@
 // 为 Dashboard 计算每个 Agent 的执行规模、成功率、平均耗时
 // ============================================================
 
+import { parseIsoMs } from '../time/parse-iso.ts';
+
 type AgentDefinitionLite = {
   id: string;
   displayName: string;
@@ -24,12 +26,6 @@ export type AgentStatItem = {
   successRate: number | null;
   avgDurationMs: number | null;
 };
-
-function parseTimeMs(value: string | null): number | null {
-  if (!value) return null;
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
 
 function toOneDecimal(input: number): number {
   return Math.round(input * 10) / 10;
@@ -74,8 +70,8 @@ export function buildAgentStats(
     }
 
     if (task.status === 'completed') {
-      const startMs = parseTimeMs(task.startedAt);
-      const endMs = parseTimeMs(task.completedAt);
+      const startMs = parseIsoMs(task.startedAt);
+      const endMs = parseIsoMs(task.completedAt);
       if (startMs !== null && endMs !== null && endMs >= startMs) {
         existing.durationSumMs += endMs - startMs;
         existing.durationCount += 1;

@@ -8,6 +8,7 @@ import { getProviderById } from '@/lib/auth/oauth/providers';
 import { generateOAuthState, buildAuthorizeUrl } from '@/lib/auth/oauth/flow';
 import { resolvePublicOrigin } from '@/lib/auth/public-origin';
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
+import { apiError } from '@/lib/http/api-response';
 
 type RouteContext = { params: Promise<Record<string, string>> };
 
@@ -17,10 +18,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   const provider = getProviderById(providerId);
 
   if (!provider) {
-    return NextResponse.json(
-      { success: false, error: { code: 'PROVIDER_NOT_FOUND', message: `OAuth 提供商 ${providerId} 未启用` } },
-      { status: 404 }
-    );
+    return apiError('PROVIDER_NOT_FOUND', `OAuth 提供商 ${providerId} 未启用`, { status: 404 });
   }
 
   // 构建回调 URL

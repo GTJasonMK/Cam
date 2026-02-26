@@ -55,6 +55,25 @@ export interface PipelineStepInput {
   parallelAgents?: PipelineStepParallelAgentInput[];
 }
 
+/** 流水线会话策略：仅复用已准备会话 / 允许自动新建 */
+export type PipelineSessionPolicy = 'reuse-only' | 'allow-create';
+
+/** 流水线启动前准备的会话定义（来自 CLI 原生会话或项目托管会话） */
+export interface PipelinePreparedSessionInput {
+  /** 前端生成的唯一键（用于租约跟踪） */
+  sessionKey: string;
+  /** 会话所属 Agent */
+  agentDefinitionId: string;
+  /** 会话启动模式（当前仅支持 resume/continue） */
+  mode: 'resume' | 'continue';
+  /** mode='resume' 时需要指定 CLI 会话 ID */
+  resumeSessionId?: string;
+  /** 会话来源（用于展示） */
+  source?: 'external' | 'managed';
+  /** 可选标题（用于展示） */
+  title?: string;
+}
+
 // ---- 客户端 → 服务器 ----
 
 export type ClientMessage =
@@ -94,6 +113,12 @@ export type ClientMessage =
       cols: number;
       rows: number;
       steps: PipelineStepInput[];
+      /** 会话策略（默认 reuse-only） */
+      sessionPolicy?: PipelineSessionPolicy;
+      /** 预先准备的可复用会话池 */
+      preparedSessions?: PipelinePreparedSessionInput[];
+      /** 允许自动新建会话的步骤索引（0-based） */
+      allowCreateSteps?: number[];
     }
   | { type: 'pipeline-list' }
   | { type: 'pipeline-cancel'; pipelineId: string }
@@ -150,6 +175,8 @@ export type ServerMessage =
       sessionIds: string[];
       /** 项目绝对路径 */
       repoPath: string;
+      /** 会话策略（便于前端展示） */
+      sessionPolicy?: PipelineSessionPolicy;
     }
   | {
       type: 'pipelines';
@@ -164,6 +191,7 @@ export type ServerMessage =
         }>;
         currentStep: number;
         status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+        sessionPolicy?: PipelineSessionPolicy;
       }>;
     }
   | {

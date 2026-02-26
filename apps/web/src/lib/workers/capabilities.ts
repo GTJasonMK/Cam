@@ -2,6 +2,8 @@
 // Worker 能力解析（不包含任何密钥值，仅用于判断“是否存在”）
 // ============================================================
 
+import { parseIsoMs } from '../time/parse-iso.ts';
+
 export type WorkerCapabilitySnapshot = {
   id: string;
   status: string;
@@ -10,12 +12,6 @@ export type WorkerCapabilitySnapshot = {
   supportedAgentIds: string[] | null;
   reportedEnvVars: string[] | null;
 };
-
-function parseIsoMs(value: string | null): number | null {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
 
 export function isEligibleCapabilityWorker(
   worker: WorkerCapabilitySnapshot,
@@ -69,4 +65,3 @@ export function collectWorkerEnvVarsForAgent(
 
   return out;
 }
-

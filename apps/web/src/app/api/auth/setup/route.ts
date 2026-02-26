@@ -3,7 +3,7 @@
 // POST — 创建首个 admin 用户（仅空库时可用）
 // ============================================================
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { users } from '@/lib/db/schema';
 import { sql } from 'drizzle-orm';
@@ -12,57 +12,64 @@ import { createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } fro
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { invalidateAuthModeCache } from '@/lib/auth/config';
 import { parseSetupPayload } from '@/lib/validation/user-input';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { getRequestClientInfo } from '@/lib/auth/request-client';
+import { apiBadRequest, apiConflict, apiCreated, apiInternalError } from '@/lib/http/api-response';
+
+const ALREADY_SETUP_ERROR = 'ALREADY_SETUP';
 
 export async function POST(request: NextRequest) {
   try {
-    // 检查是否已有用户
-    const result = db
-      .select({ count: sql<number>`count(*)` })
-      .from(users)
-      .get();
-
-    if ((result?.count ?? 0) > 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'ALREADY_SETUP', message: '系统已初始化，不能重复设置' } },
-        { status: 409 }
-      );
-    }
-
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseSetupPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const { username, displayName, password } = parsed.data;
     const passwordHash = await hashPassword(password);
     const now = new Date().toISOString();
 
-    const newUser = db
-      .insert(users)
-      .values({
-        username,
-        displayName,
-        passwordHash,
-        role: 'admin',
-        status: 'active',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
-      .get();
+    let newUser: typeof users.$inferSelect;
+    try {
+      newUser = db.transaction((tx) => {
+        // 原子检查 + 插入，避免并发 setup 产生多个首个管理员
+        const result = tx
+          .select({ count: sql<number>`count(*)` })
+          .from(users)
+          .get();
+        if ((result?.count ?? 0) > 0) {
+          throw new Error(ALREADY_SETUP_ERROR);
+        }
+
+        return tx
+          .insert(users)
+          .values({
+            username,
+            displayName,
+            passwordHash,
+            role: 'admin',
+            status: 'active',
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .get();
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === ALREADY_SETUP_ERROR) {
+        return apiConflict('系统已初始化，不能重复设置', {
+          code: 'ALREADY_SETUP',
+        });
+      }
+      throw err;
+    }
 
     // 刷新认证模式缓存
     invalidateAuthModeCache();
 
     // 自动创建 Session
-    const ipAddress = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-      || request.headers.get('x-real-ip')
-      || 'unknown';
-    const userAgent = request.headers.get('user-agent') || undefined;
+    const { ipAddress, userAgent } = getRequestClientInfo(request);
 
     const token = await createSession({
       userId: newUser.id,
@@ -70,15 +77,12 @@ export async function POST(request: NextRequest) {
       userAgent,
     });
 
-    const response = NextResponse.json({
-      success: true,
-      data: {
-        id: newUser.id,
-        username: newUser.username,
-        displayName: newUser.displayName,
-        role: newUser.role,
-      },
-    }, { status: 201 });
+    const response = apiCreated({
+      id: newUser.id,
+      username: newUser.username,
+      displayName: newUser.displayName,
+      role: newUser.role,
+    });
 
     response.cookies.set(SESSION_COOKIE_NAME, token, {
       ...buildAuthCookieOptions({ maxAge: getSessionCookieMaxAgeSeconds() }),
@@ -87,9 +91,6 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (err) {
     console.error('[API] 初始化设置失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '初始化设置失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('初始化设置失败');
   }
 }

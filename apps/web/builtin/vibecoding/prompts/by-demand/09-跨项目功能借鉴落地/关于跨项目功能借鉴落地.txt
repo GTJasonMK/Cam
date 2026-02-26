@@ -1,0 +1,32 @@
+# 跨项目功能借鉴落地（执行版）
+
+【输入】
+- scope：当前项目允许改动范围（默认全仓库；可留空模块/目录）。
+- analysis_report_path：跨项目对标分析报告路径（默认 `.conversations/reports/cross-project-benchmark-analysis-report.md`）。
+- acceptance_criteria：至少落地 1-3 个借鉴项，并给出“借鉴项→改动点→验证证据”映射；关键路径回归通过。
+- constraints：不可改动项（公共 API/数据结构/上线窗口）、是否允许重构/新增依赖。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 基于跨项目对标分析报告执行借鉴落地：采纳已选优点并保证当前项目能力不回退。
+
+【注意事项】
+- 通用执行基线（必须）：仅执行落地（不做全面审查/分析）；先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；非本轮问题写入“风险补充”；按【输出】原样输出。
+- 必须先读取 `analysis_report_path`（以及可选的 `upstream_handoff_path`），仅执行纳入范围的借鉴项。
+- 借鉴必须“同构映射”：保留参考位置、当前落点、适配理由，禁止脱离分析报告随意扩展。
+- 开发阶段允许必要重构，但较大改动必须写影响面与迁移策略。
+- 能跑就跑 test/lint/build/smoke 并留痕；不能跑写阻塞原因与最小手工回归。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、报告来源、验收口径、约束）。
+- 扫描结论（执行输入、当前项目改造落点、可用命令）。
+- 执行计划（3-7 步，每步含影响面/验证/回滚点）。
+- 变更清单（按文件：改动内容/原因/对应借鉴项）。
+- 验证命令与结果摘要（含失败路径验证）。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（关键路径与边界场景）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

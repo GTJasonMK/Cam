@@ -5,12 +5,13 @@
 // DELETE — 删除用户
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { users, sessions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { parseUpdateUserPayload } from '@/lib/validation/user-input';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiError, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 type RouteContext = { params: Promise<Record<string, string>> };
 
@@ -36,19 +37,13 @@ async function handleGet(request: AuthenticatedRequest, context: RouteContext) {
       .get();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: `用户 ${id} 不存在` } },
-        { status: 404 }
-      );
+      return apiNotFound(`用户 ${id} 不存在`);
     }
 
-    return NextResponse.json({ success: true, data: user });
+    return apiSuccess(user);
   } catch (err) {
     console.error('[API] 获取用户详情失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '获取用户详情失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('获取用户详情失败');
   }
 }
 
@@ -59,19 +54,13 @@ async function handlePatch(request: AuthenticatedRequest, context: RouteContext)
 
     const existing = db.select({ id: users.id }).from(users).where(eq(users.id, id)).get();
     if (!existing) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: `用户 ${id} 不存在` } },
-        { status: 404 }
-      );
+      return apiNotFound(`用户 ${id} 不存在`);
     }
 
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseUpdateUserPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const updated = db
@@ -86,24 +75,18 @@ async function handlePatch(request: AuthenticatedRequest, context: RouteContext)
       db.delete(sessions).where(eq(sessions.userId, id)).run();
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: updated.id,
-        username: updated.username,
-        displayName: updated.displayName,
-        email: updated.email,
-        role: updated.role,
-        status: updated.status,
-        avatarUrl: updated.avatarUrl,
-      },
+    return apiSuccess({
+      id: updated.id,
+      username: updated.username,
+      displayName: updated.displayName,
+      email: updated.email,
+      role: updated.role,
+      status: updated.status,
+      avatarUrl: updated.avatarUrl,
     });
   } catch (err) {
     console.error('[API] 更新用户失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '更新用户失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('更新用户失败');
   }
 }
 
@@ -114,30 +97,21 @@ async function handleDelete(request: AuthenticatedRequest, context: RouteContext
 
     // 禁止删除自己
     if (request.user.id === id) {
-      return NextResponse.json(
-        { success: false, error: { code: 'FORBIDDEN', message: '不能删除自己的账户' } },
-        { status: 403 }
-      );
+      return apiError('FORBIDDEN', '不能删除自己的账户', { status: 403 });
     }
 
     const existing = db.select({ id: users.id }).from(users).where(eq(users.id, id)).get();
     if (!existing) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: `用户 ${id} 不存在` } },
-        { status: 404 }
-      );
+      return apiNotFound(`用户 ${id} 不存在`);
     }
 
     // CASCADE 会自动删除关联的 sessions / oauth_accounts / api_tokens
     db.delete(users).where(eq(users.id, id)).run();
 
-    return NextResponse.json({ success: true });
+    return apiSuccess(null);
   } catch (err) {
     console.error('[API] 删除用户失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '删除用户失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('删除用户失败');
   }
 }
 

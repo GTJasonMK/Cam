@@ -6,6 +6,7 @@
 // ============================================================
 
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
+import { ensureVibecodingTaskTemplatesSynced } from '@/lib/db/vibecoding-sync';
 
 // 构建阶段不启动，避免 setInterval 挂住 next build 进程
 const phase = process.env.NEXT_PHASE || '';
@@ -14,6 +15,9 @@ const isBuildPhase =
 
 if (!isBuildPhase) {
   try {
+    void ensureVibecodingTaskTemplatesSynced().catch((error) => {
+      console.error('[instrumentation] vibecoding 启动同步失败:', error);
+    });
     ensureSchedulerStarted();
   } catch (error) {
     console.error('[instrumentation] 启动调度器失败:', error);

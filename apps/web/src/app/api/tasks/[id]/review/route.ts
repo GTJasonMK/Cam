@@ -3,44 +3,35 @@
 // POST /api/tasks/[id]/review   - 审批通过或拒绝
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { tasks, systemEvents } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
-import { sseManager } from '@/lib/sse/manager';
+import { tasks } from '@/lib/db/schema';
+import { and, eq } from 'drizzle-orm';
 import {
   createOrFindPullRequest,
   createPullRequestComment,
   mergePullRequest,
   parseGitRepository,
   parsePullRequestUrl,
-  type GitProvider,
   type GitRepositoryRef,
 } from '@/lib/integrations/provider';
-import { resolveEnvVarValue } from '@/lib/secrets/resolve';
+import { resolveGitProviderToken } from '@/lib/integrations/provider-token';
 import { parseReviewPayload } from '@/lib/validation/task-input';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { writeSystemEvent } from '@/lib/audit/system-event';
+import { emitTaskPrCreated, emitTaskPrMerged } from '@/lib/tasks/task-events';
+import { buildTaskPullRequestDraft } from '@/lib/tasks/pull-request';
+import { emitTaskReviewOutcome, updateTaskWhenAwaitingReview } from '@/lib/tasks/review-lifecycle';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-async function resolveProviderToken(
-  provider: GitProvider,
-  scope: { repositoryId?: string | null; repoUrl?: string | null; agentDefinitionId?: string | null }
-): Promise<string> {
-  const candidates: Record<GitProvider, string[]> = {
-    github: ['GITHUB_TOKEN', 'GITHUB_PAT', 'GITHUB_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-    gitlab: ['GITLAB_TOKEN', 'GITLAB_PRIVATE_TOKEN', 'GITLAB_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-    gitea: ['GITEA_TOKEN', 'GITEA_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-  };
-
-  for (const envName of candidates[provider]) {
-    const scoped = await resolveEnvVarValue(envName, scope);
-    if (scoped) return scoped;
-    const raw = process.env[envName];
-    if (typeof raw === 'string' && raw.trim()) return raw.trim();
-  }
-  return '';
-}
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import {
+  apiBadRequest,
+  apiConflict,
+  apiError,
+  apiInternalError,
+  apiNotFound,
+  apiSuccess,
+} from '@/lib/http/api-response';
 
 async function commentPullRequestBestEffort(input: {
   token: string;
@@ -63,13 +54,13 @@ async function commentPullRequestBestEffort(input: {
       body: input.body,
     });
 
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task.pr_commented',
       actor: input.actor,
       payload: { taskId: input.taskId, prUrl: input.prUrl, commentUrl: commentRes.htmlUrl, kind: input.kind },
     });
   } catch (err) {
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task.pr_comment_failed',
       actor: input.actor,
       payload: { taskId: input.taskId, prUrl: input.prUrl, error: (err as Error).message, kind: input.kind },
@@ -81,35 +72,31 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
   const { id } = await params;
   try {
     const actor = resolveAuditActor(request);
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseReviewPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
     const { action, reviewComment, feedback, mergeRequested } = parsed.data;
 
     // 检查任务是否存在且处于 awaiting_review 状态
     const existing = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_MESSAGES.notFound(id));
+    }
+
+    // 审批流仅针对调度任务；terminal 任务不进入 awaiting_review 生命周期。
+    if (existing[0].source !== 'scheduler') {
+      return apiConflict('仅调度任务支持审批流程');
     }
 
     if (existing[0].status !== 'awaiting_review') {
-      return NextResponse.json(
-        { success: false, error: { code: 'STATE_CONFLICT', message: TASK_MESSAGES.reviewStateConflict(existing[0].status) } },
-        { status: 409 }
-      );
+      return apiConflict(TASK_MESSAGES.reviewStateConflict(existing[0].status));
     }
 
     const repository = parseGitRepository(existing[0].repoUrl);
     const token = repository
-      ? await resolveProviderToken(repository.provider, {
+      ? await resolveGitProviderToken(repository.provider, {
           repositoryId: (existing[0] as typeof existing[0] & { repositoryId?: string | null }).repositoryId || null,
           repoUrl: existing[0].repoUrl,
           agentDefinitionId: existing[0].agentDefinitionId,
@@ -126,52 +113,55 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
 
       if (mergeRequested) {
         if (!token) {
-          return NextResponse.json(
-            { success: false, error: { code: 'MISSING_GIT_TOKEN', message: TASK_MESSAGES.missingGitProviderToken } },
-            { status: 400 }
-          );
+          return apiError('MISSING_GIT_TOKEN', TASK_MESSAGES.missingGitProviderToken, { status: 400 });
         }
         if (!activeRepo) {
-          return NextResponse.json(
-            { success: false, error: { code: 'REPO_PROVIDER_UNSUPPORTED', message: TASK_MESSAGES.unsupportedRepoProvider } },
-            { status: 400 }
-          );
+          return apiError('REPO_PROVIDER_UNSUPPORTED', TASK_MESSAGES.unsupportedRepoProvider, { status: 400 });
         }
 
         // 1) 如果任务尚未写入 prUrl，尝试此处创建（避免卡死在合并阶段）
         if (!ensuredPrUrl) {
-          const prTitle = `[CAM] ${existing[0].title}`;
-          const prBody = [
-            `Task ID: ${existing[0].id}`,
-            `Agent: ${existing[0].agentDefinitionId}`,
-            `Branch: ${existing[0].workBranch}`,
-            '',
-            existing[0].description,
-          ].join('\n');
+          const prDraft = buildTaskPullRequestDraft({
+            id: existing[0].id,
+            title: existing[0].title,
+            agentDefinitionId: existing[0].agentDefinitionId,
+            workBranch: existing[0].workBranch,
+            description: existing[0].description,
+          });
 
           const pr = await createOrFindPullRequest({
             token,
             repository: activeRepo,
             headBranch: existing[0].workBranch,
             baseBranch: existing[0].baseBranch,
-            title: prTitle,
-            body: prBody,
+            title: prDraft.title,
+            body: prDraft.body,
           });
 
           ensuredPrUrl = pr.htmlUrl;
           ensuredPrNumber = pr.number;
 
-          await db.update(tasks).set({ prUrl: ensuredPrUrl }).where(eq(tasks.id, id));
-          await db.insert(systemEvents).values({
-            type: 'task.pr_created',
+          const boundPr = await db
+            .update(tasks)
+            .set({ prUrl: ensuredPrUrl })
+            .where(and(eq(tasks.id, id), eq(tasks.status, 'awaiting_review')))
+            .returning({ id: tasks.id });
+          if (boundPr.length === 0) {
+            return apiConflict('任务状态已变化，已中止合并操作');
+          }
+          await emitTaskPrCreated({
+            taskId: id,
             actor,
-            payload: {
-              taskId: id,
+            eventPayload: {
               prUrl: ensuredPrUrl,
               prNumber: pr.number,
               provider: activeRepo.provider,
               owner: activeRepo.owner,
               repo: activeRepo.repo,
+            },
+            broadcastPayload: {
+              prUrl: ensuredPrUrl,
+              prNumber: pr.number,
             },
           });
         }
@@ -183,10 +173,17 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
         }
 
         if (!ensuredPrNumber) {
-          return NextResponse.json(
-            { success: false, error: { code: 'INVALID_PR_URL', message: TASK_MESSAGES.invalidPrUrlForMerge } },
-            { status: 400 }
-          );
+          return apiError('INVALID_PR_URL', TASK_MESSAGES.invalidPrUrlForMerge, { status: 400 });
+        }
+
+        // 合并前再做一次状态守卫，降低并发下“状态已变化仍触发外部 merge”的风险窗口。
+        const stillAwaitingReview = await db
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(eq(tasks.id, id), eq(tasks.status, 'awaiting_review')))
+          .limit(1);
+        if (stillAwaitingReview.length === 0) {
+          return apiConflict('任务状态已变化，已中止合并操作');
         }
 
         try {
@@ -200,45 +197,48 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
           });
           mergedPr = Boolean(merge.merged);
 
-          await db.insert(systemEvents).values({
-            type: 'task.pr_merged',
+          await emitTaskPrMerged({
+            taskId: id,
             actor,
-            payload: {
-              taskId: id,
+            eventPayload: {
               prUrl: ensuredPrUrl,
               prNumber: ensuredPrNumber,
               provider: activeRepo.provider,
               merged: merge.merged,
               sha: merge.sha,
             },
+            broadcastPayload: {
+              prUrl: ensuredPrUrl,
+              prNumber: ensuredPrNumber,
+            },
           });
-          sseManager.broadcast('task.pr_merged', { taskId: id, prUrl: ensuredPrUrl, prNumber: ensuredPrNumber });
         } catch (err) {
-          return NextResponse.json(
-            { success: false, error: { code: 'GIT_MERGE_FAILED', message: (err as Error).message } },
-            { status: 502 }
-          );
+          return apiError('GIT_MERGE_FAILED', (err as Error).message, { status: 502 });
         }
       }
 
-      const result = await db
-        .update(tasks)
-        .set({
-          status: 'completed',
-          reviewComment: reviewComment || null,
-          reviewedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-        })
-        .where(eq(tasks.id, id))
-        .returning();
-
-      await db.insert(systemEvents).values({
-        type: 'task.review_approved',
-        actor,
-        payload: { taskId: id, comment: reviewComment, mergeRequested, merged: mergedPr, provider: activeRepo?.provider || null },
+      const approvedTask = await updateTaskWhenAwaitingReview(id, {
+        status: 'completed',
+        reviewComment: reviewComment || null,
+        reviewedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
       });
-      sseManager.broadcast('task.review_approved', { taskId: id });
-      sseManager.broadcast('task.progress', { taskId: id, status: 'completed' });
+      if (!approvedTask) {
+        return apiConflict('任务状态已变化，请刷新后重试审批');
+      }
+
+      await emitTaskReviewOutcome({
+        taskId: id,
+        actor,
+        status: 'completed',
+        eventType: 'task.review_approved',
+        eventPayload: {
+          comment: reviewComment,
+          mergeRequested,
+          merged: mergedPr,
+          provider: activeRepo?.provider || null,
+        },
+      });
 
       // best-effort：写一条 PR/MR comment，便于在代码平台追踪审批结果
       if (token && activeRepo && (ensuredPrUrl || prUrl)) {
@@ -258,7 +258,7 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
         });
       }
 
-      return NextResponse.json({ success: true, data: result[0] });
+      return apiSuccess(approvedTask);
     }
 
     // reject: 带反馈重新入队
@@ -267,33 +267,32 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
 
     // 超过重试上限：不再入队，直接失败收敛
     if (nextRetryCount > maxRetries) {
-      const result = await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          feedback: feedback,
-          reviewComment: reviewComment || null,
-          reviewedAt: new Date().toISOString(),
-          retryCount: nextRetryCount,
-          assignedWorkerId: null,
-          completedAt: new Date().toISOString(),
-        })
-        .where(eq(tasks.id, id))
-        .returning();
+      const rejectedFinalTask = await updateTaskWhenAwaitingReview(id, {
+        status: 'failed',
+        feedback: feedback,
+        reviewComment: reviewComment || null,
+        reviewedAt: new Date().toISOString(),
+        retryCount: nextRetryCount,
+        assignedWorkerId: null,
+        completedAt: new Date().toISOString(),
+      });
+      if (!rejectedFinalTask) {
+        return apiConflict('任务状态已变化，请刷新后重试审批');
+      }
 
-      await db.insert(systemEvents).values({
-        type: 'task.review_rejected_max_retries',
+      await emitTaskReviewOutcome({
+        taskId: id,
         actor,
-        payload: {
-          taskId: id,
+        status: 'failed',
+        eventType: 'task.review_rejected_max_retries',
+        eventPayload: {
           feedback,
           comment: reviewComment,
           retryCount: nextRetryCount,
           maxRetries,
         },
+        reviewRejectedFinal: true,
       });
-      sseManager.broadcast('task.review_rejected', { taskId: id, final: true });
-      sseManager.broadcast('task.progress', { taskId: id, status: 'failed' });
 
       // best-effort：向 PR/MR 留痕（最终失败收敛）
       if (token && repository && prUrl) {
@@ -308,32 +307,31 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
         });
       }
 
-      return NextResponse.json({ success: true, data: result[0] });
+      return apiSuccess(rejectedFinalTask);
     }
 
-    const result = await db
-      .update(tasks)
-      .set({
-        status: 'queued',
-        feedback: feedback,
-        reviewComment: reviewComment || null,
-        reviewedAt: new Date().toISOString(),
-        retryCount: nextRetryCount,
-        assignedWorkerId: null,
-        queuedAt: new Date().toISOString(),
-        startedAt: null,
-        completedAt: null,
-      })
-      .where(eq(tasks.id, id))
-      .returning();
-
-    await db.insert(systemEvents).values({
-      type: 'task.review_rejected',
-      actor,
-      payload: { taskId: id, feedback, comment: reviewComment },
+    const requeuedTask = await updateTaskWhenAwaitingReview(id, {
+      status: 'queued',
+      feedback: feedback,
+      reviewComment: reviewComment || null,
+      reviewedAt: new Date().toISOString(),
+      retryCount: nextRetryCount,
+      assignedWorkerId: null,
+      queuedAt: new Date().toISOString(),
+      startedAt: null,
+      completedAt: null,
     });
-    sseManager.broadcast('task.review_rejected', { taskId: id });
-    sseManager.broadcast('task.progress', { taskId: id, status: 'queued' });
+    if (!requeuedTask) {
+      return apiConflict('任务状态已变化，请刷新后重试审批');
+    }
+
+    await emitTaskReviewOutcome({
+      taskId: id,
+      actor,
+      status: 'queued',
+      eventType: 'task.review_rejected',
+      eventPayload: { feedback, comment: reviewComment },
+    });
 
     // best-effort：向 PR/MR 留痕（拒绝后重跑）
     if (token && repository && prUrl) {
@@ -348,13 +346,10 @@ async function handler(request: AuthenticatedRequest, { params }: { params: Prom
       });
     }
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(requeuedTask);
   } catch (err) {
     console.error(`[API] 审批任务 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.reviewFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.reviewFailed);
   }
 }
 

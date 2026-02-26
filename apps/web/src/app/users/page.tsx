@@ -15,6 +15,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { useUserStore, useAuthStore, type UserItem } from '@/stores';
 import { USER_STATUS_COLORS } from '@/lib/constants';
+import { formatDateTimeZhCn } from '@/lib/time/format';
 import { Plus, RefreshCw, KeyRound } from 'lucide-react';
 
 // ---- 角色徽章 ----
@@ -43,6 +44,11 @@ interface UserFormData {
   role: string;
 }
 
+type UserMutationResult = {
+  success: boolean;
+  errorMessage?: string;
+};
+
 const EMPTY_FORM: UserFormData = { username: '', displayName: '', password: '', email: '', role: 'developer' };
 const ROLE_OPTIONS = [
   { value: 'admin', label: '管理员 (admin)' },
@@ -64,43 +70,66 @@ export default function UsersPage() {
     fetchUsers();
   }, [fetchUsers]);
 
+  const runWithSaving = useCallback(async (fn: () => Promise<void>) => {
+    setSaving(true);
+    try {
+      await fn();
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  const notifyMutationResult = useCallback((
+    result: UserMutationResult,
+    options: { successTitle: string; successMessage: string; errorTitle: string },
+  ): boolean => {
+    if (!result.success) {
+      notify({ title: options.errorTitle, message: result.errorMessage || '未知错误', type: 'error' });
+      return false;
+    }
+    notify({ title: options.successTitle, message: options.successMessage, type: 'success' });
+    return true;
+  }, [notify]);
+
   // ---- 操作回调 ----
 
   const handleCreate = useCallback(async () => {
-    setSaving(true);
-    const result = await createUser({
-      username: form.username,
-      displayName: form.displayName,
-      password: form.password,
-      email: form.email || undefined,
-      role: form.role,
-    });
-    setSaving(false);
-    if (result.success) {
-      notify({ title: '用户已创建', message: `${form.username} 创建成功`, type: 'success' });
+    await runWithSaving(async () => {
+      const result = await createUser({
+        username: form.username,
+        displayName: form.displayName,
+        password: form.password,
+        email: form.email || undefined,
+        role: form.role,
+      });
+      const ok = notifyMutationResult(result, {
+        successTitle: '用户已创建',
+        successMessage: `${form.username} 创建成功`,
+        errorTitle: '创建失败',
+      });
+      if (!ok) return;
       setShowCreateModal(false);
       setForm(EMPTY_FORM);
-    } else {
-      notify({ title: '创建失败', message: result.errorMessage || '未知错误', type: 'error' });
-    }
-  }, [form, createUser, notify]);
+    });
+  }, [form, createUser, runWithSaving, notifyMutationResult]);
 
   const handleUpdate = useCallback(async () => {
     if (!editingUser) return;
-    setSaving(true);
-    const result = await updateUser(editingUser.id, {
-      displayName: form.displayName,
-      email: form.email || null,
-      role: form.role,
-    });
-    setSaving(false);
-    if (result.success) {
-      notify({ title: '用户已更新', message: `${editingUser.username} 更新成功`, type: 'success' });
+    await runWithSaving(async () => {
+      const result = await updateUser(editingUser.id, {
+        displayName: form.displayName,
+        email: form.email || null,
+        role: form.role,
+      });
+      const ok = notifyMutationResult(result, {
+        successTitle: '用户已更新',
+        successMessage: `${editingUser.username} 更新成功`,
+        errorTitle: '更新失败',
+      });
+      if (!ok) return;
       setEditingUser(null);
-    } else {
-      notify({ title: '更新失败', message: result.errorMessage || '未知错误', type: 'error' });
-    }
-  }, [editingUser, form, updateUser, notify]);
+    });
+  }, [editingUser, form, updateUser, runWithSaving, notifyMutationResult]);
 
   const handleDelete = useCallback(async (user: UserItem) => {
     if (user.id === currentUser?.id) {
@@ -115,12 +144,12 @@ export default function UsersPage() {
     });
     if (!ok) return;
     const result = await deleteUser(user.id);
-    if (result.success) {
-      notify({ title: '用户已删除', message: `${user.username} 已删除`, type: 'success' });
-    } else {
-      notify({ title: '删除失败', message: result.errorMessage || '未知错误', type: 'error' });
-    }
-  }, [currentUser, deleteUser, confirm, notify]);
+    notifyMutationResult(result, {
+      successTitle: '用户已删除',
+      successMessage: `${user.username} 已删除`,
+      errorTitle: '删除失败',
+    });
+  }, [currentUser, deleteUser, confirm, notify, notifyMutationResult]);
 
   const handleResetPassword = useCallback(async (user: UserItem) => {
     const newPwd = await prompt({
@@ -136,12 +165,12 @@ export default function UsersPage() {
       return;
     }
     const result = await resetPassword(user.id, newPwd);
-    if (result.success) {
-      notify({ title: '密码已重置', message: `${user.username} 的密码已重置`, type: 'success' });
-    } else {
-      notify({ title: '重置失败', message: result.errorMessage || '未知错误', type: 'error' });
-    }
-  }, [resetPassword, prompt, notify]);
+    notifyMutationResult(result, {
+      successTitle: '密码已重置',
+      successMessage: `${user.username} 的密码已重置`,
+      errorTitle: '重置失败',
+    });
+  }, [resetPassword, prompt, notify, notifyMutationResult]);
 
   const handleToggleStatus = useCallback(async (user: UserItem) => {
     const nextStatus = user.status === 'active' ? 'disabled' : 'active';
@@ -154,12 +183,12 @@ export default function UsersPage() {
     });
     if (!ok) return;
     const result = await updateUser(user.id, { status: nextStatus });
-    if (result.success) {
-      notify({ title: `用户已${label}`, message: `${user.username} 已${label}`, type: 'success' });
-    } else {
-      notify({ title: `${label}失败`, message: result.errorMessage || '未知错误', type: 'error' });
-    }
-  }, [updateUser, confirm, notify]);
+    notifyMutationResult(result, {
+      successTitle: `用户已${label}`,
+      successMessage: `${user.username} 已${label}`,
+      errorTitle: `${label}失败`,
+    });
+  }, [updateUser, confirm, notify, notifyMutationResult]);
 
   // 权限检查 — 放在所有 hooks 之后
   if (currentUser && !currentUser.id.startsWith('__') && currentUser.role !== 'admin') {
@@ -212,7 +241,7 @@ export default function UsersPage() {
       className: 'w-[140px]',
       cell: (row) => (
         <span className="text-xs text-muted-foreground">
-          {row.lastLoginAt ? new Date(row.lastLoginAt).toLocaleString('zh-CN') : '从未'}
+          {formatDateTimeZhCn(row.lastLoginAt, '从未')}
         </span>
       ),
     },

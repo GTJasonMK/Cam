@@ -8,6 +8,7 @@ import { readdir, stat, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { toWSLPath, IS_WINDOWS, getWSLCodexSessionsDir } from './wsl';
+import { toSafeTimestamp } from '../time/format.ts';
 
 /** Codex 会话摘要（与 ClaudeSessionSummary 对齐） */
 export interface CodexSessionSummary {
@@ -147,7 +148,7 @@ export async function discoverCodexSessions(
   );
 
   const sessions = results.filter((s): s is CodexSessionSummary => s !== null);
-  sessions.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+  sessions.sort((a, b) => toSafeTimestamp(b.lastModified) - toSafeTimestamp(a.lastModified));
 
   return sessions;
 }

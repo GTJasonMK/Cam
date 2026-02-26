@@ -3,6 +3,11 @@
 // ============================================================
 
 import { create } from 'zustand';
+import {
+  readApiEnvelope,
+  resolveApiErrorMessage,
+  resolveMissingEnvVars,
+} from '@/lib/http/client-response';
 
 // ----- 前端使用的类型定义 -----
 
@@ -223,8 +228,8 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
     }
     try {
       const res = await fetch('/api/dashboard');
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<DashboardData>(res);
+      if (res.ok && json?.success && json.data) {
         const payload = json.data as DashboardData;
         const statusMap = payload?.taskStatuses && typeof payload.taskStatuses === 'object'
           ? (payload.taskStatuses as Record<string, string>)
@@ -233,7 +238,7 @@ export const useDashboardStore = create<DashboardStore>((set) => ({
         void _extractedStatuses;
         set({ data: rest as DashboardData, taskStatuses: statusMap, loading: false });
       } else {
-        set({ error: json.error?.message || '获取失败', loading: false });
+        set({ error: resolveApiErrorMessage(res, json, '获取失败'), loading: false });
       }
     } catch (err) {
       set({ error: (err as Error).message, loading: false });
@@ -467,9 +472,11 @@ export const useTaskStore = create<TaskStore>((set) => ({
       const query = params.toString();
       const url = query ? `/api/tasks?${query}` : '/api/tasks';
       const res = await fetch(url);
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<TaskItem[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
         set({ tasks: json.data, loading: false });
+      } else {
+        set({ loading: false });
       }
     } catch {
       set({ loading: false });
@@ -483,17 +490,13 @@ export const useTaskStore = create<TaskStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
       });
-      const json = await res.json().catch(() => null);
-      if (json?.success) return { success: true };
-
-      const missingEnvVars = Array.isArray(json?.error?.missingEnvVars)
-        ? (json.error.missingEnvVars as string[])
-        : undefined;
+      const json = await readApiEnvelope<unknown>(res);
+      if (res.ok && json?.success) return { success: true };
 
       return {
         success: false,
-        errorMessage: json?.error?.message || '创建任务失败',
-        missingEnvVars,
+        errorMessage: resolveApiErrorMessage(res, json, '创建任务失败'),
+        missingEnvVars: resolveMissingEnvVars(json),
       };
     } catch (err) {
       return { success: false, errorMessage: (err as Error).message };
@@ -507,8 +510,8 @@ export const useTaskStore = create<TaskStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
       });
-      const json = await res.json().catch(() => null);
-      if (json?.success) {
+      const json = await readApiEnvelope<{ pipelineId?: string; groupId?: string; tasks?: Array<{ id: string }> }>(res);
+      if (res.ok && json?.success) {
         const taskIds = Array.isArray(json?.data?.tasks)
           ? (json.data.tasks as Array<{ id: string }>).map((t) => t.id)
           : undefined;
@@ -520,14 +523,10 @@ export const useTaskStore = create<TaskStore>((set) => ({
         };
       }
 
-      const missingEnvVars = Array.isArray(json?.error?.missingEnvVars)
-        ? (json.error.missingEnvVars as string[])
-        : undefined;
-
       return {
         success: false,
-        errorMessage: json?.error?.message || '创建流水线失败',
-        missingEnvVars,
+        errorMessage: resolveApiErrorMessage(res, json, '创建流水线失败'),
+        missingEnvVars: resolveMissingEnvVars(json),
       };
     } catch (err) {
       return { success: false, errorMessage: (err as Error).message };
@@ -550,9 +549,11 @@ export const useAgentStore = create<AgentStore>((set) => ({
     set({ loading: true });
     try {
       const res = await fetch('/api/agents');
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<AgentDefinitionItem[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
         set({ agents: json.data, loading: false });
+      } else {
+        set({ loading: false });
       }
     } catch {
       set({ loading: false });
@@ -593,9 +594,9 @@ export const useRepoStore = create<RepoStore>((set) => ({
     set({ loading: true, error: null });
     try {
       const res = await fetch('/api/repos');
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        set({ loading: false, error: json?.error?.message || `HTTP ${res.status}` });
+      const json = await readApiEnvelope<RepositoryItem[]>(res);
+      if (!res.ok || !json?.success || !Array.isArray(json.data)) {
+        set({ loading: false, error: resolveApiErrorMessage(res, json, '获取仓库列表失败') });
         return;
       }
       set({ repos: json.data, loading: false, error: null });
@@ -611,13 +612,15 @@ export const useRepoStore = create<RepoStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
       });
-      const json = await res.json().catch(() => null);
-      if (json?.success) {
-        set((s) => ({ repos: [...s.repos, json.data], error: null }));
+      const json = await readApiEnvelope<RepositoryItem>(res);
+      if (res.ok && json?.success && json.data) {
+        const createdRepo = json.data;
+        set((s) => ({ repos: [...s.repos, createdRepo], error: null }));
         return { success: true };
       }
-      set({ error: json?.error?.message || '创建仓库失败' });
-      return { success: false, errorMessage: json?.error?.message || '创建仓库失败' };
+      const errorMessage = resolveApiErrorMessage(res, json, '创建仓库失败');
+      set({ error: errorMessage });
+      return { success: false, errorMessage };
     } catch (err) {
       set({ error: (err as Error).message });
       return { success: false, errorMessage: (err as Error).message };
@@ -631,16 +634,18 @@ export const useRepoStore = create<RepoStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      const json = await res.json().catch(() => null);
-      if (json?.success) {
+      const json = await readApiEnvelope<RepositoryItem>(res);
+      if (res.ok && json?.success && json.data) {
+        const updatedRepo = json.data;
         set((s) => ({
-          repos: s.repos.map((r) => (r.id === id ? (json.data as RepositoryItem) : r)),
+          repos: s.repos.map((r) => (r.id === id ? updatedRepo : r)),
           error: null,
         }));
         return { success: true };
       }
-      set({ error: json?.error?.message || '更新仓库失败' });
-      return { success: false, errorMessage: json?.error?.message || '更新仓库失败' };
+      const errorMessage = resolveApiErrorMessage(res, json, '更新仓库失败');
+      set({ error: errorMessage });
+      return { success: false, errorMessage };
     } catch (err) {
       set({ error: (err as Error).message });
       return { success: false, errorMessage: (err as Error).message };
@@ -650,13 +655,14 @@ export const useRepoStore = create<RepoStore>((set) => ({
   deleteRepo: async (id) => {
     try {
       const res = await fetch(`/api/repos/${id}`, { method: 'DELETE' });
-      const json = await res.json().catch(() => null);
-      if (json?.success) {
+      const json = await readApiEnvelope<unknown>(res);
+      if (res.ok && json?.success) {
         set((s) => ({ repos: s.repos.filter((r) => r.id !== id), error: null }));
         return { success: true };
       }
-      set({ error: json?.error?.message || '删除仓库失败' });
-      return { success: false, errorMessage: json?.error?.message || '删除仓库失败' };
+      const errorMessage = resolveApiErrorMessage(res, json, '删除仓库失败');
+      set({ error: errorMessage });
+      return { success: false, errorMessage };
     } catch (err) {
       set({ error: (err as Error).message });
       return { success: false, errorMessage: (err as Error).message };
@@ -684,9 +690,11 @@ export const useWorkerStore = create<WorkerStore>((set) => ({
     set({ loading: true });
     try {
       const res = await fetch('/api/workers');
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<WorkerItem[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
         set({ workers: json.data, loading: false });
+      } else {
+        set({ loading: false });
       }
     } catch {
       set({ loading: false });
@@ -700,15 +708,15 @@ export const useWorkerStore = create<WorkerStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
+      const json = await readApiEnvelope<WorkerItem>(res);
+      if (!res.ok || !json?.success || !json.data) {
         return {
           success: false,
-          errorMessage: json?.error?.message || `HTTP ${res.status}`,
+          errorMessage: resolveApiErrorMessage(res, json, '更新节点状态失败'),
         };
       }
 
-      const updated = json.data as WorkerItem;
+      const updated = json.data;
       set((state) => ({
         workers: state.workers.map((worker) => (worker.id === id ? updated : worker)),
       }));
@@ -721,11 +729,11 @@ export const useWorkerStore = create<WorkerStore>((set) => ({
   pruneOfflineWorkers: async () => {
     try {
       const res = await fetch('/api/workers?status=offline', { method: 'DELETE' });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<{ removed?: number; workerIds?: string[] }>(res);
       if (!res.ok || !json?.success) {
         return {
           success: false,
-          errorMessage: json?.error?.message || `HTTP ${res.status}`,
+          errorMessage: resolveApiErrorMessage(res, json, '清理离线节点失败'),
         };
       }
 
@@ -798,21 +806,21 @@ export const useAuthStore = create<AuthStore>((set) => ({
     try {
       const res = await fetch('/api/auth/me');
       const status = res.status;
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<AuthUser>(res);
 
-      if (!res.ok || !json?.success) {
+      if (!res.ok || !json?.success || !json.data) {
         set({
           user: null,
           loading: false,
           initialized: true,
-          error: json?.error?.message || `HTTP ${res.status}`,
+          error: resolveApiErrorMessage(res, json, '获取当前用户失败'),
           statusCode: status,
         });
         return;
       }
 
       set({
-        user: json.data as AuthUser,
+        user: json.data,
         loading: false,
         initialized: true,
         error: null,
@@ -860,12 +868,12 @@ export const useUserStore = create<UserStore>((set) => ({
     set({ loading: true, error: null });
     try {
       const res = await fetch('/api/users');
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        set({ loading: false, error: json?.error?.message || `HTTP ${res.status}` });
+      const json = await readApiEnvelope<UserItem[]>(res);
+      if (!res.ok || !json?.success || !Array.isArray(json.data)) {
+        set({ loading: false, error: resolveApiErrorMessage(res, json, '获取用户列表失败') });
         return;
       }
-      set({ users: (json.data as UserItem[]) || [], loading: false, error: null });
+      set({ users: json.data, loading: false, error: null });
     } catch (err) {
       set({ loading: false, error: (err as Error).message });
     }
@@ -878,12 +886,13 @@ export const useUserStore = create<UserStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
       });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      const json = await readApiEnvelope<UserItem>(res);
+      if (!res.ok || !json?.success || !json.data) {
+        return { success: false, errorMessage: resolveApiErrorMessage(res, json, '创建用户失败') };
       }
 
-      set((state) => ({ users: [...state.users, json.data as UserItem], error: null }));
+      const createdUser = json.data;
+      set((state) => ({ users: [...state.users, createdUser], error: null }));
       return { success: true };
     } catch (err) {
       return { success: false, errorMessage: (err as Error).message };
@@ -897,12 +906,12 @@ export const useUserStore = create<UserStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+      const json = await readApiEnvelope<UserItem>(res);
+      if (!res.ok || !json?.success || !json.data) {
+        return { success: false, errorMessage: resolveApiErrorMessage(res, json, '更新用户失败') };
       }
 
-      const updated = json.data as UserItem;
+      const updated = json.data;
       set((state) => ({
         users: state.users.map((u) => (u.id === id ? { ...u, ...updated } : u)),
         error: null,
@@ -916,9 +925,9 @@ export const useUserStore = create<UserStore>((set) => ({
   deleteUser: async (id) => {
     try {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<unknown>(res);
       if (!res.ok || !json?.success) {
-        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+        return { success: false, errorMessage: resolveApiErrorMessage(res, json, '删除用户失败') };
       }
       set((state) => ({ users: state.users.filter((u) => u.id !== id), error: null }));
       return { success: true };
@@ -934,9 +943,9 @@ export const useUserStore = create<UserStore>((set) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newPassword }),
       });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<unknown>(res);
       if (!res.ok || !json?.success) {
-        return { success: false, errorMessage: json?.error?.message || `HTTP ${res.status}` };
+        return { success: false, errorMessage: resolveApiErrorMessage(res, json, '重置密码失败') };
       }
       return { success: true };
     } catch (err) {

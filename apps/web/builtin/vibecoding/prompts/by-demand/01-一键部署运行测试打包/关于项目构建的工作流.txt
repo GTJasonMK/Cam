@@ -1,0 +1,30 @@
+# 项目构建与一键运行工作流（仅分析版）
+
+【输入】
+- scope：分析范围（默认全仓库；可留空模块/服务）。
+- report_path：报告路径（默认 `.conversations/reports/build-workflow-analysis-report.md`）。
+- acceptance_criteria：至少包含“现有入口盘点、缺口清单、跨平台策略、3-7 步执行计划、验证设计”。
+- constraints：支持 OS、是否允许运行探测命令、时间预算。
+- （可留空）preferred_commands：希望暴露的命令名（如 `dev/build/test`）。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 仅做工作流分析与编排：梳理仓库可用入口并输出一键流程方案（不改代码）。
+
+【注意事项】
+- 通用分析基线（必须）：先范围与现状→再结论与方案→最后验证设计；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；按【输出】原样输出。
+- 严格单一职责：仅分析不改代码；不输出“已落地改动”。
+- 默认从仓库推断入口（`package.json/Makefile/pyproject.toml` 等），不要向用户追问可扫描信息。
+- 必须写清跨平台差异（Windows/Linux/macOS）与统一命令约定。
+- 报告必须落盘到 `report_path`；如提供 `handoff_output_dir`，结束时写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 扫描结论（现有入口、可用命令、缺口与证据）。
+- 一键流程方案（install/dev/test/build/release 的推荐编排）。
+- 跨平台策略（命令差异、路径差异、编码与返回码策略）。
+- 执行计划（3-7 步：目标/影响面/验证方式/回滚点）。
+- 验证设计（成功路径 + 至少 1 条失败路径）。
+- 分析报告（已保存路径 + 报告摘要）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"workflow_plan":[],"evidence":[],"next_actions":[]}。

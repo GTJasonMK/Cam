@@ -1,0 +1,33 @@
+# MVP 实施计划制定（仅分析版）
+
+【输入】
+- requirements_report_path：需求澄清报告路径（默认 `.conversations/reports/mvp-requirements-clarification-report.md`）。
+- source_doc_path：原始文档路径（可选，用于交叉核对）。
+- scope：计划覆盖范围（模块/目录/子系统，可留空由仓库推断）。
+- report_path：报告路径（默认 `.conversations/reports/mvp-implementation-plan-report.md`）。
+- acceptance_criteria：至少包含“里程碑、任务分解、验证门禁、回滚策略、风险处理”。
+- constraints：交付周期、资源限制、不可变更项、是否允许并行开发。
+
+【需要完成的功能】
+- 仅做实施计划制定：把 MVP 需求转成可执行计划（不改代码）。
+
+【注意事项】
+- 通用分析基线（必须）：先读取 `requirements_report_path` 并确认目标→再输出分阶段计划；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；按【输出】原样输出。
+- 计划必须“可直接执行”：每步都给目标、影响面、验证方式、失败回滚点。
+- 充分利用 CLI Agent 默认能力：自动扫描仓库结构，识别现有实现可复用点，减少重复建设。
+- 避免冗余：不重复大段需求背景，只输出实施决策、任务编排与依赖关系。
+- 必须给出执行优先级与并行切分建议，保证最小可用版本优先落地。
+- 报告必须落盘到 `report_path`，并在结尾回写路径与摘要。
+
+【输出】
+- 输入确认结果（需求来源、范围、约束、假设）。
+- 实施策略（技术路线、复用点、裁剪点）。
+- 里程碑与阶段目标（建议 2-4 个阶段）。
+- 任务分解清单（按阶段列出；每项含目标/影响面/验证/回滚）。
+- 关键依赖与阻塞项（外部依赖、前置条件、并行关系）。
+- 验证门禁设计（每阶段进入下一阶段前必须满足的条件）。
+- 回归与发布策略（MVP 交付最小检查集）。
+- 下一步执行指令（进入“根据计划实现 MVP”所需输入）。
+- 分析报告（已保存路径 + 报告摘要）。
+- 验收映射表（acceptance_criteria → 计划项 → 证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"milestones":[],"execution_plan":[],"dependencies":[],"risks":[],"next_actions":[]}。

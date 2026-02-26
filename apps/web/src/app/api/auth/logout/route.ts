@@ -1,10 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { AUTH_COOKIE_NAME } from '@/lib/auth/constants';
 import { revokeSession, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
+import { apiSuccess } from '@/lib/http/api-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 
 export async function POST(request: NextRequest) {
-  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value?.trim();
+  const sessionToken = normalizeOptionalString(request.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (sessionToken) {
     try {
       await revokeSession(sessionToken);
@@ -13,7 +15,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const response = NextResponse.json({ success: true });
+  const response = apiSuccess(null);
   response.cookies.set(AUTH_COOKIE_NAME, '', {
     ...buildAuthCookieOptions({ maxAge: 0 }),
   });

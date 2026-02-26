@@ -15,6 +15,8 @@ import { invalidateAuthModeCache } from '@/lib/auth/config';
 import { isValidRole, type Role } from '@/lib/auth/permissions';
 import { resolvePublicOrigin } from '@/lib/auth/public-origin';
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
+import { getRequestClientInfo } from '@/lib/auth/request-client';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { randomUUID } from 'crypto';
 
 type RouteContext = { params: Promise<Record<string, string>> };
@@ -159,7 +161,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       }
     } else {
       // 先尝试按邮箱关联已有用户（常见于“先密码登录后改用 OAuth”）
-      const normalizedEmail = oauthUser.email?.trim() || null;
+      const normalizedEmail = normalizeOptionalString(oauthUser.email);
       const existingByEmail = normalizedEmail
         ? db.select({ id: users.id, status: users.status }).from(users).where(eq(users.email, normalizedEmail)).get()
         : null;
@@ -238,10 +240,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     }
 
     // 创建 Session
-    const ipAddress = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-      || request.headers.get('x-real-ip')
-      || 'unknown';
-    const userAgent = request.headers.get('user-agent') || undefined;
+    const { ipAddress, userAgent } = getRequestClientInfo(request);
 
     const sessionToken = await createSession({ userId, ipAddress, userAgent });
 

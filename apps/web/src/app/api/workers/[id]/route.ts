@@ -4,14 +4,17 @@
 // PATCH /api/workers/[id]   - Worker 操作（drain/offline/activate）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { workers, systemEvents } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { workers, tasks } from '@/lib/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { writeSystemEvent } from '@/lib/audit/system-event';
+import { recoverRunningSchedulerTasksForWorker } from '@/lib/workers/recover-running-tasks';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 type WorkerAction = 'drain' | 'offline' | 'activate';
 
@@ -25,19 +28,13 @@ async function handleGet(_request: AuthenticatedRequest, { params }: { params: P
   try {
     const rows = await db.select().from(workers).where(eq(workers.id, id)).limit(1);
     if (rows.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: WORKER_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(WORKER_MESSAGES.notFound(id));
     }
 
-    return NextResponse.json({ success: true, data: rows[0] });
+    return apiSuccess(rows[0]);
   } catch (err) {
     console.error(`[API] 获取 Worker ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.queryFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.queryFailed);
   }
 }
 
@@ -45,21 +42,15 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
   const { id } = await params;
   try {
     const actor = resolveAuditActor(request);
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = await readJsonBodyAsRecord(request);
     const action = parseAction(body.action);
     if (!action) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: WORKER_MESSAGES.invalidAction } },
-        { status: 400 }
-      );
+      return apiBadRequest(WORKER_MESSAGES.invalidAction);
     }
 
     const existing = await db.select().from(workers).where(eq(workers.id, id)).limit(1);
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: WORKER_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(WORKER_MESSAGES.notFound(id));
     }
 
     let nextStatus = existing[0].status;
@@ -83,8 +74,34 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
       })
       .where(eq(workers.id, id))
       .returning();
+    if (result.length === 0) {
+      return apiNotFound(WORKER_MESSAGES.notFound(id));
+    }
 
-    await db.insert(systemEvents).values({
+    // 手动下线时，立即回收该 worker 挂住的所有调度任务，避免任务长期卡在 running
+    if (action === 'offline') {
+      const runningTasks = await db
+        .select({
+          id: tasks.id,
+          retryCount: tasks.retryCount,
+          maxRetries: tasks.maxRetries,
+        })
+        .from(tasks)
+        .where(and(
+          eq(tasks.assignedWorkerId, id),
+          eq(tasks.status, 'running'),
+          eq(tasks.source, 'scheduler'),
+        ));
+
+      await recoverRunningSchedulerTasksForWorker({
+        workerId: id,
+        runningTasks,
+        reason: 'worker_offline_manual',
+        actor,
+      });
+    }
+
+    await writeSystemEvent({
       type: 'worker.status_changed',
       actor,
       payload: {
@@ -105,13 +122,10 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
       currentTaskId: nextCurrentTaskId,
     });
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error(`[API] 更新 Worker ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.updateFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.updateFailed);
   }
 }
 

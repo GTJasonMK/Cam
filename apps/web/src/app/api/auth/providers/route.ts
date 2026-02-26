@@ -3,8 +3,8 @@
 // GET — 返回已启用的 OAuth 提供商列表
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { getEnabledProviders } from '@/lib/auth/oauth/providers';
+import { apiSuccess } from '@/lib/http/api-response';
 
 export async function GET() {
   const providers = getEnabledProviders().map((p) => ({
@@ -12,5 +12,5 @@ export async function GET() {
     displayName: p.displayName,
   }));
 
-  return NextResponse.json({ success: true, data: providers });
+  return apiSuccess(providers);
 }

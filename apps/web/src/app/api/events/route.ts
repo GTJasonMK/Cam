@@ -10,6 +10,7 @@ import { systemEvents } from '@/lib/db/schema';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_PAGE_SIZE = 50;
@@ -73,7 +74,7 @@ async function pruneOrphanTaskEvents(): Promise<void> {
   // 清理历史遗留：任务已删除但事件仍存在（无外键，需手动清理）
   await db.run(sql`
     DELETE FROM system_events
-    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%' OR type LIKE 'pipeline.%')
       AND json_extract(payload, '$.taskId') IS NOT NULL
       AND NOT EXISTS (
         SELECT 1
@@ -84,7 +85,7 @@ async function pruneOrphanTaskEvents(): Promise<void> {
 
   await db.run(sql`
     DELETE FROM system_events
-    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%' OR type LIKE 'pipeline.%')
       AND json_extract(payload, '$.fromTaskId') IS NOT NULL
       AND NOT EXISTS (
         SELECT 1
@@ -95,7 +96,7 @@ async function pruneOrphanTaskEvents(): Promise<void> {
 
   await db.run(sql`
     DELETE FROM system_events
-    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%')
+    WHERE (type LIKE 'task.%' OR type LIKE 'task_group.%' OR type LIKE 'pipeline.%')
       AND json_type(payload, '$.taskIds') = 'array'
       AND NOT EXISTS (
         SELECT 1
@@ -206,32 +207,26 @@ async function handler(request: AuthenticatedRequest) {
     }
     const actorSet = new Set<string>();
     for (const row of prefixRows) {
-      const actorValue = row.actor?.trim();
+      const actorValue = normalizeQuery(row.actor);
       if (!actorValue) continue;
       actorSet.add(actorValue);
       if (actorSet.size >= 100) break;
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        events,
-        pagination: {
-          page,
-          pageSize,
-          total,
-          totalPages,
-        },
-        availablePrefixes: Array.from(prefixSet).sort(),
-        availableActors: Array.from(actorSet).sort(),
+    return apiSuccess({
+      events,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
       },
+      availablePrefixes: Array.from(prefixSet).sort(),
+      availableActors: Array.from(actorSet).sort(),
     });
   } catch (err) {
     console.error('[API] 查询系统事件失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.querySystemEventsFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.querySystemEventsFailed);
   }
 }
 

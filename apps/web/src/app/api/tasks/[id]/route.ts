@@ -5,50 +5,22 @@
 // DELETE /api/tasks/[id]            - 删除任务
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { tasks, taskLogs, systemEvents } from '@/lib/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
-import { createOrFindPullRequest, parseGitRepository, type GitProvider } from '@/lib/integrations/provider';
-import { resolveEnvVarValue } from '@/lib/secrets/resolve';
+import { createOrFindPullRequest, parseGitRepository } from '@/lib/integrations/provider';
+import { resolveGitProviderToken } from '@/lib/integrations/provider-token';
 import { parseTaskPatchPayload } from '@/lib/validation/task-input';
 import { API_COMMON_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { agentSessionManager } from '@/lib/terminal/agent-session-manager';
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isForeignKeyConstraintError(err: unknown): boolean {
-  if (typeof err === 'object' && err !== null && 'code' in err) {
-    const code = (err as { code?: string }).code;
-    if (code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
-      return true;
-    }
-  }
-  return (err as Error).message.includes('FOREIGN KEY constraint failed');
-}
-
-async function resolveProviderToken(
-  provider: GitProvider,
-  scope: { repositoryId?: string | null; repoUrl?: string | null; agentDefinitionId?: string | null }
-): Promise<string> {
-  const candidates: Record<GitProvider, string[]> = {
-    github: ['GITHUB_TOKEN', 'GITHUB_PAT', 'GITHUB_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-    gitlab: ['GITLAB_TOKEN', 'GITLAB_PRIVATE_TOKEN', 'GITLAB_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-    gitea: ['GITEA_TOKEN', 'GITEA_API_TOKEN', 'GIT_HTTP_TOKEN', 'CAM_GIT_HTTP_TOKEN'],
-  };
-
-  for (const envName of candidates[provider]) {
-    const scoped = await resolveEnvVarValue(envName, scope);
-    if (scoped) return scoped;
-    const raw = process.env[envName];
-    if (typeof raw === 'string' && raw.trim()) return raw.trim();
-  }
-  return '';
-}
+import { sleep } from '@/lib/async/sleep';
+import { isSqliteForeignKeyConstraintError } from '@/lib/db/sqlite-errors';
+import { emitTaskPrCreated, emitTaskPrFailed, emitTaskPrSkipped, emitTaskProgress } from '@/lib/tasks/task-events';
+import { buildTaskPullRequestDraft } from '@/lib/tasks/pull-request';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiConflict, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -56,19 +28,13 @@ async function handleGet(_request: AuthenticatedRequest, { params }: { params: P
     const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
 
     if (result.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_MESSAGES.notFound(id));
     }
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error(`[API] 获取任务 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.queryFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.queryFailed);
   }
 }
 
@@ -77,24 +43,18 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
   try {
     const existing = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_MESSAGES.notFound(id));
     }
 
     // 取消态视为终态：忽略后续状态回写，避免 worker 在取消后覆盖状态
     if (existing[0].status === 'cancelled') {
-      return NextResponse.json({ success: true, data: existing[0] });
+      return apiSuccess(existing[0]);
     }
 
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseTaskPatchPayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const updateData: Record<string, unknown> = { ...parsed.data };
@@ -108,24 +68,24 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
     const result = await db
       .update(tasks)
       .set(updateData)
-      .where(eq(tasks.id, id))
+      // CAS：仅当任务仍处于读取时状态才回写，避免并发下迟到写覆盖最新终态。
+      .where(and(eq(tasks.id, id), eq(tasks.status, existing[0].status)))
       .returning();
 
     if (result.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      const latest = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+      if (latest.length === 0) {
+        return apiNotFound(TASK_MESSAGES.notFound(id));
+      }
+      return apiSuccess(latest[0]);
     }
 
     // 写入系统事件 + SSE 广播（用于前端实时刷新 + 日志页）
     if (status !== undefined) {
-      sseManager.broadcast('task.progress', { taskId: id, status });
-      await db.insert(systemEvents).values({
-        type: 'task.progress',
-        payload: {
-          taskId: id,
-          status,
+      await emitTaskProgress({
+        taskId: id,
+        status,
+        eventPayload: {
           summary: parsed.data.summary,
           assignedWorkerId: parsed.data.assignedWorkerId,
         },
@@ -142,82 +102,121 @@ async function handlePatch(request: AuthenticatedRequest, { params }: { params: 
       };
 
       const token = repository
-        ? await resolveProviderToken(repository.provider, scope)
+        ? await resolveGitProviderToken(repository.provider, scope)
         : '';
 
       if (!repository) {
-        await db.insert(systemEvents).values({
-          type: 'task.pr_skipped',
-          payload: { taskId: id, reason: 'repo_provider_unsupported', repoUrl: result[0].repoUrl },
+        await emitTaskPrSkipped({
+          taskId: id,
+          eventPayload: {
+            reason: 'repo_provider_unsupported',
+            repoUrl: result[0].repoUrl,
+          },
         });
       } else if (!token) {
-        await db.insert(systemEvents).values({
-          type: 'task.pr_skipped',
-          payload: { taskId: id, reason: 'missing_provider_token', provider: repository.provider },
+        await emitTaskPrSkipped({
+          taskId: id,
+          eventPayload: {
+            reason: 'missing_provider_token',
+            provider: repository.provider,
+          },
         });
       } else {
         try {
-          const prTitle = `[CAM] ${result[0].title}`;
-          const prBody = [
-            `Task ID: ${result[0].id}`,
-            `Agent: ${result[0].agentDefinitionId}`,
-            `Branch: ${result[0].workBranch}`,
-            '',
-            result[0].description,
-          ].join('\n');
+          const prDraft = buildTaskPullRequestDraft({
+            id: result[0].id,
+            title: result[0].title,
+            agentDefinitionId: result[0].agentDefinitionId,
+            workBranch: result[0].workBranch,
+            description: result[0].description,
+          });
 
           const pr = await createOrFindPullRequest({
             token,
             repository,
             headBranch: result[0].workBranch,
             baseBranch: result[0].baseBranch,
-            title: prTitle,
-            body: prBody,
+            title: prDraft.title,
+            body: prDraft.body,
           });
 
-          await db
+          const prBound = await db
             .update(tasks)
             .set({ prUrl: pr.htmlUrl })
-            .where(eq(tasks.id, id));
+            .where(and(eq(tasks.id, id), eq(tasks.status, 'awaiting_review')))
+            .returning({ id: tasks.id });
+          if (prBound.length === 0) {
+            return apiSuccess(result[0]);
+          }
 
           // 更新返回值，减少前端下一次刷新等待
           (result[0] as typeof result[0] & { prUrl?: string }).prUrl = pr.htmlUrl;
 
-          await db.insert(systemEvents).values({
-            type: 'task.pr_created',
-            payload: {
-              taskId: id,
+          await emitTaskPrCreated({
+            taskId: id,
+            eventPayload: {
               prUrl: pr.htmlUrl,
               prNumber: pr.number,
               provider: repository.provider,
               owner: repository.owner,
               repo: repository.repo,
             },
+            broadcastPayload: {
+              prUrl: pr.htmlUrl,
+              prNumber: pr.number,
+            },
           });
-          sseManager.broadcast('task.pr_created', { taskId: id, prUrl: pr.htmlUrl, prNumber: pr.number });
         } catch (err) {
-          await db.insert(systemEvents).values({
-            type: 'task.pr_failed',
-            payload: { taskId: id, error: (err as Error).message },
+          await emitTaskPrFailed({
+            taskId: id,
+            eventPayload: { error: (err as Error).message },
           });
-          sseManager.broadcast('task.pr_failed', { taskId: id });
         }
       }
     }
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error(`[API] 更新任务 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.updateFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.updateFailed);
   }
 }
 
 async function handleDelete(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
+    const existing = await db
+      .select({ id: tasks.id, status: tasks.status, source: tasks.source })
+      .from(tasks)
+      .where(eq(tasks.id, id))
+      .limit(1);
+    if (existing.length === 0) {
+      return apiNotFound(TASK_MESSAGES.notFound(id));
+    }
+
+    // 防止删除被未终态任务依赖的上游任务：否则会导致下游永久 waiting。
+    const blockingDependents = await db
+      .select({ id: tasks.id, status: tasks.status })
+      .from(tasks)
+      .where(sql`
+        ${tasks.id} <> ${id}
+        AND ${tasks.source} = 'scheduler'
+        AND ${tasks.status} NOT IN ('completed', 'failed', 'cancelled')
+        AND EXISTS (
+          SELECT 1
+          FROM json_each(${tasks.dependsOn})
+          WHERE value = ${id}
+        )
+      `)
+      .limit(5);
+    if (blockingDependents.length > 0) {
+      return apiConflict(`该任务仍被 ${blockingDependents.length} 个未完成任务依赖，请先处理下游任务后再删除`, {
+        extra: {
+          dependentTaskIds: blockingDependents.map((item) => item.id),
+        },
+      });
+    }
+
     // 删除前先尝试停止 terminal 会话并等待日志刷盘收尾，降低 FK 并发冲突概率
     const stopResult = await agentSessionManager.stopAndDrainTaskSessionByTaskId(id, { timeoutMs: 5000 });
     if (stopResult.sessionId && (!stopResult.stopped || !stopResult.drained)) {
@@ -226,12 +225,38 @@ async function handleDelete(_request: AuthenticatedRequest, { params }: { params
       );
     }
 
-    const deleteTaskTx = () => db.transaction(async (tx) => {
+    const deleteTaskTx = () => db.transaction((tx) => {
+      // better-sqlite3 事务回调必须同步执行，不能返回 Promise
       // 先清理子表，避免 task_logs 外键约束阻止任务删除
-      await tx.delete(taskLogs).where(eq(taskLogs.taskId, id));
+      tx.delete(taskLogs).where(eq(taskLogs.taskId, id)).run();
+      // 清理所有下游任务中的 dependsOn 引用，避免“删除上游后重跑下游永久 waiting”
+      tx.update(tasks).set({
+        dependsOn: sql`
+          COALESCE(
+            (
+              SELECT json_group_array(value)
+              FROM json_each(${tasks.dependsOn})
+              WHERE value <> ${id}
+            ),
+            json('[]')
+          )
+        `,
+      }).where(sql`
+        ${tasks.id} <> ${id}
+        AND ${tasks.source} = 'scheduler'
+        AND EXISTS (
+          SELECT 1
+          FROM json_each(${tasks.dependsOn})
+          WHERE value = ${id}
+        )
+      `).run();
       // 级联清理该任务关联的系统事件（taskId / fromTaskId / taskIds[]）
-      await tx.delete(systemEvents).where(sql`
-        (${systemEvents.type} LIKE 'task.%' OR ${systemEvents.type} LIKE 'task_group.%')
+      tx.delete(systemEvents).where(sql`
+        (
+          ${systemEvents.type} LIKE 'task.%'
+          OR ${systemEvents.type} LIKE 'task_group.%'
+          OR ${systemEvents.type} LIKE 'pipeline.%'
+        )
         AND (
           json_extract(${systemEvents.payload}, '$.taskId') = ${id}
           OR json_extract(${systemEvents.payload}, '$.fromTaskId') = ${id}
@@ -241,8 +266,8 @@ async function handleDelete(_request: AuthenticatedRequest, { params }: { params
             WHERE value = ${id}
           )
         )
-      `);
-      const deletedTasks = await tx.delete(tasks).where(eq(tasks.id, id)).returning();
+      `).run();
+      const deletedTasks = tx.delete(tasks).where(eq(tasks.id, id)).returning().all();
       return deletedTasks;
     });
 
@@ -252,7 +277,7 @@ async function handleDelete(_request: AuthenticatedRequest, { params }: { params
         result = await deleteTaskTx();
         break;
       } catch (err) {
-        const isRetryableFkError = isForeignKeyConstraintError(err);
+        const isRetryableFkError = isSqliteForeignKeyConstraintError(err);
         if (!isRetryableFkError || attempt === 2) {
           throw err;
         }
@@ -260,23 +285,16 @@ async function handleDelete(_request: AuthenticatedRequest, { params }: { params
         await sleep(120 * (attempt + 1));
       }
     }
-
     if (result.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_MESSAGES.notFound(id));
     }
 
     sseManager.broadcast('task.deleted', { taskId: id });
 
-    return NextResponse.json({ success: true, data: null });
+    return apiSuccess(null);
   } catch (err) {
     console.error(`[API] 删除任务 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.deleteFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.deleteFailed);
   }
 }
 

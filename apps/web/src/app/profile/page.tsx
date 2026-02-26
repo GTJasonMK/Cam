@@ -15,6 +15,8 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { formatDateTimeZhCn, formatDateZhCn } from '@/lib/time/format';
 import { useAuthStore } from '@/stores';
 import { Key, Shield, MonitorSmartphone, Copy } from 'lucide-react';
 
@@ -63,9 +65,9 @@ function ChangePasswordSection() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentPassword, newPassword }),
       });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<unknown>(res);
       if (!res.ok || !json?.success) {
-        notify({ title: '修改失败', message: json?.error?.message || '请求失败', type: 'error' });
+        notify({ title: '修改失败', message: resolveApiErrorMessage(res, json, '请求失败'), type: 'error' });
         return;
       }
       notify({ title: '密码已修改', message: '所有旧会话已失效，当前会话已自动续期', type: 'success' });
@@ -135,8 +137,10 @@ function ApiTokenSection() {
   const fetchTokens = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/tokens');
-      const json = await res.json();
-      if (json.success) setTokens(json.data || []);
+      const json = await readApiEnvelope<ApiTokenItem[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
+        setTokens(json.data);
+      }
     } catch {
       // 忽略
     } finally {
@@ -157,14 +161,14 @@ function ApiTokenSection() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newTokenName.trim() }),
       });
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<{ token: string }>(res);
+      if (res.ok && json?.success && json.data?.token) {
         setCreatedToken(json.data.token);
         setNewTokenName('');
         notify({ title: 'Token 已创建', message: '请立即复制，此 Token 只显示一次', type: 'success' });
         fetchTokens();
       } else {
-        notify({ title: '创建失败', message: json.error?.message || '请求失败', type: 'error' });
+        notify({ title: '创建失败', message: resolveApiErrorMessage(res, json, '请求失败'), type: 'error' });
       }
     } catch (err) {
       notify({ title: '创建失败', message: (err as Error).message, type: 'error' });
@@ -183,12 +187,12 @@ function ApiTokenSection() {
     if (!ok) return;
     try {
       const res = await fetch(`/api/auth/tokens/${token.id}`, { method: 'DELETE' });
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<unknown>(res);
+      if (res.ok && json?.success) {
         notify({ title: 'Token 已删除', message: `${token.name} 已删除`, type: 'success' });
         fetchTokens();
       } else {
-        notify({ title: '删除失败', message: json.error?.message || '请求失败', type: 'error' });
+        notify({ title: '删除失败', message: resolveApiErrorMessage(res, json, '请求失败'), type: 'error' });
       }
     } catch (err) {
       notify({ title: '删除失败', message: (err as Error).message, type: 'error' });
@@ -271,8 +275,8 @@ function ApiTokenSection() {
                 <p className="text-xs font-medium text-foreground">{t.name}</p>
                 <p className="text-2xs text-muted-foreground">
                   {t.tokenPrefix}
-                  {t.lastUsedAt ? ` · 最后使用 ${new Date(t.lastUsedAt).toLocaleString('zh-CN')}` : ' · 从未使用'}
-                  {t.expiresAt ? ` · 过期 ${new Date(t.expiresAt).toLocaleDateString('zh-CN')}` : ''}
+                  {t.lastUsedAt ? ` · 最后使用 ${formatDateTimeZhCn(t.lastUsedAt)}` : ' · 从未使用'}
+                  {t.expiresAt ? ` · 过期 ${formatDateZhCn(t.expiresAt)}` : ''}
                 </p>
               </div>
               <Button
@@ -301,8 +305,10 @@ function SessionSection() {
   const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/sessions');
-      const json = await res.json();
-      if (json.success) setSessionList(json.data || []);
+      const json = await readApiEnvelope<SessionItem[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
+        setSessionList(json.data);
+      }
     } catch {
       // 忽略
     } finally {
@@ -324,12 +330,12 @@ function SessionSection() {
     if (!ok) return;
     try {
       const res = await fetch('/api/auth/sessions', { method: 'DELETE' });
-      const json = await res.json();
-      if (json.success) {
-        notify({ title: '已清除', message: `已登出 ${json.data.removed} 个其他会话`, type: 'success' });
+      const json = await readApiEnvelope<{ removed: number }>(res);
+      if (res.ok && json?.success) {
+        notify({ title: '已清除', message: `已登出 ${json.data?.removed ?? 0} 个其他会话`, type: 'success' });
         fetchSessions();
       } else {
-        notify({ title: '操作失败', message: json.error?.message || '请求失败', type: 'error' });
+        notify({ title: '操作失败', message: resolveApiErrorMessage(res, json, '请求失败'), type: 'error' });
       }
     } catch (err) {
       notify({ title: '操作失败', message: (err as Error).message, type: 'error' });
@@ -376,7 +382,7 @@ function SessionSection() {
                   ) : null}
                 </p>
                 <p className="text-2xs text-muted-foreground">
-                  IP: {s.ipAddress} · 登录于 {new Date(s.createdAt).toLocaleString('zh-CN')}
+                  IP: {s.ipAddress} · 登录于 {formatDateTimeZhCn(s.createdAt)}
                 </p>
               </div>
             </div>

@@ -115,15 +115,37 @@ async function main(): Promise<void> {
         currentTaskId = result.task.id as string;
         console.log(`[Worker] 获取到任务: ${currentTaskId} - ${result.task.title}`);
 
-        // 执行任务
-        clearLog();
-        await executeTask(result.task, result.agentDefinition, WORKER_ID, result.env || undefined);
+        let executionFailed = false;
+        let executionErrorMessage = '';
+        try {
+          // 执行任务
+          clearLog();
+          await executeTask(result.task, result.agentDefinition, WORKER_ID, result.env || undefined);
+        } catch (err) {
+          executionFailed = true;
+          executionErrorMessage = (err as Error).message;
+          console.error(`[Worker] 任务执行异常: ${executionErrorMessage}`);
+        } finally {
+          // 无论执行成功/失败，都必须释放当前任务占用并回报 idle
+          // 否则会出现 Worker 长时间卡 busy，后续无法领取新任务
+          currentTaskId = null;
+          try {
+            await sendHeartbeat(WORKER_ID, {
+              status: 'idle',
+              currentTaskId: null,
+              logTail: getLogTail(20),
+            });
+          } catch {
+            // ignore
+          }
+        }
 
-        currentTaskId = null;
+        if (executionFailed) {
+          console.warn('[Worker] 任务执行失败，已释放占用并继续轮询');
+          continue;
+        }
+
         console.log('[Worker] 任务执行完毕，继续等待...');
-
-        // 执行完后更新状态为 idle
-        await sendHeartbeat(WORKER_ID, { status: 'idle', currentTaskId: null });
       }
     } catch (err) {
       console.error(`[Worker] 轮询异常: ${(err as Error).message}`);

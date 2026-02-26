@@ -1,0 +1,41 @@
+# 跨平台一键脚本（执行版）
+
+【输入】
+- scope：默认“整个仓库（跨平台一键脚本）”。
+- workflow_report_path：工作流分析报告路径（默认 `.conversations/reports/build-workflow-analysis-report.md`）。
+- acceptance_criteria：明确每个入口的成功标准、失败返回码与最小可复现验证。
+- constraints：
+  - 不允许硬编码端口：优先读取 env/参数；缺省时自动探测空闲端口并打印最终端口。
+  - Python 项目必须使用 `uv`（默认 `.venv`），运行/测试优先 `uv run`。
+  - 禁止静默下载未知工具；缺工具必须输出安装指引并退出。
+  - 必须兼容中文路径与空格路径。
+- （可留空）script_layout：偏好入口形态（`npm scripts`/`Makefile`/`justfile`/`scripts/*`）。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 为当前仓库落地一套跨平台一键入口（Windows/Linux/macOS 通用）：`install`、`run`（可留空）、`test`（可留空）、`build/package`（可留空）。
+- 目标：同一套提示词可在不同系统直接复用，不按操作系统拆分模板。
+
+【注意事项】
+- 通用执行基线（必须）：仅执行落地（不做全面审查/分析）；先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；非本轮问题写入“风险补充”；按【输出】原样输出。
+- 必须先读取 `workflow_report_path`（以及可选的 `upstream_handoff_path`）并对齐步骤优先级。
+- 统一入口优先：优先复用仓库现有入口（如 `npm run`/`make`/`uv run`）；不要按 OS 拆成两套流程文档。
+- 脚本策略：若必须落地脚本，使用“同语义双壳”最小实现（`scripts/*.sh` + `scripts/*.bat`），并保证参数与行为一致。
+- 编码策略：Shell 脚本用 UTF-8 + LF；`.bat` 用 UTF-8（必要时 `chcp 65001 >nul`）+ CRLF，并返回明确退出码。
+- 所有可调参数（端口、路径、profile、额外参数）集中在脚本顶部或统一配置文件。
+- 至少执行 `install` + `test`（或等价 smoke）并留痕，附跨平台差异说明（如命令前缀、路径分隔符）。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、验收口径、约束）。
+- 扫描结论（技术栈、现有入口、跨平台差异点、可复用工具链）。
+- 执行计划（3-7 步，每步含影响面/验证/回滚点）。
+- 变更清单（按文件：入口脚本/配置/文档，改动内容与原因）。
+- 验证命令与结果摘要（至少含成功路径 + 1 条失败路径）。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（install/run/test/build 的最小可用路径 + 端口冲突场景）。
+- 常见失败排查（工具缺失/环境变量缺失/路径与权限/外部依赖未启动）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

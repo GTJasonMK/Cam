@@ -14,6 +14,8 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { formatDateTimeZhCn } from '@/lib/time/format';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 
 // ---- 仓库表单状态 ----
@@ -101,7 +103,7 @@ export default function ReposPage() {
       className: 'w-[160px]',
       cell: (row) => (
         <span className="text-sm text-muted-foreground">
-          {new Date(row.updatedAt).toLocaleString('zh-CN')}
+          {formatDateTimeZhCn(row.updatedAt)}
         </span>
       ),
     },
@@ -205,7 +207,7 @@ export default function ReposPage() {
             name: data.name.trim(),
             repoUrl: data.repoUrl.trim(),
             defaultBaseBranch: data.defaultBaseBranch.trim(),
-            defaultWorkDir: data.defaultWorkDir.trim() || null,
+            defaultWorkDir: normalizeOptionalString(data.defaultWorkDir),
           });
           if (!res.success) throw new Error(res.errorMessage || '更新失败');
           notify({ type: 'success', title: '仓库预设已更新', message: `${data.name} 已更新。` });

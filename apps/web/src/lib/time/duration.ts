@@ -3,25 +3,21 @@
 // 统一格式化任务执行时长（已完成/进行中）
 // ============================================================
 
+import { parseIsoMs } from './parse-iso.ts';
+
 export type DurationTarget = {
   startedAt?: string | null;
   completedAt?: string | null;
 };
 
-function parseTimeMs(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const ms = new Date(value).getTime();
-  return Number.isFinite(ms) ? ms : null;
-}
-
 export function getTaskDurationMs(
   task: DurationTarget,
   options?: { nowMs?: number; requireCompleted?: boolean }
 ): number | null {
-  const startMs = parseTimeMs(task.startedAt);
+  const startMs = parseIsoMs(task.startedAt);
   if (startMs === null) return null;
 
-  const endMs = parseTimeMs(task.completedAt);
+  const endMs = parseIsoMs(task.completedAt);
   if (options?.requireCompleted && endMs === null) return null;
 
   const nowMs = options?.nowMs ?? Date.now();
@@ -62,7 +58,7 @@ export function formatTaskElapsed(
     return { text: '-', ongoing: false };
   }
 
-  const endMs = parseTimeMs(task.completedAt);
+  const endMs = parseIsoMs(task.completedAt);
 
   return {
     text: formatDurationMs(durationMs),

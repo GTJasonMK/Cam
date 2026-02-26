@@ -4,29 +4,23 @@
 // POST /api/secrets  - 创建（写入加密值）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { secrets, systemEvents, repositories, agentDefinitions } from '@/lib/db/schema';
+import { secrets, repositories, agentDefinitions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { encryptSecretValue, isMasterKeyPresent } from '@/lib/secrets/crypto';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, SECRET_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-function normalizeString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeOptionalId(value: unknown): string | null {
-  const v = normalizeString(value);
-  return v.length > 0 ? v : null;
-}
+import { normalizeOptionalString, normalizeTrimmedString } from '@/lib/validation/strings';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiCreated, apiError, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
+import { writeSystemEvent } from '@/lib/audit/system-event';
 
 async function handleGet(request: AuthenticatedRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const name = normalizeString(searchParams.get('name'));
-    const repositoryId = normalizeOptionalId(searchParams.get('repositoryId'));
-    const agentDefinitionId = normalizeOptionalId(searchParams.get('agentDefinitionId'));
+    const name = normalizeTrimmedString(searchParams.get('name'));
+    const repositoryId = normalizeOptionalString(searchParams.get('repositoryId'));
+    const agentDefinitionId = normalizeOptionalString(searchParams.get('agentDefinitionId'));
 
     let rows = await db.select().from(secrets).orderBy(secrets.updatedAt);
 
@@ -44,56 +38,41 @@ async function handleGet(request: AuthenticatedRequest) {
       updatedAt: r.updatedAt,
     }));
 
-    return NextResponse.json({ success: true, data });
+    return apiSuccess(data);
   } catch (err) {
     console.error('[API] 获取 secrets 列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.listFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.listFailed);
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const body = await readJsonBodyAsRecord(request);
 
-    const name = normalizeString(body.name);
-    const value = typeof body.value === 'string' ? body.value : '';
-    const repositoryId = normalizeOptionalId(body.repositoryId);
-    const agentDefinitionId = normalizeOptionalId(body.agentDefinitionId);
+    const name = normalizeTrimmedString(body.name);
+    const value = normalizeOptionalString(body.value);
+    const repositoryId = normalizeOptionalString(body.repositoryId);
+    const agentDefinitionId = normalizeOptionalString(body.agentDefinitionId);
 
-    if (!name || value.trim().length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: SECRET_MESSAGES.missingRequiredFields } },
-        { status: 400 }
-      );
+    if (!name || !value) {
+      return apiBadRequest(SECRET_MESSAGES.missingRequiredFields);
     }
 
     if (!isMasterKeyPresent()) {
-      return NextResponse.json(
-        { success: false, error: { code: 'MISSING_MASTER_KEY', message: SECRET_MESSAGES.missingMasterKeyOnCreate } },
-        { status: 400 }
-      );
+      return apiError('MISSING_MASTER_KEY', SECRET_MESSAGES.missingMasterKeyOnCreate, { status: 400 });
     }
 
     if (repositoryId) {
       const repo = await db.select({ id: repositories.id }).from(repositories).where(eq(repositories.id, repositoryId)).limit(1);
       if (repo.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: REPO_MESSAGES.notFound(repositoryId) } },
-          { status: 404 }
-        );
+        return apiNotFound(REPO_MESSAGES.notFound(repositoryId));
       }
     }
 
     if (agentDefinitionId) {
       const agent = await db.select({ id: agentDefinitions.id }).from(agentDefinitions).where(eq(agentDefinitions.id, agentDefinitionId)).limit(1);
       if (agent.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFoundDefinition(agentDefinitionId) } },
-          { status: 404 }
-        );
+        return apiNotFound(AGENT_MESSAGES.notFoundDefinition(agentDefinitionId));
       }
     }
 
@@ -116,39 +95,32 @@ async function handlePost(request: AuthenticatedRequest) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.toLowerCase().includes('unique') || message.toLowerCase().includes('constraint')) {
-        return NextResponse.json(
-          { success: false, error: { code: 'CONFLICT', message: SECRET_MESSAGES.duplicateOnCreate } },
-          { status: 409 }
-        );
+        return apiError('CONFLICT', SECRET_MESSAGES.duplicateOnCreate, { status: 409 });
       }
       throw err;
     }
 
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'secret.created',
-      payload: { secretId: created.id, name: created.name, repositoryId: created.repositoryId, agentDefinitionId: created.agentDefinitionId },
+      payload: {
+        secretId: created.id,
+        name: created.name,
+        repositoryId: created.repositoryId,
+        agentDefinitionId: created.agentDefinitionId,
+      },
     });
 
-    return NextResponse.json(
-      {
-        success: true,
-        data: {
-          id: created.id,
-          name: created.name,
-          repositoryId: created.repositoryId,
-          agentDefinitionId: created.agentDefinitionId,
-          createdAt: created.createdAt,
-          updatedAt: created.updatedAt,
-        },
-      },
-      { status: 201 }
-    );
+    return apiCreated({
+      id: created.id,
+      name: created.name,
+      repositoryId: created.repositoryId,
+      agentDefinitionId: created.agentDefinitionId,
+      createdAt: created.createdAt,
+      updatedAt: created.updatedAt,
+    });
   } catch (err) {
     console.error('[API] 创建 secret 失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.createFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.createFailed);
   }
 }
 

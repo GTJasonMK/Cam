@@ -18,7 +18,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { AGENT_SESSION_UI_MESSAGES as MSG } from '@/lib/i18n/ui-messages';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { toSafeTimestamp } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
 import { extractTemplateVars, renderTemplate } from '@/lib/terminal/template-render';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import type { ClientMessage } from '@/lib/terminal/protocol';
 
 // ---- 类型 ----
@@ -87,7 +91,9 @@ function fmtTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 function fmtRelative(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
+  const ts = toSafeTimestamp(iso);
+  if (ts <= 0) return '-';
+  const diff = Math.max(0, Date.now() - ts);
   const min = Math.floor(diff / 60000);
   if (min < 1) return '刚刚';
   if (min < 60) return `${min} 分钟前`;
@@ -109,6 +115,10 @@ function pathToBreadcrumbs(p: string): Array<{ label: string; path: string }> {
     crumbs.push({ label: parts[i], path: accumulated });
   }
   return crumbs;
+}
+
+function toOptionalString(value: string): string | undefined {
+  return normalizeOptionalString(value) ?? undefined;
 }
 
 // ---- 样式 ----
@@ -157,21 +167,50 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // ---- 数据加载 ----
   useEffect(() => {
     if (!open) return;
-    fetch('/api/agents').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) {
-        const list = d.data.map((a: AgentDef) => ({ id: a.id, displayName: a.displayName, description: a.description, runtime: a.runtime }));
-        setAgents(list);
-        if (list.length > 0 && !selectedAgent) setSelectedAgent(list[0].id);
+
+    let cancelled = false;
+    const loadInitialData = async () => {
+      try {
+        const [agentsRes, reposRes, templatesRes] = await Promise.all([
+          fetch('/api/agents'),
+          fetch('/api/repos'),
+          fetch('/api/task-templates'),
+        ]);
+        const [agentsJson, reposJson, templatesJson] = await Promise.all([
+          readApiEnvelope<AgentDef[]>(agentsRes),
+          readApiEnvelope<RepoPreset[]>(reposRes),
+          readApiEnvelope<TemplateItem[]>(templatesRes),
+        ]);
+
+        if (cancelled) return;
+
+        if (agentsRes.ok && agentsJson?.success && Array.isArray(agentsJson.data)) {
+          const list = agentsJson.data.map((a) => ({
+            id: a.id,
+            displayName: a.displayName,
+            description: a.description,
+            runtime: a.runtime,
+          }));
+          setAgents(list);
+          setSelectedAgent((prev) => prev || list[0]?.id || '');
+        }
+        if (reposRes.ok && reposJson?.success && Array.isArray(reposJson.data)) {
+          setRepos(reposJson.data.filter((repo) => repo.defaultWorkDir));
+        }
+        if (templatesRes.ok && templatesJson?.success && Array.isArray(templatesJson.data)) {
+          setTemplates(templatesJson.data);
+        }
+      } catch {
+        // ignore
       }
-    }).catch(() => {});
-    fetch('/api/repos').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) setRepos(d.data.filter((r: RepoPreset) => r.defaultWorkDir));
-    }).catch(() => {});
-    fetch('/api/task-templates').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) setTemplates(d.data);
-    }).catch(() => {});
+    };
+
+    void loadInitialData();
     setRecentDirs(getRecentDirs());
-  }, [open, selectedAgent]);
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   // ---- 预填充（从任务详情页跳转时） ----
   const prefillAppliedRef = useRef(false);
@@ -237,10 +276,10 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
       const agentRuntime = agents.find((a) => a.id === selectedAgent)?.runtime;
       const runtimeParam = agentRuntime && agentRuntime !== 'native' ? `&runtime=${agentRuntime}` : '';
       const res = await fetch(`/api/terminal/browse?path=${encodeURIComponent(path)}${agentParam}${runtimeParam}`);
-      const d = await res.json();
+      const d = await readApiEnvelope<BrowseResult>(res);
       if (seq !== discoverSeqRef.current) return;
-      if (!d.success) return;
-      const r = d.data as BrowseResult;
+      if (!res.ok || !d?.success || !d.data) return;
+      const r = d.data;
       setSessions(isCLIAgent(selectedAgent) ? (r.agentSessions ?? []) : []);
       setDirInfo({ isGitRepo: r.isGitRepo, hasClaude: r.hasClaude });
     } catch {
@@ -260,8 +299,13 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     try {
       const url = path ? `/api/terminal/browse?path=${encodeURIComponent(path)}` : '/api/terminal/browse';
       const res = await fetch(url);
-      const d = await res.json();
-      if (d.success) { setBrowseResult(d.data as BrowseResult); setBrowsing(true); }
+      const d = await readApiEnvelope<BrowseResult>(res);
+      if (res.ok && d?.success && d.data) {
+        setBrowseResult(d.data);
+        setBrowsing(true);
+        return;
+      }
+      setError(resolveApiErrorMessage(res, d, '加载目录失败'));
     } catch {} finally { setBrowseLoading(false); }
   }, []);
 
@@ -282,9 +326,9 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
       type: 'agent-create',
       agentDefinitionId: selectedAgent,
       prompt: prompt ?? '',
-      repoUrl: repoUrl.trim() || undefined,
-      workDir: dir || undefined,
-      baseBranch: baseBranch.trim() || undefined,
+      repoUrl: toOptionalString(repoUrl),
+      workDir: toOptionalString(dir),
+      baseBranch: toOptionalString(baseBranch),
       cols: 80,
       rows: 24,
       mode,
@@ -382,7 +426,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
               />
               <button
                 type="button"
-                onClick={() => browse(workDir.trim() || undefined)}
+                onClick={() => browse(toOptionalString(workDir))}
                 disabled={browseLoading}
                 className="shrink-0 rounded-lg border border-border bg-card-elevated/70 px-3 py-2 text-sm text-foreground transition-colors hover:bg-card-elevated disabled:opacity-50"
                 title="浏览目录"
@@ -615,7 +659,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-foreground">{s.sessionId.slice(0, 8)}</span>
+                        <span className="font-mono text-xs text-foreground">{truncateText(s.sessionId, 8)}</span>
                         {idx === 0 && (
                           <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                             {MSG.browse?.mostRecent ?? '最近'}

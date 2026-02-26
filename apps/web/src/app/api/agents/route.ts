@@ -7,67 +7,65 @@
 // DELETE /api/agents/[id]    - 删除 Agent 定义
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions } from '@/lib/db/schema';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { apiBadRequest, apiCreated, apiInternalError, apiSuccess } from '@/lib/http/api-response';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
 
 async function handleGet() {
   try {
     const result = await db.select().from(agentDefinitions).orderBy(agentDefinitions.createdAt);
-    return NextResponse.json({ success: true, data: result });
+    return apiSuccess(result);
   } catch (err) {
     console.error('[API] 获取 Agent 定义列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.listFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.listFailed);
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
-    const body = await request.json();
+    const body = await readJsonBodyAsRecord(request);
+    const payload = body as Partial<typeof agentDefinitions.$inferInsert> & {
+      id?: string;
+      displayName?: string;
+      dockerImage?: string;
+      command?: string;
+    };
 
     // 基本校验
-    if (!body.id || !body.displayName || !body.dockerImage || !body.command) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: AGENT_MESSAGES.missingRequiredFields } },
-        { status: 400 }
-      );
+    if (!payload.id || !payload.displayName || !payload.dockerImage || !payload.command) {
+      return apiBadRequest(AGENT_MESSAGES.missingRequiredFields);
     }
 
     const result = await db
       .insert(agentDefinitions)
       .values({
-        id: body.id,
-        displayName: body.displayName,
-        description: body.description || null,
-        icon: body.icon || null,
-        dockerImage: body.dockerImage,
-        command: body.command,
-        args: body.args || [],
-        requiredEnvVars: body.requiredEnvVars || [],
-        capabilities: body.capabilities || {
+        id: payload.id,
+        displayName: payload.displayName,
+        description: payload.description || null,
+        icon: payload.icon || null,
+        dockerImage: payload.dockerImage,
+        command: payload.command,
+        args: payload.args || [],
+        requiredEnvVars: payload.requiredEnvVars || [],
+        capabilities: payload.capabilities || {
           nonInteractive: true,
           autoGitCommit: false,
           outputSummary: false,
           promptFromFile: false,
         },
-        defaultResourceLimits: body.defaultResourceLimits || {},
+        defaultResourceLimits: payload.defaultResourceLimits || {},
         builtIn: false,
-        runtime: body.runtime || 'native',
+        runtime: payload.runtime || 'native',
       })
       .returning();
 
-    return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
+    return apiCreated(result[0]);
   } catch (err) {
     console.error('[API] 创建 Agent 定义失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.createFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.createFailed);
   }
 }
 

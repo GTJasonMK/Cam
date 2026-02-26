@@ -2,12 +2,13 @@
 // API: 单个 AgentDefinition 操作
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { agentDefinitions } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { apiError, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
 
 async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,59 +16,48 @@ async function handleGet(_request: AuthenticatedRequest, { params }: { params: P
     const result = await db.select().from(agentDefinitions).where(eq(agentDefinitions.id, id)).limit(1);
 
     if (result.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(AGENT_MESSAGES.notFound(id));
     }
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error(`[API] 获取 Agent 定义 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.queryFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.queryFailed);
   }
 }
 
 async function handlePut(request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const body = await request.json();
+    const body = await readJsonBodyAsRecord(request);
+    const payload = body as Partial<typeof agentDefinitions.$inferInsert>;
 
     const result = await db
       .update(agentDefinitions)
       .set({
-        displayName: body.displayName,
-        description: body.description,
-        icon: body.icon,
-        dockerImage: body.dockerImage,
-        command: body.command,
-        args: body.args,
-        requiredEnvVars: body.requiredEnvVars,
-        capabilities: body.capabilities,
-        defaultResourceLimits: body.defaultResourceLimits,
-        runtime: body.runtime,
+        displayName: payload.displayName,
+        description: payload.description,
+        icon: payload.icon,
+        dockerImage: payload.dockerImage,
+        command: payload.command,
+        args: payload.args,
+        requiredEnvVars: payload.requiredEnvVars,
+        capabilities: payload.capabilities,
+        defaultResourceLimits: payload.defaultResourceLimits,
+        runtime: payload.runtime,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(agentDefinitions.id, id))
       .returning();
 
     if (result.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(AGENT_MESSAGES.notFound(id));
     }
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error(`[API] 更新 Agent 定义 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.updateFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.updateFailed);
   }
 }
 
@@ -78,27 +68,18 @@ async function handleDelete(_request: AuthenticatedRequest, { params }: { params
     const existing = await db.select().from(agentDefinitions).where(eq(agentDefinitions.id, id)).limit(1);
 
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(AGENT_MESSAGES.notFound(id));
     }
 
     if (existing[0].builtIn) {
-      return NextResponse.json(
-        { success: false, error: { code: 'FORBIDDEN', message: AGENT_MESSAGES.builtInDeleteForbidden } },
-        { status: 403 }
-      );
+      return apiError('FORBIDDEN', AGENT_MESSAGES.builtInDeleteForbidden, { status: 403 });
     }
 
     await db.delete(agentDefinitions).where(eq(agentDefinitions.id, id));
-    return NextResponse.json({ success: true, data: null });
+    return apiSuccess(null);
   } catch (err) {
     console.error(`[API] 删除 Agent 定义 ${id} 失败:`, err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.deleteFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.deleteFailed);
   }
 }
 

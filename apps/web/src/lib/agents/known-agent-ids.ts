@@ -1,11 +1,5 @@
-function normalizeAgentIds(source: Iterable<string>): string[] {
-  const ids = new Set<string>();
-  for (const id of source) {
-    const normalized = id.trim();
-    if (normalized) ids.add(normalized);
-  }
-  return Array.from(ids);
-}
+import { normalizeAgentIds } from './normalize-agent-ids.ts';
+import { readApiEnvelope } from '../http/client-response.ts';
 
 /**
  * 解析导入校验可用的 Agent ID 集合。
@@ -17,9 +11,9 @@ export async function resolveKnownAgentIdsForImport(seedAgentIds: Iterable<strin
 
   try {
     const res = await fetch('/api/agents');
-    const json = await res.json().catch(() => null);
+    const json = await readApiEnvelope<Array<{ id?: unknown }>>(res);
     if (json?.success && Array.isArray(json.data)) {
-      for (const item of json.data as Array<{ id?: unknown }>) {
+      for (const item of json.data) {
         if (typeof item.id !== 'string') continue;
         const id = item.id.trim();
         if (id) known.add(id);

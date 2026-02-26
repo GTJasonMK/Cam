@@ -3,21 +3,18 @@
 // POST /api/scheduler/tick  - 执行一次调度循环
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { runSchedulerTick } from '@/lib/scheduler';
 import { API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth } from '@/lib/auth/with-auth';
+import { apiInternalError, apiMessageSuccess } from '@/lib/http/api-response';
 
 async function handler() {
   try {
     await runSchedulerTick();
-    return NextResponse.json({ success: true, message: API_COMMON_MESSAGES.schedulerTickExecuted });
+    return apiMessageSuccess(API_COMMON_MESSAGES.schedulerTickExecuted);
   } catch (err) {
     console.error('[API] 调度器执行异常:', err);
-    return NextResponse.json(
-      { success: false, error: { message: (err as Error).message } },
-      { status: 500 }
-    );
+    return apiInternalError((err as Error).message);
   }
 }
 

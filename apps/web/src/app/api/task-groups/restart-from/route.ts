@@ -3,21 +3,21 @@
 // POST /api/task-groups/restart-from  - fromTaskId + dependents(closure) 重新入队
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { tasks, systemEvents } from '@/lib/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { tasks } from '@/lib/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { sseManager } from '@/lib/sse/manager';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import { API_COMMON_MESSAGES, TASK_GROUP_MESSAGES } from '@/lib/i18n/messages';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { writeSystemEvent } from '@/lib/audit/system-event';
+import { buildTaskReplayResetFields } from '@/lib/tasks/reset-fields';
+import { computeRetryWindow } from '@/lib/tasks/retry-window';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-function normalizeString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const v = value.trim();
-  return v.length > 0 ? v : null;
-}
+import { normalizeOptionalString } from '@/lib/validation/strings';
+import { buildDependentsMap, computeDependencyClosure } from '@/lib/tasks/dependency-graph';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiConflict, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 type TaskRow = {
   id: string;
@@ -28,50 +28,17 @@ type TaskRow = {
   feedback: string | null;
 };
 
-function buildDependentsMap(rows: Array<Pick<TaskRow, 'id' | 'dependsOn'>>): Map<string, string[]> {
-  const map = new Map<string, string[]>();
-  for (const t of rows) {
-    for (const dep of t.dependsOn || []) {
-      const list = map.get(dep) || [];
-      list.push(t.id);
-      map.set(dep, list);
-    }
-  }
-  return map;
-}
-
-function computeClosure(fromTaskId: string, dependents: Map<string, string[]>): Set<string> {
-  const visited = new Set<string>();
-  const queue: string[] = [fromTaskId];
-  visited.add(fromTaskId);
-
-  while (queue.length > 0) {
-    const cur = queue.shift() as string;
-    const next = dependents.get(cur) || [];
-    for (const n of next) {
-      if (visited.has(n)) continue;
-      visited.add(n);
-      queue.push(n);
-    }
-  }
-
-  return visited;
-}
-
 async function handler(request: AuthenticatedRequest) {
   try {
     ensureSchedulerStarted();
     const actor = resolveAuditActor(request);
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-    const groupId = normalizeString(body.groupId);
-    const fromTaskId = normalizeString(body.fromTaskId);
-    const feedbackInput = normalizeString(body.feedback);
+    const body = await readJsonBodyAsRecord(request);
+    const groupId = normalizeOptionalString(body.groupId);
+    const fromTaskId = normalizeOptionalString(body.fromTaskId);
+    const feedbackInput = normalizeOptionalString(body.feedback);
 
     if (!groupId || !fromTaskId) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: TASK_GROUP_MESSAGES.groupIdAndFromTaskIdRequired } },
-        { status: 400 }
-      );
+      return apiBadRequest(TASK_GROUP_MESSAGES.groupIdAndFromTaskIdRequired);
     }
 
     const groupRows = (await db
@@ -84,42 +51,27 @@ async function handler(request: AuthenticatedRequest) {
         feedback: tasks.feedback,
       })
       .from(tasks)
-      .where(eq(tasks.groupId, groupId))
-      .limit(2000)) as unknown as TaskRow[];
+      .where(and(eq(tasks.groupId, groupId), eq(tasks.source, 'scheduler')))) as unknown as TaskRow[];
 
     if (groupRows.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_GROUP_MESSAGES.groupNotFound(groupId) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_GROUP_MESSAGES.groupNotFound(groupId));
     }
 
     const byId = new Map(groupRows.map((t) => [t.id, t]));
     const from = byId.get(fromTaskId);
     if (!from) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_GROUP_MESSAGES.fromTaskNotInGroup(fromTaskId) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_GROUP_MESSAGES.fromTaskNotInGroup(fromTaskId));
     }
 
     const dependentsMap = buildDependentsMap(groupRows);
-    const closure = computeClosure(fromTaskId, dependentsMap);
+    const closure = computeDependencyClosure(fromTaskId, dependentsMap);
     const closureIds = Array.from(closure);
 
     const runningInClosure = groupRows.filter((t) => closure.has(t.id) && t.status === 'running').map((t) => t.id);
     if (runningInClosure.length > 0) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'STATE_CONFLICT',
-            message: TASK_GROUP_MESSAGES.closureRunningConflict(runningInClosure),
-            runningTaskIds: runningInClosure,
-          },
-        },
-        { status: 409 }
-      );
+      return apiConflict(TASK_GROUP_MESSAGES.closureRunningConflict(runningInClosure), {
+        extra: { runningTaskIds: runningInClosure },
+      });
     }
 
     // fromTask 的依赖必须完成才可 queued，否则保持 waiting（避免错误抢跑）
@@ -139,33 +91,33 @@ async function handler(request: AuthenticatedRequest) {
 
       const previousStatus = t.status;
       const shouldBumpRetry = ['completed', 'failed', 'cancelled', 'awaiting_review'].includes(previousStatus);
-      const nextRetryCount = shouldBumpRetry ? t.retryCount + 1 : t.retryCount;
-      const nextMaxRetries = shouldBumpRetry ? Math.max(t.maxRetries, nextRetryCount) : t.maxRetries;
+      const { nextRetryCount, nextMaxRetries } = computeRetryWindow({
+        retryCount: t.retryCount,
+        maxRetries: t.maxRetries,
+        shouldIncrement: shouldBumpRetry,
+      });
 
       const nextStatus = id === fromTaskId ? (depsCompleted ? 'queued' : 'waiting') : 'waiting';
       const nextFeedback = id === fromTaskId ? (feedbackInput ?? t.feedback ?? null) : t.feedback ?? null;
 
-      await db
+      const updatedRows = await db
         .update(tasks)
-        .set({
+        .set(buildTaskReplayResetFields({
           status: nextStatus,
           feedback: nextFeedback,
           retryCount: nextRetryCount,
           maxRetries: nextMaxRetries,
-          assignedWorkerId: null,
           queuedAt: id === fromTaskId && nextStatus === 'queued' ? now : null,
-          startedAt: null,
-          completedAt: null,
-          reviewedAt: null,
-          reviewComment: null,
-          summary: null,
-          logFileUrl: null,
-        })
-        .where(eq(tasks.id, id));
+        }))
+        .where(and(eq(tasks.id, id), eq(tasks.status, previousStatus)))
+        .returning({ id: tasks.id });
+      if (updatedRows.length === 0) {
+        continue;
+      }
 
       updated.push({ id, status: nextStatus, previousStatus });
 
-      await db.insert(systemEvents).values({
+      await writeSystemEvent({
         type: 'task.restart_from',
         actor,
         payload: {
@@ -182,30 +134,26 @@ async function handler(request: AuthenticatedRequest) {
       sseManager.broadcast('task.progress', { taskId: id, status: nextStatus });
     }
 
-    await db.insert(systemEvents).values({
+    const updatedIds = updated.map((item) => item.id);
+
+    await writeSystemEvent({
       type: 'task_group.restart_from',
       actor,
-      payload: { groupId, fromTaskId, taskIds: closureIds, feedback: feedbackInput || undefined },
+      payload: { groupId, fromTaskId, taskIds: updatedIds, feedback: feedbackInput || undefined },
     });
-    sseManager.broadcast('task_group.restart_from', { groupId, fromTaskId, taskIds: closureIds });
+    sseManager.broadcast('task_group.restart_from', { groupId, fromTaskId, taskIds: updatedIds });
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        groupId,
-        fromTaskId,
-        resetTasks: updated.length,
-        taskIds: closureIds,
-        queuedTaskId: depsCompleted ? fromTaskId : null,
-        waitingBecauseDeps: depsCompleted ? [] : deps,
-      },
+    return apiSuccess({
+      groupId,
+      fromTaskId,
+      resetTasks: updated.length,
+      taskIds: updatedIds,
+      queuedTaskId: depsCompleted && updatedIds.includes(fromTaskId) ? fromTaskId : null,
+      waitingBecauseDeps: depsCompleted ? [] : deps,
     });
   } catch (err) {
     console.error('[API] Task Group restart-from 失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.restartFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.restartFailed);
   }
 }
 

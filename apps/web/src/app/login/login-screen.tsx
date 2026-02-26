@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { LoginForm } from './login-form';
 import { PasswordLoginForm } from './password-login-form';
 import { SetupWizard } from './setup-wizard';
@@ -41,13 +42,13 @@ export function LoginScreen({ nextPath, initialError }: { nextPath: string; init
     setLoading(true);
     try {
       const res = await fetch('/api/auth/setup-status');
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
+      const json = await readApiEnvelope<SetupStatus>(res);
+      if (!res.ok || !json?.success || !json.data) {
         setStatus(null);
-        setError(json?.error?.message || `HTTP ${res.status}`);
+        setError(resolveApiErrorMessage(res, json, `HTTP ${res.status}`));
         return;
       }
-      setStatus(json.data as SetupStatus);
+      setStatus(json.data);
     } catch (err) {
       setStatus(null);
       setError((err as Error).message);

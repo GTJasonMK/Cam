@@ -5,95 +5,57 @@
 // DELETE /api/workers?status=offline - 清理离线 Worker 记录
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { workers, systemEvents } from '@/lib/db/schema';
+import { workers, tasks } from '@/lib/db/schema';
 import { sseManager } from '@/lib/sse/manager';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { API_COMMON_MESSAGES, WORKER_MESSAGES } from '@/lib/i18n/messages';
+import { writeSystemEvent } from '@/lib/audit/system-event';
+import { recoverRunningSchedulerTasksForWorker } from '@/lib/workers/recover-running-tasks';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-type ClaudeAuthStatus = { loggedIn: boolean; authMethod: string; apiProvider: string };
-
-function parseWorkerMode(value: unknown): 'daemon' | 'task' | 'unknown' {
-  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (raw === 'daemon') return 'daemon';
-  if (raw === 'task') return 'task';
-  return 'unknown';
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function parseReportedEnvVars(value: unknown): string[] | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value)) return [];
-
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const name = item.trim();
-    if (!name) continue;
-    // 仅允许常见 env var 命名，避免注入奇怪字符导致 UI/日志混乱
-    if (!/^[A-Z0-9_]{2,100}$/.test(name)) continue;
-    out.push(name);
-    if (out.length >= 200) break;
-  }
-  return Array.from(new Set(out)).sort();
-}
-
-function parseClaudeAuthStatus(value: unknown): ClaudeAuthStatus | null | undefined {
-  if (value === undefined) return undefined;
-  if (!isPlainObject(value)) return null;
-
-  const loggedIn = value.loggedIn;
-  if (typeof loggedIn !== 'boolean') return null;
-
-  const authMethod = typeof value.authMethod === 'string' ? value.authMethod.trim() : '';
-  const apiProvider = typeof value.apiProvider === 'string' ? value.apiProvider.trim() : '';
-
-  return {
-    loggedIn,
-    authMethod: authMethod.slice(0, 50),
-    apiProvider: apiProvider.slice(0, 50),
-  };
-}
+import {
+  parseClaudeAuthStatus,
+  parseReportedEnvVars,
+  parseWorkerMode,
+} from '@/lib/workers/payload';
+import { apiBadRequest, apiCreated, apiInternalError, apiSuccess } from '@/lib/http/api-response';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
 
 async function handleGet() {
   try {
     const result = await db.select().from(workers).orderBy(workers.createdAt);
-    return NextResponse.json({ success: true, data: result });
+    return apiSuccess(result);
   } catch (err) {
     console.error('[API] 获取 Worker 列表失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.queryFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.queryFailed);
   }
 }
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
-    const body = await request.json();
+    const body = await readJsonBodyAsRecord(request);
+    const payload = body as Partial<typeof workers.$inferInsert> & {
+      id?: string;
+      name?: string;
+      mode?: unknown;
+      reportedEnvVars?: unknown;
+      claudeAuthStatus?: unknown;
+    };
 
-    if (!body.id || !body.name) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: WORKER_MESSAGES.missingRequiredFields } },
-        { status: 400 }
-      );
+    if (!payload.id || !payload.name) {
+      return apiBadRequest(WORKER_MESSAGES.missingRequiredFields);
     }
 
     const now = new Date().toISOString();
-    const mode = parseWorkerMode(body.mode);
-    const reportedEnvVars = parseReportedEnvVars(body.reportedEnvVars);
-    const claudeAuthStatus = parseClaudeAuthStatus(body.claudeAuthStatus);
+    const mode = parseWorkerMode(payload.mode);
+    const reportedEnvVars = parseReportedEnvVars(payload.reportedEnvVars);
+    const claudeAuthStatus = parseClaudeAuthStatus(payload.claudeAuthStatus);
 
     const insertValues: typeof workers.$inferInsert = {
-      id: body.id,
-      name: body.name,
-      supportedAgentIds: body.supportedAgentIds || [],
-      maxConcurrent: body.maxConcurrent || 1,
+      id: payload.id,
+      name: payload.name,
+      supportedAgentIds: payload.supportedAgentIds || [],
+      maxConcurrent: payload.maxConcurrent || 1,
       mode,
       // 旧 Worker 可能不携带该字段：插入时用默认值，更新时仅在上报时覆盖
       reportedEnvVars: reportedEnvVars ?? [],
@@ -104,11 +66,14 @@ async function handlePost(request: AuthenticatedRequest) {
     };
 
     const onConflictSet: Partial<typeof workers.$inferInsert> = {
-      name: body.name,
+      name: payload.name,
+      status: 'idle',
+      currentTaskId: null,
       lastHeartbeatAt: now,
-      supportedAgentIds: body.supportedAgentIds || [],
+      uptimeSince: now,
+      supportedAgentIds: payload.supportedAgentIds || [],
     };
-    if (body.mode !== undefined) onConflictSet.mode = mode;
+    if (payload.mode !== undefined) onConflictSet.mode = mode;
     if (reportedEnvVars !== null) onConflictSet.reportedEnvVars = reportedEnvVars;
     if (claudeAuthStatus !== undefined) onConflictSet.reportedClaudeAuth = claudeAuthStatus;
 
@@ -121,19 +86,16 @@ async function handlePost(request: AuthenticatedRequest) {
       })
       .returning();
 
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'worker.online',
-      payload: { workerId: body.id, name: body.name },
+      payload: { workerId: payload.id, name: payload.name },
     });
-    sseManager.broadcast('worker.online', { workerId: body.id, name: body.name });
+    sseManager.broadcast('worker.online', { workerId: payload.id, name: payload.name });
 
-    return NextResponse.json({ success: true, data: result[0] }, { status: 201 });
+    return apiCreated(result[0]);
   } catch (err) {
     console.error('[API] Worker 注册失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.registerFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.registerFailed);
   }
 }
 
@@ -141,10 +103,7 @@ async function handleDelete(request: AuthenticatedRequest) {
   try {
     const status = request.nextUrl.searchParams.get('status');
     if (status !== 'offline') {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: WORKER_MESSAGES.unsupportedCleanupStatus } },
-        { status: 400 }
-      );
+      return apiBadRequest(WORKER_MESSAGES.unsupportedCleanupStatus);
     }
 
     const offlineWorkers = await db
@@ -153,46 +112,92 @@ async function handleDelete(request: AuthenticatedRequest) {
       .where(eq(workers.status, 'offline'));
 
     if (offlineWorkers.length === 0) {
-      return NextResponse.json({
-        success: true,
-        data: { removed: 0, workerIds: [] },
-      });
+      return apiSuccess({ removed: 0, workerIds: [] });
     }
 
     const workerIds = offlineWorkers.map((item) => item.id);
-    for (let i = 0; i < workerIds.length; i += 200) {
-      const chunk = workerIds.slice(i, i + 200);
-      await db.delete(workers).where(inArray(workers.id, chunk));
+    const effectiveOfflineWorkers = await db
+      .select({ id: workers.id, name: workers.name })
+      .from(workers)
+      .where(and(inArray(workers.id, workerIds), eq(workers.status, 'offline')));
+    const effectiveOfflineWorkerIds = effectiveOfflineWorkers.map((item) => item.id);
+
+    if (effectiveOfflineWorkerIds.length === 0) {
+      return apiSuccess({ removed: 0, workerIds: [] });
     }
 
-    await db.insert(systemEvents).values({
+    // 删除前先回收这些离线 worker 仍挂住的调度任务，避免任务长期卡在 running
+    const strandedTasks = await db
+      .select({
+        id: tasks.id,
+        retryCount: tasks.retryCount,
+        maxRetries: tasks.maxRetries,
+        assignedWorkerId: tasks.assignedWorkerId,
+      })
+      .from(tasks)
+      .where(and(
+        inArray(tasks.assignedWorkerId, effectiveOfflineWorkerIds),
+        eq(tasks.status, 'running'),
+        eq(tasks.source, 'scheduler'),
+      ));
+
+    const strandedTasksByWorkerId = new Map<string, Array<{ id: string; retryCount: number; maxRetries: number }>>();
+    for (const task of strandedTasks) {
+      const workerId = task.assignedWorkerId;
+      if (!workerId) continue;
+      const current = strandedTasksByWorkerId.get(workerId) || [];
+      current.push({
+        id: task.id,
+        retryCount: task.retryCount,
+        maxRetries: task.maxRetries,
+      });
+      strandedTasksByWorkerId.set(workerId, current);
+    }
+    for (const [workerId, runningTasks] of strandedTasksByWorkerId) {
+      await recoverRunningSchedulerTasksForWorker({
+        workerId,
+        runningTasks,
+        reason: 'worker_pruned_offline',
+      });
+    }
+
+    const removedWorkerIds: string[] = [];
+    for (let i = 0; i < effectiveOfflineWorkerIds.length; i += 200) {
+      const chunk = effectiveOfflineWorkerIds.slice(i, i + 200);
+      const deleted = await db
+        .delete(workers)
+        .where(and(inArray(workers.id, chunk), eq(workers.status, 'offline')))
+        .returning({ id: workers.id });
+      removedWorkerIds.push(...deleted.map((row) => row.id));
+    }
+
+    if (removedWorkerIds.length === 0) {
+      return apiSuccess({ removed: 0, workerIds: [] });
+    }
+
+    await writeSystemEvent({
       type: 'worker.pruned',
       payload: {
         scope: 'offline',
-        removed: workerIds.length,
-        workerIds,
+        removed: removedWorkerIds.length,
+        workerIds: removedWorkerIds,
       },
     });
 
-    for (const worker of offlineWorkers) {
+    const workerNameMap = new Map(effectiveOfflineWorkers.map((item) => [item.id, item.name]));
+    for (const workerId of removedWorkerIds) {
       sseManager.broadcast('worker.removed', {
-        workerId: worker.id,
-        name: worker.name,
+        workerId,
+        name: workerNameMap.get(workerId) || workerId,
         status: 'offline',
       });
     }
-    sseManager.broadcast('worker.pruned', { scope: 'offline', removed: workerIds.length, workerIds });
+    sseManager.broadcast('worker.pruned', { scope: 'offline', removed: removedWorkerIds.length, workerIds: removedWorkerIds });
 
-    return NextResponse.json({
-      success: true,
-      data: { removed: workerIds.length, workerIds },
-    });
+    return apiSuccess({ removed: removedWorkerIds.length, workerIds: removedWorkerIds });
   } catch (err) {
     console.error('[API] 清理离线 Worker 失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.cleanupFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.cleanupFailed);
   }
 }
 

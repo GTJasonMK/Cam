@@ -3,23 +3,20 @@
 // POST /api/tasks/batch  - 创建多步骤任务组，支持“步骤内并行 + 步骤间串行”
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { tasks, systemEvents, agentDefinitions, repositories, workers } from '@/lib/db/schema';
+import { tasks, systemEvents, repositories } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import { sseManager } from '@/lib/sse/manager';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
-import { hasUsableSecretValue } from '@/lib/secrets/resolve';
-import { collectWorkerEnvVarsForAgent, type WorkerCapabilitySnapshot } from '@/lib/workers/capabilities';
+import { loadAgentRequirements, validateAgentRequiredEnvVars } from '@/lib/tasks/agent-env-validation';
 import { parseCreatePipelinePayload } from '@/lib/validation/task-input';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_MESSAGES } from '@/lib/i18n/messages';
+import { buildSystemEventValues } from '@/lib/audit/system-event';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-
-function isPresent(name: string): boolean {
-  const v = process.env[name];
-  return typeof v === 'string' && v.trim().length > 0;
-}
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiCreated, apiError, apiInternalError, apiNotFound } from '@/lib/http/api-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 
 function buildPipelineTaskPrompt(input: {
   stepIndex: number;
@@ -76,13 +73,10 @@ function buildPipelineTaskPrompt(input: {
 async function handler(request: AuthenticatedRequest) {
   ensureSchedulerStarted();
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parseCreatePipelinePayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
     const payload = parsed.data;
 
@@ -111,108 +105,31 @@ async function handler(request: AuthenticatedRequest) {
         .where(eq(repositories.id, repositoryId))
         .limit(1);
       if (repo.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: REPO_MESSAGES.notFound(repositoryId) } },
-          { status: 404 }
-        );
+        return apiNotFound(REPO_MESSAGES.notFound(repositoryId));
       }
     }
 
     // 验证所有 agent 存在并校验环境变量
-    const agentCache = new Map<string, { displayName: string; requiredEnvVars: Array<{ name: string; description?: string; required?: boolean }> }>();
-    for (const agentId of allAgentIds) {
-      const agent = await db
-        .select({
-          id: agentDefinitions.id,
-          displayName: agentDefinitions.displayName,
-          requiredEnvVars: agentDefinitions.requiredEnvVars,
-        })
-        .from(agentDefinitions)
-        .where(eq(agentDefinitions.id, agentId))
-        .limit(1);
-
-      if (agent.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFoundDefinition(agentId) } },
-          { status: 404 }
-        );
-      }
-
-      agentCache.set(agentId, {
-        displayName: agent[0].displayName,
-        requiredEnvVars: (agent[0].requiredEnvVars as Array<{ name: string; description?: string; required?: boolean }>) || [],
-      });
+    const allAgentIdList = Array.from(allAgentIds);
+    const { orderedAgentRequirements, missingAgentIds } = await loadAgentRequirements(allAgentIdList);
+    if (missingAgentIds.length > 0) {
+      return apiNotFound(AGENT_MESSAGES.notFoundDefinition(missingAgentIds[0]));
     }
 
-    // 聚合所有 agent 的必需环境变量并校验
-    const allMissingEnvVars = new Set<string>();
-    let firstMissingAgent = '';
-    for (const [agentId, agentInfo] of agentCache) {
-      const requiredEnvVars = agentInfo.requiredEnvVars;
-      for (const ev of requiredEnvVars.filter((r) => Boolean(r.required))) {
-        if (isPresent(ev.name)) continue;
-        const ok = await hasUsableSecretValue(ev.name, {
-          agentDefinitionId: agentId,
-          repositoryId,
-          repoUrl,
-        });
-        if (!ok) {
-          allMissingEnvVars.add(ev.name);
-          if (!firstMissingAgent) firstMissingAgent = agentInfo.displayName;
-        }
-      }
-    }
-
-    // 如果服务端未配置，但某个在线 daemon Worker 已上报该变量存在，则允许创建流水线
-    let finalMissingEnvVars = Array.from(allMissingEnvVars);
-    if (finalMissingEnvVars.length > 0) {
-      const nowMs = Date.now();
-      const staleTimeoutMs = Number(process.env.WORKER_STALE_TIMEOUT_MS || 30_000);
-      const workerRows = await db
-        .select({
-          id: workers.id,
-          status: workers.status,
-          mode: workers.mode,
-          lastHeartbeatAt: workers.lastHeartbeatAt,
-          supportedAgentIds: workers.supportedAgentIds,
-          reportedEnvVars: workers.reportedEnvVars,
-        })
-        .from(workers);
-
-      const snapshots: WorkerCapabilitySnapshot[] = workerRows.map((w) => ({
-        id: w.id,
-        status: w.status,
-        mode: w.mode,
-        lastHeartbeatAt: w.lastHeartbeatAt,
-        supportedAgentIds: (w.supportedAgentIds as string[]) || [],
-        reportedEnvVars: (w.reportedEnvVars as string[]) || [],
-      }));
-
-      // 对每个 agent 分别检查 worker 上的环境变量
-      const workerCoveredVars = new Set<string>();
-      for (const agentId of allAgentIds) {
-        const availableOnWorkers = collectWorkerEnvVarsForAgent(snapshots, {
-          agentDefinitionId: agentId,
-          nowMs,
-          staleTimeoutMs,
-        });
-        for (const v of availableOnWorkers) workerCoveredVars.add(v);
-      }
-
-      finalMissingEnvVars = finalMissingEnvVars.filter((name) => !workerCoveredVars.has(name));
-    }
-
-    if (finalMissingEnvVars.length > 0) {
-      return NextResponse.json(
+    const envValidation = await validateAgentRequiredEnvVars({
+      agentRequirements: orderedAgentRequirements,
+      repositoryId,
+      repoUrl,
+    });
+    if (envValidation.missingEnvVars.length > 0) {
+      const missingAgentName = envValidation.firstMissingAgentDisplayName || orderedAgentRequirements[0]?.displayName || 'Agent';
+      return apiError(
+        'MISSING_ENV_VARS',
+        TASK_MESSAGES.missingAgentEnvVars(missingAgentName, envValidation.missingEnvVars),
         {
-          success: false,
-          error: {
-            code: 'MISSING_ENV_VARS',
-            message: TASK_MESSAGES.missingAgentEnvVars(firstMissingAgent, finalMissingEnvVars),
-            missingEnvVars: finalMissingEnvVars,
-          },
+          status: 400,
+          extra: { missingEnvVars: envValidation.missingEnvVars },
         },
-        { status: 400 }
       );
     }
 
@@ -221,109 +138,118 @@ async function handler(request: AuthenticatedRequest) {
     const groupId = groupIdInput || `pipeline/${pipelineId.slice(0, 8)}`;
 
     const created: Array<typeof tasks.$inferSelect> = [];
+    const pendingBroadcasts: Array<{ taskId: string; title: string; status: 'queued' | 'waiting' }> = [];
     let previousStepTaskIds: string[] = [];
     const now = new Date().toISOString();
 
-    for (let i = 0; i < steps.length; i += 1) {
-      const step = steps[i];
-      const parallelNodes = step.parallelAgents && step.parallelAgents.length > 0
-        ? step.parallelAgents
-        : [{
-            title: step.title,
-            description: step.description,
-            agentDefinitionId: step.agentDefinitionId,
-          }];
+    // 原子创建：避免中途失败导致“半条流水线”落库。
+    db.transaction((tx) => {
+      for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i];
+        const parallelNodes = step.parallelAgents && step.parallelAgents.length > 0
+          ? step.parallelAgents
+          : [{
+              title: step.title,
+              description: step.description,
+              agentDefinitionId: step.agentDefinitionId,
+            }];
 
-      const currentStepTaskIds: string[] = [];
+        const currentStepTaskIds: string[] = [];
 
-      for (let nodeIndex = 0; nodeIndex < parallelNodes.length; nodeIndex += 1) {
-        const node = parallelNodes[nodeIndex];
-        const stepAgentId = node.agentDefinitionId || step.agentDefinitionId || defaultAgentId;
-        const taskId = uuidv4();
-        const workBranch = `cam/task-${taskId.slice(0, 8)}`;
-        const dependsOn = previousStepTaskIds;
-        const initialStatus = dependsOn.length > 0 ? 'waiting' : 'queued';
-        const nodeTitle = node.title?.trim();
-        const taskTitle = parallelNodes.length > 1
-          ? `${step.title} · 并行 ${nodeIndex + 1}/${parallelNodes.length}${nodeTitle ? ` · ${nodeTitle}` : ''}`
-          : step.title;
-        const description = buildPipelineTaskPrompt({
-          stepIndex: i,
-          totalSteps: steps.length,
-          stepTitle: step.title,
-          stepDescription: step.description,
-          nodeIndex,
-          totalNodes: parallelNodes.length,
-          nodeDescription: node.description,
-          inputFiles: step.inputFiles,
-          inputCondition: step.inputCondition,
-        });
+        for (let nodeIndex = 0; nodeIndex < parallelNodes.length; nodeIndex += 1) {
+          const node = parallelNodes[nodeIndex];
+          const stepAgentId = node.agentDefinitionId || step.agentDefinitionId || defaultAgentId;
+          const taskId = uuidv4();
+          const workBranch = `cam/task-${taskId.slice(0, 8)}`;
+          const dependsOn = [...previousStepTaskIds];
+          const initialStatus = dependsOn.length > 0 ? 'waiting' : 'queued';
+          const nodeTitle = normalizeOptionalString(node.title);
+          const taskTitle = parallelNodes.length > 1
+            ? `${step.title} · 并行 ${nodeIndex + 1}/${parallelNodes.length}${nodeTitle ? ` · ${nodeTitle}` : ''}`
+            : step.title;
+          const description = buildPipelineTaskPrompt({
+            stepIndex: i,
+            totalSteps: steps.length,
+            stepTitle: step.title,
+            stepDescription: step.description,
+            nodeIndex,
+            totalNodes: parallelNodes.length,
+            nodeDescription: node.description,
+            inputFiles: step.inputFiles,
+            inputCondition: step.inputCondition,
+          });
 
-        const inserted = await db
-          .insert(tasks)
-          .values({
-            id: taskId,
-            title: taskTitle,
-            description,
-            agentDefinitionId: stepAgentId,
-            repositoryId,
-            repoUrl,
-            baseBranch,
-            workBranch,
-            workDir: workDir || null,
-            status: initialStatus,
-            maxRetries,
-            dependsOn,
-            groupId,
-            queuedAt: now,
-          })
-          .returning();
+          const inserted = tx
+            .insert(tasks)
+            .values({
+              id: taskId,
+              title: taskTitle,
+              description,
+              agentDefinitionId: stepAgentId,
+              repositoryId,
+              repoUrl,
+              baseBranch,
+              workBranch,
+              workDir: workDir || null,
+              status: initialStatus,
+              maxRetries,
+              dependsOn,
+              groupId,
+              queuedAt: now,
+            })
+            .returning()
+            .get();
 
-        created.push(inserted[0]);
-        currentStepTaskIds.push(taskId);
-
-        await db.insert(systemEvents).values({
-          type: 'task.created',
-          payload: {
+          created.push(inserted);
+          currentStepTaskIds.push(taskId);
+          pendingBroadcasts.push({
             taskId,
             title: taskTitle,
-            agentDefinitionId: stepAgentId,
-            groupId,
-            pipelineId,
-            stepIndex: i,
-            nodeIndex,
-            parallelCount: parallelNodes.length,
-          },
-        });
+            status: initialStatus,
+          });
 
-        sseManager.broadcast(initialStatus === 'queued' ? 'task.queued' : 'task.waiting', { taskId, title: taskTitle });
-        sseManager.broadcast('task.progress', { taskId, status: initialStatus });
+          tx.insert(systemEvents).values(buildSystemEventValues({
+            type: 'task.created',
+            payload: {
+              taskId,
+              title: taskTitle,
+              agentDefinitionId: stepAgentId,
+              groupId,
+              pipelineId,
+              stepIndex: i,
+              nodeIndex,
+              parallelCount: parallelNodes.length,
+            },
+          })).run();
+        }
+
+        previousStepTaskIds = currentStepTaskIds;
       }
 
-      previousStepTaskIds = currentStepTaskIds;
-    }
-
-    await db.insert(systemEvents).values({
-      type: 'pipeline.created',
-      payload: {
-        pipelineId,
-        groupId,
-        taskIds: created.map((t) => t.id),
-        steps: steps.length,
-        parallelTasks: created.length,
-      },
+      tx.insert(systemEvents).values(buildSystemEventValues({
+        type: 'pipeline.created',
+        payload: {
+          pipelineId,
+          groupId,
+          taskIds: created.map((t) => t.id),
+          steps: steps.length,
+          parallelTasks: created.length,
+        },
+      })).run();
     });
 
-    return NextResponse.json(
-      { success: true, data: { pipelineId, groupId, tasks: created } },
-      { status: 201 }
-    );
+    for (const item of pendingBroadcasts) {
+      sseManager.broadcast(item.status === 'queued' ? 'task.queued' : 'task.waiting', {
+        taskId: item.taskId,
+        title: item.title,
+      });
+      sseManager.broadcast('task.progress', { taskId: item.taskId, status: item.status });
+    }
+
+    return apiCreated({ pipelineId, groupId, tasks: created });
   } catch (err) {
     console.error('[API] 批量创建任务失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.createFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.createFailed);
   }
 }
 

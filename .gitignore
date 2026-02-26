@@ -45,3 +45,4 @@ coverage/
 # Project internal docs (non-essential)
 PROJECT_PLAN.md
 verification.md
+.conversations

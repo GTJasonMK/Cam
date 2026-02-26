@@ -5,11 +5,13 @@
 // POST /api/settings/agent-cli  - 一键部署（npm -g）
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import path from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 export const runtime = 'nodejs';
 
@@ -61,6 +63,9 @@ const CLI_CONFIGS: CliConfig[] = [
 const COMMAND_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 15_000;
 const LOG_TAIL_MAX = 8_000;
+const QUICK_PROBE_TIMEOUT_MS = 5_000;
+let npmGlobalPrefixCache: string | null | undefined;
+let wslRoamingNpmDirCache: string | null | undefined;
 
 function trimLogTail(input: string, max = LOG_TAIL_MAX): string {
   if (input.length <= max) return input;
@@ -77,6 +82,18 @@ function pickFirstLineFromOutput(stdout: string, stderr: string): string | null 
   return firstLine || null;
 }
 
+function isWslRuntime(): boolean {
+  return process.platform === 'linux' && Boolean(process.env.WSL_DISTRO_NAME);
+}
+
+function toWindowsPathForWsl(input: string): string {
+  const match = input.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (!match) return input;
+  const driveLetter = match[1].toUpperCase();
+  const rest = (match[2] || '').replace(/\//g, '\\');
+  return rest ? `${driveLetter}:\\${rest}` : `${driveLetter}:\\`;
+}
+
 function execCommand(
   file: string,
   args: string[],
@@ -86,11 +103,48 @@ function execCommand(
   const startedAt = Date.now();
 
   return new Promise((resolve) => {
-    const child = spawn(file, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    const quoteForWindowsCmd = (input: string): string => {
+      if (input.length === 0) return '""';
+      if (/^[A-Za-z0-9_./:\\-]+$/.test(input)) return input;
+      return `"${input.replace(/(["^])/g, '^$1')}"`;
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      const lower = file.toLowerCase();
+      const wsl = isWslRuntime();
+      const isWindowsScript = lower.endsWith('.cmd') || lower.endsWith('.bat');
+      // Windows / WSL 下 .cmd/.bat 统一通过 cmd.exe 执行，避免直接 spawn 失败。
+      if ((process.platform === 'win32' || wsl) && isWindowsScript) {
+        const windowsFile = wsl ? toWindowsPathForWsl(file) : file;
+        const commandLine = [
+          quoteForWindowsCmd(windowsFile),
+          ...args.map((arg) => quoteForWindowsCmd(String(arg))),
+        ].join(' ');
+        child = spawn('cmd.exe', ['/d', '/s', '/c', commandLine], {
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+      } else {
+        child = spawn(file, args, {
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+      }
+    } catch (err) {
+      resolve({
+        ok: false,
+        code: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        durationMs: Date.now() - startedAt,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
 
     let stdout = '';
     let stderr = '';
@@ -101,12 +155,16 @@ function execCommand(
       }
     }, timeoutMs);
 
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
+    if (child.stdout) {
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
+      });
+    }
+    if (child.stderr) {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+    }
 
     child.on('error', (err) => {
       if (finished) return;
@@ -139,26 +197,198 @@ function execCommand(
   });
 }
 
-async function detectCliStatus(cli: CliConfig) {
-  const probe = await execCommand(cli.command, ['--version'], { timeoutMs: PROBE_TIMEOUT_MS });
-  const version = probe.ok ? pickFirstLineFromOutput(probe.stdout, probe.stderr) : null;
-  return {
-    id: cli.id,
-    label: cli.label,
-    command: cli.command,
-    packageName: cli.packageName,
-    installed: probe.ok,
-    version,
-    detail: probe.ok ? null : (probe.errorMessage || pickFirstLineFromOutput(probe.stdout, probe.stderr)),
-  };
-}
-
 function normalizeInlineText(input: string): string {
   return input.replace(/\s+/g, ' ').trim();
 }
 
 function getNpmBinary(): string {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+async function getNpmGlobalPrefix(): Promise<string | null> {
+  if (npmGlobalPrefixCache !== undefined) return npmGlobalPrefixCache;
+  const probe = await execCommand(getNpmBinary(), ['prefix', '-g'], { timeoutMs: QUICK_PROBE_TIMEOUT_MS });
+  if (!probe.ok) {
+    npmGlobalPrefixCache = null;
+    return null;
+  }
+  const prefix = pickFirstLineFromOutput(probe.stdout, probe.stderr)?.trim() || '';
+  npmGlobalPrefixCache = prefix || null;
+  return npmGlobalPrefixCache;
+}
+
+function appendCandidate(candidates: string[], candidate: string | null | undefined): void {
+  if (!candidate) return;
+  const normalized = candidate.trim();
+  if (!normalized) return;
+  if (!candidates.includes(normalized)) {
+    candidates.push(normalized);
+  }
+}
+
+async function getWslRoamingNpmDir(): Promise<string | null> {
+  if (wslRoamingNpmDirCache !== undefined) return wslRoamingNpmDirCache;
+  const isWsl = process.platform === 'linux' && Boolean(process.env.WSL_DISTRO_NAME);
+  if (!isWsl) {
+    wslRoamingNpmDirCache = null;
+    return null;
+  }
+
+  const appDataProbe = await execCommand('cmd.exe', ['/d', '/c', 'echo', '%APPDATA%'], {
+    timeoutMs: QUICK_PROBE_TIMEOUT_MS,
+  });
+  if (!appDataProbe.ok) {
+    wslRoamingNpmDirCache = null;
+    return null;
+  }
+
+  const appDataWin = pickFirstLineFromOutput(appDataProbe.stdout, appDataProbe.stderr)?.trim() || '';
+  if (!appDataWin || appDataWin.includes('%APPDATA%')) {
+    wslRoamingNpmDirCache = null;
+    return null;
+  }
+
+  const wslPathProbe = await execCommand('wslpath', ['-u', appDataWin], {
+    timeoutMs: QUICK_PROBE_TIMEOUT_MS,
+  });
+  if (!wslPathProbe.ok) {
+    wslRoamingNpmDirCache = null;
+    return null;
+  }
+
+  const appDataUnix = pickFirstLineFromOutput(wslPathProbe.stdout, wslPathProbe.stderr)?.trim() || '';
+  if (!appDataUnix) {
+    wslRoamingNpmDirCache = null;
+    return null;
+  }
+
+  wslRoamingNpmDirCache = path.join(appDataUnix, 'npm');
+  return wslRoamingNpmDirCache;
+}
+
+async function buildCliCommandCandidates(cli: CliConfig): Promise<string[]> {
+  const candidates: string[] = [];
+  appendCandidate(candidates, cli.command);
+
+  const nvmBin = process.env.NVM_BIN?.trim();
+  if (nvmBin) {
+    appendCandidate(candidates, path.join(nvmBin, cli.command));
+    if (process.platform === 'win32') {
+      appendCandidate(candidates, path.join(nvmBin, `${cli.command}.cmd`));
+    }
+  }
+
+  const npmPrefix = await getNpmGlobalPrefix();
+  if (npmPrefix) {
+    if (process.platform === 'win32') {
+      appendCandidate(candidates, path.join(npmPrefix, `${cli.command}.cmd`));
+      appendCandidate(candidates, path.join(npmPrefix, cli.command));
+    } else {
+      appendCandidate(candidates, path.join(npmPrefix, 'bin', cli.command));
+    }
+  }
+
+  const wslRoamingNpmDir = await getWslRoamingNpmDir();
+  if (wslRoamingNpmDir) {
+    appendCandidate(candidates, path.join(wslRoamingNpmDir, cli.command));
+    appendCandidate(candidates, path.join(wslRoamingNpmDir, `${cli.command}.cmd`));
+  }
+
+  return candidates;
+}
+
+type CliVersionProbeResult = {
+  ok: boolean;
+  version: string | null;
+  detail: string | null;
+  commandUsed: string | null;
+  attempts: string[];
+};
+
+async function probeCliVersion(cli: CliConfig): Promise<CliVersionProbeResult> {
+  const candidates = await buildCliCommandCandidates(cli);
+  let lastFailure: CommandExecResult | null = null;
+
+  for (const commandPath of candidates) {
+    const result = await execCommand(commandPath, ['--version'], { timeoutMs: PROBE_TIMEOUT_MS });
+    if (result.ok) {
+      return {
+        ok: true,
+        version: pickFirstLineFromOutput(result.stdout, result.stderr),
+        detail: null,
+        commandUsed: commandPath,
+        attempts: candidates,
+      };
+    }
+    lastFailure = result;
+  }
+
+  const failureMessage = lastFailure
+    ? (lastFailure.errorMessage || pickFirstLineFromOutput(lastFailure.stdout, lastFailure.stderr))
+    : null;
+
+  return {
+    ok: false,
+    version: null,
+    detail: failureMessage,
+    commandUsed: null,
+    attempts: candidates,
+  };
+}
+
+type NpmInstallProbeResult = {
+  installed: boolean;
+  version: string | null;
+};
+
+async function probeGlobalPackageByNpm(packageName: string): Promise<NpmInstallProbeResult> {
+  const result = await execCommand(getNpmBinary(), ['list', '-g', packageName, '--depth=0', '--json'], {
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+
+  if (!result.ok && !result.stdout.trim()) {
+    return { installed: false, version: null };
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout || '{}') as {
+      dependencies?: Record<string, { version?: string }>;
+    };
+    const dependency = parsed.dependencies?.[packageName];
+    if (!dependency) {
+      return { installed: false, version: null };
+    }
+    return { installed: true, version: dependency.version || null };
+  } catch {
+    return { installed: false, version: null };
+  }
+}
+
+async function detectCliStatus(cli: CliConfig) {
+  const probe = await probeCliVersion(cli);
+  const npmInstalled = probe.ok
+    ? { installed: true, version: probe.version }
+    : await probeGlobalPackageByNpm(cli.packageName);
+  const installed = probe.ok || npmInstalled.installed;
+  const version = probe.version || npmInstalled.version;
+  const attemptsText = probe.attempts.length > 0 ? `探测路径: ${probe.attempts.join(' | ')}` : '';
+  const detail = probe.ok
+    ? null
+    : (installed
+      ? `已检测到全局安装，但当前服务进程无法直接调用命令。${probe.detail ? `原因: ${probe.detail}。` : ''}${attemptsText}`
+      : (probe.detail || attemptsText || '未检测到可用命令'));
+
+  return {
+    id: cli.id,
+    label: cli.label,
+    command: cli.command,
+    packageName: cli.packageName,
+    installed,
+    runnable: probe.ok,
+    commandUsed: probe.commandUsed,
+    version,
+    detail,
+  };
 }
 
 function getWritePermissionSuggestion(prefix: string): string {
@@ -340,17 +570,14 @@ async function handleGet(request: AuthenticatedRequest) {
     const mode = request.nextUrl.searchParams.get('mode');
     if (mode === 'preflight') {
       const preflight = await runPreflightChecks();
-      return NextResponse.json({ success: true, data: preflight });
+      return apiSuccess(preflight);
     }
 
     const statuses = await Promise.all(CLI_CONFIGS.map((cli) => detectCliStatus(cli)));
-    return NextResponse.json({ success: true, data: { statuses } });
+    return apiSuccess({ statuses });
   } catch (err) {
     console.error('[API] 获取 Agent CLI 状态失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '获取 Agent CLI 状态失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('获取 Agent CLI 状态失败');
   }
 }
 
@@ -384,7 +611,7 @@ async function installCli(cli: CliConfig) {
 
 async function handlePost(request: AuthenticatedRequest) {
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const rawTarget = typeof body.target === 'string' ? body.target : 'all';
     const target = (rawTarget === 'all' || rawTarget === 'claude-code' || rawTarget === 'codex')
       ? rawTarget
@@ -392,10 +619,7 @@ async function handlePost(request: AuthenticatedRequest) {
 
     const targetList = resolveTargetList(target as DeployTarget);
     if (targetList.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: '无效的部署目标' } },
-        { status: 400 }
-      );
+      return apiBadRequest('无效的部署目标');
     }
 
     const results = [];
@@ -408,21 +632,15 @@ async function handlePost(request: AuthenticatedRequest) {
     const statuses = await Promise.all(CLI_CONFIGS.map((cli) => detectCliStatus(cli)));
     const allOk = results.every((item) => item.install.ok && item.statusAfter.installed);
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        target,
-        allOk,
-        results,
-        statuses,
-      },
+    return apiSuccess({
+      target,
+      allOk,
+      results,
+      statuses,
     });
   } catch (err) {
     console.error('[API] 部署 Agent CLI 失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: '部署 Agent CLI 失败' } },
-      { status: 500 }
-    );
+    return apiInternalError('部署 Agent CLI 失败');
   }
 }
 

@@ -182,30 +182,43 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   // ---- Agent actions ----
 
   addAgentSession: (info) => {
-    const session: TerminalSession = {
-      sessionId: info.sessionId,
-      shell: info.shell,
-      title: `🤖 ${info.agentDisplayName}`,
-      createdAt: new Date().toISOString(),
-      attached: true,
-      isAgent: true,
-      agentInfo: {
-        agentDefinitionId: info.agentDefinitionId,
-        agentDisplayName: info.agentDisplayName,
-        prompt: info.prompt,
-        workBranch: info.workBranch,
-        status: 'running',
-        elapsedMs: 0,
-        repoPath: info.repoPath,
-        claudeSessionId: info.claudeSessionId,
-        mode: info.mode,
-      },
-    };
-    set((state) => ({
-      sessions: [...state.sessions, session],
-      activeSessionId: info.sessionId,
-      viewMode: 'agent',
-    }));
+    set((state) => {
+      const nowIso = new Date().toISOString();
+      const existingIndex = state.sessions.findIndex((item) => item.sessionId === info.sessionId);
+      const prev = existingIndex >= 0 ? state.sessions[existingIndex] : undefined;
+      const nextSession: TerminalSession = {
+        sessionId: info.sessionId,
+        shell: info.shell,
+        title: `🤖 ${info.agentDisplayName}`,
+        createdAt: prev?.createdAt ?? nowIso,
+        attached: true,
+        isAgent: true,
+        agentInfo: {
+          agentDefinitionId: info.agentDefinitionId,
+          agentDisplayName: info.agentDisplayName,
+          prompt: info.prompt || prev?.agentInfo?.prompt || '',
+          workBranch: info.workBranch,
+          status: 'running',
+          elapsedMs: prev?.agentInfo?.elapsedMs ?? 0,
+          repoPath: info.repoPath ?? prev?.agentInfo?.repoPath,
+          claudeSessionId: info.claudeSessionId ?? prev?.agentInfo?.claudeSessionId,
+          mode: info.mode ?? prev?.agentInfo?.mode,
+        },
+      };
+
+      const nextSessions = [...state.sessions];
+      if (existingIndex >= 0) {
+        nextSessions[existingIndex] = nextSession;
+      } else {
+        nextSessions.push(nextSession);
+      }
+
+      return {
+        sessions: nextSessions,
+        activeSessionId: info.sessionId,
+        viewMode: 'agent' as const,
+      };
+    });
   },
 
   updateAgentStatus: (sessionId, status, exitCode, elapsedMs) => {
@@ -232,7 +245,16 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   setAgentSessions: (sessions) => {
     set((state) => {
-      const nextSessions = [...state.sessions];
+      // 先按 sessionId 去重，修复重连竞态下重复会话残留的问题
+      const dedupedSessions: TerminalSession[] = [];
+      const seen = new Set<string>();
+      for (const session of state.sessions) {
+        if (seen.has(session.sessionId)) continue;
+        seen.add(session.sessionId);
+        dedupedSessions.push(session);
+      }
+
+      const nextSessions = [...dedupedSessions];
       const upsertSession = (session: TerminalSession) => {
         const index = nextSessions.findIndex((item) => item.sessionId === session.sessionId);
         if (index >= 0) {

@@ -1,6 +1,7 @@
 import { db } from '@/lib/db';
 import { agentDefinitions } from '@/lib/db/schema';
 import { inArray } from 'drizzle-orm';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 
 type AgentReferenceSource = {
   agentDefinitionId?: string | null;
@@ -13,14 +14,14 @@ type AgentReferenceSource = {
 /** 收集模板/流水线里引用到的全部 Agent ID（去重 + 去空白） */
 export function collectReferencedAgentIds(source: AgentReferenceSource): string[] {
   const ids = new Set<string>();
-  const rootAgentId = source.agentDefinitionId?.trim();
+  const rootAgentId = normalizeOptionalString(source.agentDefinitionId);
   if (rootAgentId) ids.add(rootAgentId);
 
   for (const step of source.pipelineSteps ?? []) {
-    const stepAgentId = step.agentDefinitionId?.trim();
+    const stepAgentId = normalizeOptionalString(step.agentDefinitionId);
     if (stepAgentId) ids.add(stepAgentId);
     for (const node of step.parallelAgents ?? []) {
-      const nodeAgentId = node.agentDefinitionId?.trim();
+      const nodeAgentId = normalizeOptionalString(node.agentDefinitionId);
       if (nodeAgentId) ids.add(nodeAgentId);
     }
   }

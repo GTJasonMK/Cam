@@ -16,6 +16,10 @@ import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { TEMPLATE_UI_MESSAGES } from '@/lib/i18n/ui-messages';
+import { normalizeRetries } from '@/lib/pipeline/form-helpers';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { formatDateTimeZhCn } from '@/lib/time/format';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { Plus, Pencil, Trash2, Search, ArrowRight } from 'lucide-react';
 
 type TaskTemplateItem = {
@@ -75,13 +79,13 @@ export default function TemplatesPage() {
     setError(null);
     try {
       const res = await fetch('/api/task-templates');
-      const json = await res.json().catch(() => null);
-      if (!json?.success || !Array.isArray(json?.data)) {
-        setError(json?.error?.message || TEMPLATE_UI_MESSAGES.requestFailed);
+      const json = await readApiEnvelope<TaskTemplateItem[]>(res);
+      if (!res.ok || !json?.success || !Array.isArray(json?.data)) {
+        setError(resolveApiErrorMessage(res, json, TEMPLATE_UI_MESSAGES.requestFailed));
         return;
       }
 
-      const singleTemplates = (json.data as TaskTemplateItem[]).filter(
+      const singleTemplates = json.data.filter(
         (item) => !item.pipelineSteps || item.pipelineSteps.length === 0,
       );
       setTemplates(singleTemplates);
@@ -123,12 +127,12 @@ export default function TemplatesPage() {
     if (!confirmed) return;
 
     const res = await fetch(`/api/task-templates/${item.id}`, { method: 'DELETE' });
-    const json = await res.json().catch(() => null);
-    if (!json?.success) {
+    const json = await readApiEnvelope<unknown>(res);
+    if (!res.ok || !json?.success) {
       notify({
         type: 'error',
         title: TEMPLATE_UI_MESSAGES.deleteFailed,
-        message: json?.error?.message || TEMPLATE_UI_MESSAGES.requestFailed,
+        message: resolveApiErrorMessage(res, json, TEMPLATE_UI_MESSAGES.requestFailed),
       });
       return;
     }
@@ -169,7 +173,7 @@ export default function TemplatesPage() {
       header: TEMPLATE_UI_MESSAGES.cardUpdatedAt,
       className: 'w-[170px]',
       cell: (row) => (
-        <span className="text-xs text-muted-foreground">{new Date(row.updatedAt).toLocaleString('zh-CN')}</span>
+        <span className="text-xs text-muted-foreground">{formatDateTimeZhCn(row.updatedAt)}</span>
       ),
     },
     {
@@ -265,9 +269,9 @@ export default function TemplatesPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
-          const json = await res.json().catch(() => null);
-          if (!json?.success) {
-            throw new Error(json?.error?.message || TEMPLATE_UI_MESSAGES.requestFailed);
+          const json = await readApiEnvelope<unknown>(res);
+          if (!res.ok || !json?.success) {
+            throw new Error(resolveApiErrorMessage(res, json, TEMPLATE_UI_MESSAGES.requestFailed));
           }
           notify({
             type: 'success',
@@ -293,9 +297,9 @@ export default function TemplatesPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
-          const json = await res.json().catch(() => null);
-          if (!json?.success) {
-            throw new Error(json?.error?.message || TEMPLATE_UI_MESSAGES.requestFailed);
+          const json = await readApiEnvelope<unknown>(res);
+          if (!res.ok || !json?.success) {
+            throw new Error(resolveApiErrorMessage(res, json, TEMPLATE_UI_MESSAGES.requestFailed));
           }
           notify({
             type: 'success',
@@ -329,22 +333,14 @@ function buildPayload(data: PromptTemplateFormData) {
     name: data.name.trim(),
     titleTemplate: data.titleTemplate.trim(),
     promptTemplate: data.promptTemplate.trim(),
-    agentDefinitionId: data.agentDefinitionId.trim() || null,
-    repositoryId: data.repositoryId.trim() || null,
-    repoUrl: data.repoUrl.trim() || null,
-    baseBranch: data.baseBranch.trim() || null,
-    workDir: data.workDir.trim() || null,
+    agentDefinitionId: normalizeOptionalString(data.agentDefinitionId),
+    repositoryId: normalizeOptionalString(data.repositoryId),
+    repoUrl: normalizeOptionalString(data.repoUrl),
+    baseBranch: normalizeOptionalString(data.baseBranch),
+    workDir: normalizeOptionalString(data.workDir),
     pipelineSteps: null,
     maxRetries: normalizeRetries(data.maxRetries),
   };
-}
-
-function normalizeRetries(value: number): number {
-  if (!Number.isFinite(value)) return 2;
-  const rounded = Math.round(value);
-  if (rounded < 0) return 0;
-  if (rounded > 20) return 20;
-  return rounded;
 }
 
 function PromptTemplateFormModal({

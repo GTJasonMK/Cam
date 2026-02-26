@@ -9,6 +9,7 @@ export const SIDEBAR_UI_MESSAGES = {
     workers: '工作节点',
     workersTasks: '任务节点',
     workersTerminal: '终端节点',
+    workersSessions: '托管会话池',
     repos: '仓库',
     terminal: '终端',
     profile: '个人设置',

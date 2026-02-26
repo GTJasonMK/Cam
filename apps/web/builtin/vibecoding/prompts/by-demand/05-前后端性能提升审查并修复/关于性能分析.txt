@@ -1,0 +1,30 @@
+# 后端性能分析（仅分析版）
+
+【输入】
+- scope：接口/任务/模块范围。
+- report_path：报告路径（默认 `.conversations/reports/performance-analysis-report.md`）。
+- acceptance_criteria：明确目标指标（P95/QPS/CPU/内存等）并给同条件前后对比设计。
+- constraints：时间预算、压测资源、不可触碰范围、是否允许探测命令。
+
+【需要完成的功能】
+- 仅做性能分析：建立 baseline、定位热点、给优化路线与验证设计（不改代码）。
+- （可留空）repro_steps、evidence（trace/日志/慢查询/压测结果）。
+
+【注意事项】
+- 通用分析基线（必须）：先范围与 baseline→再结论与方案→最后验证设计；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；至少覆盖 3 个高风险边界；按【输出】原样输出。
+- 默认从仓库推断入口、指标口径与可用命令；无 baseline 不得下优化结论。
+- 优先输出 Top 3 热点；每个热点必须有证据（profile/trace/log/SQL）与影响评估。
+- 能跑就跑探测/压测命令并留痕；不能跑写阻塞原因与可信度影响。
+- 报告必须落盘到 `report_path`，并在结尾回写路径与摘要。
+
+【输出】
+- 扫描结论（入口、复现方式、工具命令、指标口径）。
+- baseline（采集方式 + 优化前指标结果）。
+- 关键发现（热点与瓶颈归因）。
+- Top 3 热点（位置/证据/影响）。
+- 优化路线图（不超过 3 阶段，含收益/风险/工作量）。
+- 实验清单（假设/实施点/验证方式/回滚点）。
+- 验证清单（复现实验与对比验证）。
+- 性能分析报告（已保存路径 + 报告摘要）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"key_findings":[],"evidence":[],"risks":[],"next_actions":[]}。

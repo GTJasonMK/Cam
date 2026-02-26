@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { AUTH_MESSAGES } from '@/lib/i18n/messages';
 import { KeyRound, LogIn } from 'lucide-react';
 
@@ -31,9 +32,9 @@ export function PasswordLoginForm({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<unknown>(res);
       if (!res.ok || !json?.success) {
-        setError(json?.error?.message || AUTH_MESSAGES.loginFailedWithStatus(res.status));
+        setError(resolveApiErrorMessage(res, json, AUTH_MESSAGES.loginFailedWithStatus(res.status)));
         return;
       }
       router.replace(nextPath);
@@ -90,4 +91,3 @@ export function PasswordLoginForm({
     </form>
   );
 }
-

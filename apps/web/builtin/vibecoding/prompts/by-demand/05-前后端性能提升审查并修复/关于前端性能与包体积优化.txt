@@ -1,0 +1,29 @@
+# 前端性能与包体积分析（仅分析版）
+
+【输入】
+- scope：页面/路由/组件/构建产物（必须给路径或路由）。
+- report_path：报告路径（默认 `.conversations/reports/frontend-performance-analysis-report.md`）。
+- acceptance_criteria：明确目标指标（bundle/LCP/FCP/交互耗时等）并给同条件前后对比设计。
+- constraints：兼容浏览器、时间预算、不可触碰范围、是否允许分析命令。
+
+【需要完成的功能】
+- 仅做前端性能分析：建立 baseline、定位体积/耗时来源、给优化路线与验证设计（不改代码）。
+- （可留空）baseline_hint（analyzer/lighthouse/构建日志）。
+
+【注意事项】
+- 通用分析基线（必须）：先范围与 baseline→再结论与方案→最后验证设计；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；至少覆盖 3 个高风险边界；按【输出】原样输出。
+- 默认从仓库推断构建工具与分析入口（webpack/vite/next、analyze 脚本等）。
+- 无 baseline 不得下结论；优先输出 Top 3 来源（依赖、重复代码、动态导入、图片字体等）。
+- 能跑就跑分析命令并留痕；不能跑写阻塞原因与可信度影响。
+- 报告必须落盘到 `report_path`，并在结尾回写路径与摘要。
+
+【输出】
+- 扫描结论（构建工具、分析入口、现有脚本、可用命令）。
+- baseline（采集方式 + 优化前指标结果）。
+- Top 3 主要来源（位置/证据/影响）。
+- 优化路线图（不超过 3 阶段，含收益/风险/工作量）。
+- 实验清单（假设/实施点/验证方式/回滚点）。
+- 验证清单（复核 baseline 与实验结果）。
+- 前端性能分析报告（已保存路径 + 报告摘要）。
+- 验收映射表（acceptance_criteria → 证据 → 结论）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"key_findings":[],"evidence":[],"risks":[],"next_actions":[]}。

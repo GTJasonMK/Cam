@@ -4,32 +4,28 @@
 // DELETE /api/task-templates/[id]  - 删除任务模板
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { repositories, systemEvents, taskTemplates } from '@/lib/db/schema';
+import { repositories, taskTemplates } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { AGENT_MESSAGES, API_COMMON_MESSAGES, REPO_MESSAGES, TASK_TEMPLATE_MESSAGES } from '@/lib/i18n/messages';
 import { parsePatchTaskTemplatePayload } from '@/lib/validation/task-template-input';
 import { resolveAuditActor } from '@/lib/audit/actor';
+import { writeSystemEvent } from '@/lib/audit/system-event';
 import { sseManager } from '@/lib/sse/manager';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { collectReferencedAgentIds, findMissingAgentIds } from '../_agent-validation';
-
-function hasOwn<T extends object>(input: T, key: keyof T): boolean {
-  return Object.prototype.hasOwnProperty.call(input, key);
-}
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { hasOwnKey } from '@/lib/validation/objects';
+import { apiBadRequest, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 async function handlePut(request: AuthenticatedRequest, context: { params: Promise<{ id: string }> }) {
   try {
     const actor = resolveAuditActor(request);
     const { id } = await context.params;
-    const body = await request.json().catch(() => ({}));
+    const body = await readJsonBodyAsRecord(request);
     const parsed = parsePatchTaskTemplatePayload(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: { code: 'INVALID_INPUT', message: parsed.errorMessage } },
-        { status: 400 }
-      );
+      return apiBadRequest(parsed.errorMessage);
     }
 
     const existing = await db
@@ -38,34 +34,25 @@ async function handlePut(request: AuthenticatedRequest, context: { params: Promi
       .where(eq(taskTemplates.id, id))
       .limit(1);
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_TEMPLATE_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_TEMPLATE_MESSAGES.notFound(id));
     }
 
     const patch = parsed.data;
-    if (hasOwn(patch, 'repositoryId') && patch.repositoryId) {
+    if (hasOwnKey(patch, 'repositoryId') && patch.repositoryId) {
       const repo = await db
         .select({ id: repositories.id })
         .from(repositories)
         .where(eq(repositories.id, patch.repositoryId))
         .limit(1);
       if (repo.length === 0) {
-        return NextResponse.json(
-          { success: false, error: { code: 'NOT_FOUND', message: REPO_MESSAGES.notFound(patch.repositoryId) } },
-          { status: 404 }
-        );
+        return apiNotFound(REPO_MESSAGES.notFound(patch.repositoryId));
       }
     }
 
     const referencedAgentIds = collectReferencedAgentIds(patch);
     const missingAgentIds = await findMissingAgentIds(referencedAgentIds);
     if (missingAgentIds.length > 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: AGENT_MESSAGES.notFound(missingAgentIds[0]) } },
-        { status: 404 }
-      );
+      return apiNotFound(AGENT_MESSAGES.notFound(missingAgentIds[0]));
     }
 
     const now = new Date().toISOString();
@@ -79,20 +66,17 @@ async function handlePut(request: AuthenticatedRequest, context: { params: Promi
       .returning();
 
     const changedFields = Object.keys(patch);
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task_template.updated',
       actor,
       payload: { templateId: id, changedFields },
     });
     sseManager.broadcast('task_template.updated', { templateId: id, changedFields });
 
-    return NextResponse.json({ success: true, data: result[0] });
+    return apiSuccess(result[0]);
   } catch (err) {
     console.error('[API] 更新任务模板失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.updateFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.updateFailed);
   }
 }
 
@@ -107,27 +91,21 @@ async function handleDelete(request: AuthenticatedRequest, context: { params: Pr
       .where(eq(taskTemplates.id, id))
       .limit(1);
     if (existing.length === 0) {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_FOUND', message: TASK_TEMPLATE_MESSAGES.notFound(id) } },
-        { status: 404 }
-      );
+      return apiNotFound(TASK_TEMPLATE_MESSAGES.notFound(id));
     }
 
     await db.delete(taskTemplates).where(eq(taskTemplates.id, id));
-    await db.insert(systemEvents).values({
+    await writeSystemEvent({
       type: 'task_template.deleted',
       actor,
       payload: { templateId: id, name: existing[0].name },
     });
     sseManager.broadcast('task_template.deleted', { templateId: id, name: existing[0].name });
 
-    return NextResponse.json({ success: true, data: { id } });
+    return apiSuccess({ id });
   } catch (err) {
     console.error('[API] 删除任务模板失败:', err);
-    return NextResponse.json(
-      { success: false, error: { code: 'INTERNAL_ERROR', message: API_COMMON_MESSAGES.deleteFailed } },
-      { status: 500 }
-    );
+    return apiInternalError(API_COMMON_MESSAGES.deleteFailed);
   }
 }
 

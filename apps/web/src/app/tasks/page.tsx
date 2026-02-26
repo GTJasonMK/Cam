@@ -21,6 +21,10 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea, Select } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { formatTaskElapsed } from '@/lib/time/duration';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { formatDateTimeZhCn, toSafeTimestamp } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { TASK_TEMPLATE_UI_MESSAGES } from '@/lib/i18n/ui-messages';
 import { Plus, Layers, Search, ArrowUpDown, XCircle, RotateCcw, CheckCircle, X, ExternalLink, Trash2, TerminalSquare } from 'lucide-react';
 
@@ -32,12 +36,30 @@ const DELETABLE_STATUSES = new Set(['draft', 'completed', 'failed', 'cancelled']
 function canCancelTask(status: string): boolean {
   return CANCELLABLE_STATUSES.has(status);
 }
-function canRerunTask(status: string): boolean {
-  return RERUNNABLE_STATUSES.has(status);
+function canRerunTask(task: Pick<TaskItem, 'status' | 'source'>): boolean {
+  return task.source === 'scheduler' && RERUNNABLE_STATUSES.has(task.status);
 }
 function canDeleteTask(status: string): boolean {
   return DELETABLE_STATUSES.has(status);
 }
+
+function toOptionalString(value: string): string | undefined {
+  return normalizeOptionalString(value) ?? undefined;
+}
+
+type TaskTemplateOption = {
+  id: string;
+  name: string;
+  titleTemplate: string;
+  promptTemplate: string;
+  agentDefinitionId: string | null;
+  repositoryId: string | null;
+  repoUrl: string | null;
+  baseBranch: string | null;
+  workDir: string | null;
+  pipelineSteps?: unknown[] | null;
+  maxRetries?: number | null;
+};
 
 export default function TasksPage() {
   const router = useRouter();
@@ -81,7 +103,7 @@ export default function TasksPage() {
   const groupTaskOptions = useMemo(() => {
     if (!filterGroupId) return [];
     const sorted = [...tasksInScope].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      (a, b) => toSafeTimestamp(a.createdAt) - toSafeTimestamp(b.createdAt)
     );
     return sorted.map((t, idx) => ({
       value: t.id,
@@ -130,8 +152,8 @@ export default function TasksPage() {
       });
     }
     return [...filtered].sort((a, b) => {
-      const aTs = new Date(a.createdAt).getTime();
-      const bTs = new Date(b.createdAt).getTime();
+      const aTs = toSafeTimestamp(a.createdAt);
+      const bTs = toSafeTimestamp(b.createdAt);
       return sortDirection === 'asc' ? aTs - bTs : bTs - aTs;
     });
   }, [tasksInScope, filterStatus, searchKeyword, sortDirection]);
@@ -141,7 +163,7 @@ export default function TasksPage() {
     [visibleTasks, selectedTaskIds]
   );
   const selectedRerunnableCount = useMemo(
-    () => visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canRerunTask(t.status)).length,
+    () => visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canRerunTask(t)).length,
     [visibleTasks, selectedTaskIds]
   );
   const selectedDeletableCount = useMemo(
@@ -178,6 +200,75 @@ export default function TasksPage() {
     return tasksInScope.filter((t) => !['cancelled', 'completed', 'failed'].includes(t.status)).length;
   }, [filterGroupId, tasksInScope]);
 
+  const requestApi = useCallback(
+    async <T,>(
+      input: RequestInfo | URL,
+      init: RequestInit | undefined,
+      fallbackMessage: string,
+    ): Promise<{ ok: boolean; data: T | undefined; errorMessage: string }> => {
+      try {
+        const response = await fetch(input, init);
+        const payload = await readApiEnvelope<T>(response);
+        if (!response.ok || !payload?.success) {
+          return {
+            ok: false,
+            data: undefined,
+            errorMessage: resolveApiErrorMessage(response, payload, fallbackMessage),
+          };
+        }
+        return { ok: true, data: payload.data, errorMessage: '' };
+      } catch (error) {
+        return {
+          ok: false,
+          data: undefined,
+          errorMessage: error instanceof Error && error.message ? error.message : fallbackMessage,
+        };
+      }
+    },
+    [],
+  );
+
+  const cancelTaskById = useCallback(
+    async (taskId: string, reason?: string) => {
+      const normalizedReason = reason ? toOptionalString(reason) : undefined;
+      return requestApi<unknown>(
+        `/api/tasks/${taskId}/cancel`,
+        {
+          method: 'POST',
+          ...(normalizedReason
+            ? {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: normalizedReason }),
+              }
+            : {}),
+        },
+        '请求失败',
+      );
+    },
+    [requestApi],
+  );
+
+  const rerunTaskById = useCallback(
+    async (taskId: string, feedback?: string) => {
+      const normalizedFeedback = feedback ? toOptionalString(feedback) : undefined;
+      return requestApi<unknown>(
+        `/api/tasks/${taskId}/rerun`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ feedback: normalizedFeedback }),
+        },
+        '请求失败',
+      );
+    },
+    [requestApi],
+  );
+
+  const deleteTaskById = useCallback(
+    async (taskId: string) => requestApi<unknown>(`/api/tasks/${taskId}`, { method: 'DELETE' }, '请求失败'),
+    [requestApi],
+  );
+
   // ---- 分组操作 ----
 
   const handleCancelGroup = async () => {
@@ -198,13 +289,20 @@ export default function TasksPage() {
       });
       if (reason === null) return;
 
-      const res = await fetch('/api/task-groups/cancel', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId: filterGroupId, reason: reason?.trim() || undefined }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) { notify({ type: 'error', title: '分组取消失败', message: json?.error?.message || '请求失败' }); return; }
-      notify({ type: 'success', title: '分组已取消', message: `已取消 ${json?.data?.cancelled ?? 0} 个任务` });
+      const result = await requestApi<{ cancelled?: number }>(
+        '/api/task-groups/cancel',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groupId: filterGroupId, reason: reason ? toOptionalString(reason) : undefined }),
+        },
+        '请求失败',
+      );
+      if (!result.ok) {
+        notify({ type: 'error', title: '分组取消失败', message: result.errorMessage });
+        return;
+      }
+      notify({ type: 'success', title: '分组已取消', message: `已取消 ${result.data?.cancelled ?? 0} 个任务` });
       await fetchTasks();
     } finally { setGroupActionLoading(false); }
   };
@@ -226,13 +324,20 @@ export default function TasksPage() {
       });
       if (feedback === null) return;
 
-      const res = await fetch('/api/task-groups/rerun-failed', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId: filterGroupId, feedback: feedback.trim() || undefined }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) { notify({ type: 'error', title: '重跑失败', message: json?.error?.message || '请求失败' }); return; }
-      notify({ type: 'success', title: '分组已重新入队', message: `已重排队 ${json?.data?.requeued ?? 0} 个任务` });
+      const result = await requestApi<{ requeued?: number }>(
+        '/api/task-groups/rerun-failed',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groupId: filterGroupId, feedback: toOptionalString(feedback) }),
+        },
+        '请求失败',
+      );
+      if (!result.ok) {
+        notify({ type: 'error', title: '重跑失败', message: result.errorMessage });
+        return;
+      }
+      notify({ type: 'success', title: '分组已重新入队', message: `已重排队 ${result.data?.requeued ?? 0} 个任务` });
       await fetchTasks();
     } finally { setGroupActionLoading(false); }
   };
@@ -252,13 +357,20 @@ export default function TasksPage() {
       });
       if (feedback === null) return;
 
-      const res = await fetch('/api/task-groups/restart-from', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId: filterGroupId, fromTaskId: restartFromTaskId, feedback: feedback.trim() || undefined }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) { notify({ type: 'error', title: '重启失败', message: json?.error?.message || '请求失败' }); return; }
-      notify({ type: 'success', title: '重启已提交', message: `已重置 ${json?.data?.resetTasks ?? 0} 个任务` });
+      const result = await requestApi<{ resetTasks?: number }>(
+        '/api/task-groups/restart-from',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ groupId: filterGroupId, fromTaskId: restartFromTaskId, feedback: toOptionalString(feedback) }),
+        },
+        '请求失败',
+      );
+      if (!result.ok) {
+        notify({ type: 'error', title: '重启失败', message: result.errorMessage });
+        return;
+      }
+      notify({ type: 'success', title: '重启已提交', message: `已重置 ${result.data?.resetTasks ?? 0} 个任务` });
       await fetchTasks();
     } finally { setGroupActionLoading(false); }
   };
@@ -276,11 +388,9 @@ export default function TasksPage() {
     setBatchActionLoading('cancel');
     let success = 0, failed = 0;
     for (const task of targets) {
-      try {
-        const res = await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
-        const json = await res.json().catch(() => null);
-        if (json?.success) success += 1; else failed += 1;
-      } catch { failed += 1; }
+      const result = await cancelTaskById(task.id);
+      if (result.ok) success += 1;
+      else failed += 1;
     }
     setBatchActionLoading(null);
     setSelectedTaskIds(new Set());
@@ -290,7 +400,7 @@ export default function TasksPage() {
   };
 
   const handleBatchRerun = async () => {
-    const targets = visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canRerunTask(t.status));
+    const targets = visibleTasks.filter((t) => selectedTaskIds.has(t.id) && canRerunTask(t));
     if (targets.length === 0) return;
     const feedback = await promptDialog({
       title: '批量重跑反馈(可选)', description: '将统一追加到本次重跑任务。',
@@ -302,17 +412,13 @@ export default function TasksPage() {
     });
     if (!confirmed) return;
 
+    const normalizedFeedback = toOptionalString(feedback);
     setBatchActionLoading('rerun');
     let success = 0, failed = 0;
     for (const task of targets) {
-      try {
-        const res = await fetch(`/api/tasks/${task.id}/rerun`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ feedback: feedback.trim() || undefined }),
-        });
-        const json = await res.json().catch(() => null);
-        if (json?.success) success += 1; else failed += 1;
-      } catch { failed += 1; }
+      const result = await rerunTaskById(task.id, normalizedFeedback);
+      if (result.ok) success += 1;
+      else failed += 1;
     }
     setBatchActionLoading(null);
     setSelectedTaskIds(new Set());
@@ -335,11 +441,9 @@ export default function TasksPage() {
     setBatchActionLoading('delete');
     let success = 0, failed = 0;
     for (const task of targets) {
-      try {
-        const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
-        const json = await res.json().catch(() => null);
-        if (res.ok && json?.success) success += 1; else failed += 1;
-      } catch { failed += 1; }
+      const result = await deleteTaskById(task.id);
+      if (result.ok) success += 1;
+      else failed += 1;
     }
     setBatchActionLoading(null);
     setSelectedTaskIds(new Set());
@@ -361,12 +465,23 @@ export default function TasksPage() {
       if (feedback == null) return;
       if (!feedback.trim()) { notify({ type: 'error', title: '反馈必填', message: '拒绝操作必须填写反馈。' }); return; }
     }
-    const res = await fetch(`/api/tasks/${task.id}/review`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, merge: options?.merge ? true : undefined, feedback: feedback?.trim() || undefined }),
-    });
-    const json = await res.json().catch(() => null);
-    if (!json?.success) { notify({ type: 'error', title: '审批失败', message: json?.error?.message || '请求失败' }); return; }
+    const result = await requestApi<unknown>(
+      `/api/tasks/${task.id}/review`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action,
+          merge: options?.merge ? true : undefined,
+          feedback: feedback ? toOptionalString(feedback) : undefined,
+        }),
+      },
+      '请求失败',
+    );
+    if (!result.ok) {
+      notify({ type: 'error', title: '审批失败', message: result.errorMessage });
+      return;
+    }
     notify({ type: 'success', title: '审批已更新', message: action === 'approve' ? '任务已通过审批。' : '任务已拒绝并重跑。' });
     fetchTasks();
   };
@@ -377,10 +492,9 @@ export default function TasksPage() {
       title: `确认${label}任务?`, description: `${label}任务 "${task.title}"`, confirmText: label, confirmVariant: 'destructive',
     });
     if (!confirmed) return;
-    const res = await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json?.success) {
-      notify({ type: 'error', title: `${label}失败`, message: json?.error?.message || '请求失败' });
+    const result = await cancelTaskById(task.id);
+    if (!result.ok) {
+      notify({ type: 'error', title: `${label}失败`, message: result.errorMessage });
       return;
     }
     notify({ type: 'success', title: '任务已取消', message: `任务 ${task.title} 已取消。` });
@@ -394,12 +508,11 @@ export default function TasksPage() {
       multiline: true, confirmText: '重跑',
     });
     if (feedback == null) return;
-    const res = await fetch(`/api/tasks/${task.id}/rerun`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feedback: feedback.trim() || undefined }),
-    });
-    const json = await res.json().catch(() => null);
-    if (!json?.success) { notify({ type: 'error', title: '重跑失败', message: json?.error?.message || '请求失败' }); return; }
+    const result = await rerunTaskById(task.id, feedback);
+    if (!result.ok) {
+      notify({ type: 'error', title: '重跑失败', message: result.errorMessage });
+      return;
+    }
     notify({ type: 'success', title: '任务已重新入队', message: '任务已重新入队。' });
     fetchTasks();
   };
@@ -432,22 +545,16 @@ export default function TasksPage() {
     if (!confirmed) return;
 
     if (!deletable && stoppable) {
-      const cancelRes = await fetch(`/api/tasks/${task.id}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: '用户在任务页执行停止并删除' }),
-      });
-      const cancelJson = await cancelRes.json().catch(() => null);
-      if (!cancelRes.ok || !cancelJson?.success) {
-        notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
+      const cancelResult = await cancelTaskById(task.id, '用户在任务页执行停止并删除');
+      if (!cancelResult.ok) {
+        notify({ type: 'error', title: '停止任务失败', message: cancelResult.errorMessage });
         return;
       }
     }
 
-    const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
-    const json = await res.json().catch(() => null);
-    if (!res.ok || !json?.success) {
-      notify({ type: 'error', title: '删除失败', message: json?.error?.message || '请求失败' });
+    const result = await deleteTaskById(task.id);
+    if (!result.ok) {
+      notify({ type: 'error', title: '删除失败', message: result.errorMessage });
       return;
     }
     notify({
@@ -508,7 +615,7 @@ export default function TasksPage() {
       key: 'createdAt',
       header: '创建时间',
       className: 'w-[130px]',
-      cell: (row) => <span className="text-sm text-muted-foreground">{new Date(row.createdAt).toLocaleString('zh-CN')}</span>,
+      cell: (row) => <span className="text-sm text-muted-foreground">{formatDateTimeZhCn(row.createdAt)}</span>,
     },
     {
       key: 'elapsed',
@@ -552,7 +659,7 @@ export default function TasksPage() {
               <X size={16} />
             </Button>
           )}
-          {canRerunTask(row.status) && (
+          {canRerunTask(row) && (
             <Button variant="ghost" size="sm" className="h-9 w-9 p-0"
               onClick={() => handleRowRerun(row)} aria-label="重跑">
               <RotateCcw size={16} />
@@ -765,11 +872,7 @@ function CreateTaskModal({
   });
   const [repoPresetId, setRepoPresetId] = useState('');
   const [templateId, setTemplateId] = useState('');
-  const [templates, setTemplates] = useState<Array<{
-    id: string; name: string; titleTemplate: string; promptTemplate: string;
-    agentDefinitionId: string | null; repositoryId: string | null;
-    repoUrl: string | null; baseBranch: string | null; workDir: string | null;
-  }>>([]);
+  const [templates, setTemplates] = useState<TaskTemplateOption[]>([]);
   const [templateLoading, setTemplateLoading] = useState(false);
   const [depToAdd, setDepToAdd] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -787,11 +890,12 @@ function CreateTaskModal({
     setTemplateLoading(true);
     try {
       const res = await fetch('/api/task-templates');
-      const json = await res.json().catch(() => null);
-      if (!json?.success || !Array.isArray(json?.data)) return;
-      setTemplates(json.data);
+      const json = await readApiEnvelope<TaskTemplateOption[]>(res);
+      if (!res.ok || !json?.success || !Array.isArray(json?.data)) return;
+      const templateList = json.data;
+      setTemplates(templateList);
       if (typeof nextTemplateId === 'string') { setTemplateId(nextTemplateId); return; }
-      setTemplateId((prev) => (prev && json.data.some((item: { id: string }) => item.id === prev) ? prev : ''));
+      setTemplateId((prev) => (prev && templateList.some((item: { id: string }) => item.id === prev) ? prev : ''));
     } finally { setTemplateLoading(false); }
   }, []);
 
@@ -828,13 +932,22 @@ function CreateTaskModal({
         body: JSON.stringify({
           name: name.trim(), titleTemplate: form.title.trim(), promptTemplate: form.description.trim(),
           agentDefinitionId: form.agentDefinitionId || null, repositoryId: repoPresetId || null,
-          repoUrl: form.repoUrl.trim() || null, baseBranch: form.baseBranch.trim() || null, workDir: form.workDir.trim() || null,
+          repoUrl: normalizeOptionalString(form.repoUrl),
+          baseBranch: normalizeOptionalString(form.baseBranch),
+          workDir: normalizeOptionalString(form.workDir),
         }),
       });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) { notify({ type: 'error', title: TASK_TEMPLATE_UI_MESSAGES.saveFailedTitle, message: json?.error?.message || '' }); return; }
+      const json = await readApiEnvelope<{ id?: string }>(res);
+      if (!res.ok || !json?.success) {
+        notify({
+          type: 'error',
+          title: TASK_TEMPLATE_UI_MESSAGES.saveFailedTitle,
+          message: resolveApiErrorMessage(res, json, ''),
+        });
+        return;
+      }
       notify({ type: 'success', title: TASK_TEMPLATE_UI_MESSAGES.saveSuccessTitle, message: TASK_TEMPLATE_UI_MESSAGES.saveSuccessMessage(name.trim()) });
-      await fetchTemplates(json?.data?.id);
+      await fetchTemplates(json.data?.id);
     } finally { setTemplateLoading(false); }
   };
 
@@ -922,7 +1035,7 @@ function CreateTaskModal({
                     <button key={id} type="button"
                       onClick={() => setForm((prev) => ({ ...prev, dependsOn: prev.dependsOn.filter((x) => x !== id) }))}
                       className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3.5 py-2 text-sm text-muted-foreground hover:bg-muted/40" title="点击移除">
-                      <span className="font-mono">{id.slice(0, 8)}</span>
+                      <span className="font-mono">{truncateText(id, 8)}</span>
                       <X size={12} className="text-muted-foreground/50" />
                     </button>
                   ))}
@@ -1006,10 +1119,10 @@ function CreatePipelineModal({
     setTemplateLoading(true);
     try {
       const res = await fetch('/api/task-templates');
-      const json = await res.json().catch(() => null);
-      if (!json?.success || !Array.isArray(json?.data)) return;
+      const json = await readApiEnvelope<PipelineTemplate[]>(res);
+      if (!res.ok || !json?.success || !Array.isArray(json?.data)) return;
       // 只保留流水线模板（pipelineSteps 非空）
-      const pipelines = (json.data as PipelineTemplate[]).filter(
+      const pipelines = json.data.filter(
         (t) => t.pipelineSteps && t.pipelineSteps.length > 0
       );
       setPipelineTemplates(pipelines);
@@ -1078,20 +1191,24 @@ function CreatePipelineModal({
           promptTemplate: '(流水线模板)',
           agentDefinitionId: form.agentDefinitionId || null,
           repositoryId: repoPresetId || null,
-          repoUrl: form.repoUrl.trim() || null,
-          baseBranch: form.baseBranch.trim() || null,
-          workDir: form.workDir.trim() || null,
+          repoUrl: normalizeOptionalString(form.repoUrl),
+          baseBranch: normalizeOptionalString(form.baseBranch),
+          workDir: normalizeOptionalString(form.workDir),
           pipelineSteps: validSteps,
           maxRetries: form.maxRetries,
         }),
       });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) {
-        notify({ type: 'error', title: TASK_TEMPLATE_UI_MESSAGES.saveFailedTitle, message: json?.error?.message || '' });
+      const json = await readApiEnvelope<{ id?: string }>(res);
+      if (!res.ok || !json?.success) {
+        notify({
+          type: 'error',
+          title: TASK_TEMPLATE_UI_MESSAGES.saveFailedTitle,
+          message: resolveApiErrorMessage(res, json, ''),
+        });
         return;
       }
       notify({ type: 'success', title: TASK_TEMPLATE_UI_MESSAGES.saveSuccessTitle, message: TASK_TEMPLATE_UI_MESSAGES.saveSuccessMessage(name.trim()) });
-      await fetchPipelineTemplates(json?.data?.id);
+      await fetchPipelineTemplates(json.data?.id);
     } finally { setTemplateLoading(false); }
   };
 

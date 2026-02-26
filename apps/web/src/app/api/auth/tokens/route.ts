@@ -4,12 +4,14 @@
 // POST — 创建新 API Token
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { apiTokens } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { generateApiToken } from '@/lib/auth/api-token';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { apiBadRequest, apiSuccess } from '@/lib/http/api-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 
 async function handleGet(request: AuthenticatedRequest) {
   const tokens = db
@@ -27,18 +29,15 @@ async function handleGet(request: AuthenticatedRequest) {
     .orderBy(desc(apiTokens.createdAt))
     .all();
 
-  return NextResponse.json({ success: true, data: tokens });
+  return apiSuccess(tokens);
 }
 
 async function handlePost(request: AuthenticatedRequest) {
-  const body = await request.json().catch(() => ({}));
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const body = await readJsonBodyAsRecord(request);
+  const name = normalizeOptionalString(body.name) ?? '';
 
   if (!name || name.length < 1 || name.length > 64) {
-    return NextResponse.json(
-      { success: false, error: { code: 'INVALID_INPUT', message: 'Token 名称必须在 1-64 字符之间' } },
-      { status: 400 }
-    );
+    return apiBadRequest('Token 名称必须在 1-64 字符之间');
   }
 
   // 过期时间（可选，天数）
@@ -63,15 +62,12 @@ async function handlePost(request: AuthenticatedRequest) {
     })
     .run();
 
-  return NextResponse.json({
-    success: true,
-    data: {
-      name,
-      tokenPrefix,
-      // 原始 token 仅此一次返回
-      token: rawToken,
-      expiresAt,
-    },
+  return apiSuccess({
+    name,
+    tokenPrefix,
+    // 原始 token 仅此一次返回
+    token: rawToken,
+    expiresAt,
   });
 }
 

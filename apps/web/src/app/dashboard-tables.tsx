@@ -16,6 +16,8 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { InlineBar } from '@/components/ui/inline-bar';
 import { formatDurationMs } from '@/lib/time/duration';
+import { formatDateTimeZhCn } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
 import type { WorkerItem, AgentStatItem } from '@/stores';
 
 /** 活跃 Agent 会话条目 */
@@ -132,7 +134,7 @@ export default function DashboardTables({ workers, workerSummary: ws, agentStats
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-[0.95rem] font-medium">{e.type}</p>
                         <p className="text-sm text-muted-foreground/60">
-                          {new Date(e.timestamp).toLocaleString('zh-CN')}
+                          {formatDateTimeZhCn(e.timestamp)}
                         </p>
                       </div>
                     </div>
@@ -188,7 +190,7 @@ const workerColumns: Column<WorkerItem>[] = [
       <span className="text-sm text-muted-foreground">
         {row.currentTaskId ? (
           <Link href={`/tasks/${row.currentTaskId}`} className="text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
-            {row.currentTaskId.slice(0, 8)}
+            {truncateText(row.currentTaskId, 8)}
           </Link>
         ) : '-'}
       </span>

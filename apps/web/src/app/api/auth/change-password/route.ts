@@ -3,7 +3,6 @@
 // POST — 当前用户修改自己的密码
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { users } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
@@ -12,16 +11,16 @@ import { verifyPassword, hashPassword } from '@/lib/auth/password';
 import { revokeAllUserSessions, createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { parseChangePasswordPayload } from '@/lib/validation/user-input';
+import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { getRequestClientInfo } from '@/lib/auth/request-client';
+import { apiBadRequest, apiError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 
 async function handlePost(request: AuthenticatedRequest) {
-  const body = await request.json().catch(() => ({}));
+  const body = await readJsonBodyAsRecord(request);
   const validation = parseChangePasswordPayload(body);
 
   if (!validation.success) {
-    return NextResponse.json(
-      { success: false, error: { code: 'INVALID_INPUT', message: validation.errorMessage } },
-      { status: 400 }
-    );
+    return apiBadRequest(validation.errorMessage);
   }
 
   const { currentPassword, newPassword } = validation.data;
@@ -34,27 +33,18 @@ async function handlePost(request: AuthenticatedRequest) {
     .get();
 
   if (!user) {
-    return NextResponse.json(
-      { success: false, error: { code: 'NOT_FOUND', message: '用户不存在' } },
-      { status: 404 }
-    );
+    return apiNotFound('用户不存在');
   }
 
   // OAuth-only 用户无密码，不能用此接口
   if (!user.passwordHash) {
-    return NextResponse.json(
-      { success: false, error: { code: 'NO_PASSWORD', message: '当前账户无密码（OAuth 用户），请使用 OAuth 登录' } },
-      { status: 400 }
-    );
+    return apiError('NO_PASSWORD', '当前账户无密码（OAuth 用户），请使用 OAuth 登录', { status: 400 });
   }
 
   // 验证当前密码
   const currentValid = await verifyPassword(currentPassword, user.passwordHash);
   if (!currentValid) {
-    return NextResponse.json(
-      { success: false, error: { code: 'INVALID_PASSWORD', message: '当前密码错误' } },
-      { status: 401 }
-    );
+    return apiError('INVALID_PASSWORD', '当前密码错误', { status: 401 });
   }
 
   // 更新密码
@@ -71,13 +61,10 @@ async function handlePost(request: AuthenticatedRequest) {
   await revokeAllUserSessions(request.user.id);
 
   // 创建新 Session
-  const ipAddress = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || request.headers.get('x-real-ip')
-    || 'unknown';
-  const userAgent = request.headers.get('user-agent') || undefined;
+  const { ipAddress, userAgent } = getRequestClientInfo(request);
   const newToken = await createSession({ userId: request.user.id, ipAddress, userAgent });
 
-  const response = NextResponse.json({ success: true });
+  const response = apiSuccess(null);
   response.cookies.set(SESSION_COOKIE_NAME, newToken, {
     ...buildAuthCookieOptions({ maxAge: getSessionCookieMaxAgeSeconds() }),
   });

@@ -1,0 +1,29 @@
+# 冗余与重复审查（仅审查版）
+
+【输入】
+- scope：审查范围（目录/模块/服务）。
+- report_path：报告路径（默认 `.conversations/reports/redundancy-review-report.md`）。
+- acceptance_criteria：至少包含“Top 重复点、影响评估、整改建议、验证设计、优先级路线图”。
+- constraints：审查深度、时间预算、不可触碰目录、是否允许运行分析命令。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 仅做冗余审查：识别重复代码、重复配置、重复流程与无效抽象，输出整改优先级（不改代码）。
+
+【注意事项】
+- 通用审查基线（必须）：先扫描事实→再分级问题→最后给路线图；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须有证据；按【输出】原样输出。
+- 严格单一职责：仅审查不改代码。
+- 证据必须落到具体位置（文件/函数/调用链），禁止泛化描述。
+- 优先识别高影响重复（高频路径、核心链路、公共模块）。
+- 报告必须落盘到 `report_path`；如提供 `handoff_output_dir`，结束时写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 扫描结论（范围、入口、重复热点分布、可用命令）。
+- 重复问题清单（P0/P1/P2：位置/影响/证据/整改建议/验证方式）。
+- Top 5 冗余点（收益/风险/改造成本）。
+- 整改优先级路线图（阶段化：先做什么、后做什么）。
+- 验证设计（回归路径、失败路径、覆盖范围）。
+- 审查报告（已保存路径 + 报告摘要）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 问题分级/证据/建议）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"findings":[],"priority_plan":[],"next_actions":[]}。

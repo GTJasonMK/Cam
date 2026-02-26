@@ -1,0 +1,32 @@
+# 根据计划实现 MVP（仅执行版）
+
+【输入】
+- plan_report_path：实施计划报告路径（默认 `.conversations/reports/mvp-implementation-plan-report.md`）。
+- requirements_report_path：需求澄清报告路径（可选，默认 `.conversations/reports/mvp-requirements-clarification-report.md`）。
+- scope：允许改动范围（目录/模块/接口）。
+- acceptance_criteria：至少包含“核心流程可用、关键验收项通过、回归通过、可演示”。
+- constraints：不可改动项、时间预算、是否允许重构/新增依赖/补测试。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 基于需求澄清与实施计划执行 MVP 开发，交付可运行、可验证的最小可用版本。
+
+【注意事项】
+- 通用执行基线（必须）：先读取 `plan_report_path` 并确认执行目标（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；按【输出】原样输出。
+- 严格按计划落地：逐条映射“计划项 → 代码改动 → 验证结果”；偏离计划必须说明原因与风险。
+- 充分利用 CLI Agent 默认能力：自动探测可运行命令并执行，不要要求用户补充无关工程细节。
+- 开发阶段允许激进修复与重构，但必须写明影响面、迁移方式和回滚点。
+- 能跑就跑 test/lint/build/typecheck/smoke 并留痕；不能跑写阻塞原因与最小手工回归步骤。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（计划来源、纳入范围、验收口径）。
+- 执行计划（3-7 步：目标/影响面/验证/回滚点）。
+- 变更清单（按文件：改动内容/原因/对应计划项）。
+- 验证命令与结果摘要（失败项单列）。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（核心流程、关键接口、边界状态）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

@@ -12,6 +12,7 @@ import { WebSocketServer } from 'ws';
 import { authenticateWs, canAccessTerminal } from '@/lib/terminal/ws-auth';
 import { handleTerminalConnection } from '@/lib/terminal/ws-handler';
 import { ptyManager } from '@/lib/terminal/pty-manager';
+import { ensureVibecodingTaskTemplatesSynced } from '@/lib/db/vibecoding-sync';
 
 // 通过 npm_lifecycle_event 自动推断运行模式（dev vs start）
 if (!process.env.NODE_ENV) {
@@ -27,7 +28,13 @@ const port = parseInt(process.env.PORT || '3000', 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
+  try {
+    await ensureVibecodingTaskTemplatesSynced();
+  } catch (error) {
+    console.error('[VibeSync] 启动同步失败（已跳过）:', error);
+  }
+
   const upgrade = app.getUpgradeHandler();
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url!, true);

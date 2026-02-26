@@ -16,7 +16,11 @@ import { TabBar } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { formatTaskElapsed } from '@/lib/time/duration';
+import { formatDateTimeZhCn } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { TASK_DETAIL_UI_MESSAGES } from '@/lib/i18n/ui-messages';
 import {
   ArrowLeft, ExternalLink, X, RotateCcw,
@@ -54,12 +58,12 @@ export default function TaskDetailPage() {
   const fetchTask = useCallback(async () => {
     try {
       const res = await fetch(`/api/tasks/${taskId}`);
-      const json = await res.json();
-      if (json.success) {
+      const json = await readApiEnvelope<TaskItem>(res);
+      if (res.ok && json?.success && json.data) {
         setTask(json.data);
         setError(null);
       } else {
-        setError(json.error?.message || TASK_DETAIL_UI_MESSAGES.fetchTaskFailed);
+        setError(resolveApiErrorMessage(res, json, TASK_DETAIL_UI_MESSAGES.fetchTaskFailed));
       }
     } catch (err) {
       setError((err as Error).message);
@@ -71,8 +75,8 @@ export default function TaskDetailPage() {
   const fetchLogs = useCallback(async () => {
     try {
       const res = await fetch(`/api/tasks/${taskId}/logs`);
-      const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
+      const json = await readApiEnvelope<string[]>(res);
+      if (res.ok && json?.success && Array.isArray(json.data)) {
         setLogs(json.data);
       }
     } catch {
@@ -83,8 +87,8 @@ export default function TaskDetailPage() {
   const fetchRelations = useCallback(async () => {
     try {
       const res = await fetch(`/api/tasks/${taskId}/relations`);
-      const json = await res.json().catch(() => null);
-      if (res.ok && json?.success) {
+      const json = await readApiEnvelope<{ dependencies: TaskMini[]; dependents: TaskMini[] }>(res);
+      if (res.ok && json?.success && json.data) {
         setRelations(json.data);
       }
     } catch {
@@ -151,8 +155,8 @@ export default function TaskDetailPage() {
           feedback,
         }),
       });
-      const json = await res.json().catch(() => null);
-      if (json?.success) {
+      const json = await readApiEnvelope<unknown>(res);
+      if (res.ok && json?.success) {
         await fetchTask();
         await fetchLogs();
         notify({
@@ -161,7 +165,11 @@ export default function TaskDetailPage() {
           message: action === 'approve' ? TASK_DETAIL_UI_MESSAGES.reviewApprovedMessage : TASK_DETAIL_UI_MESSAGES.reviewRejectedMessage,
         });
       } else {
-        notify({ type: 'error', title: TASK_DETAIL_UI_MESSAGES.reviewFailed, message: json?.error?.message || TASK_DETAIL_UI_MESSAGES.requestFailed });
+        notify({
+          type: 'error',
+          title: TASK_DETAIL_UI_MESSAGES.reviewFailed,
+          message: resolveApiErrorMessage(res, json, TASK_DETAIL_UI_MESSAGES.requestFailed),
+        });
       }
     } catch (err) {
       notify({ type: 'error', title: TASK_DETAIL_UI_MESSAGES.reviewFailed, message: (err as Error).message });
@@ -210,11 +218,15 @@ export default function TaskDetailPage() {
       const res = await fetch(`/api/tasks/${taskId}/rerun`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback: feedback.trim() || undefined }),
+        body: JSON.stringify({ feedback: normalizeOptionalString(feedback) ?? undefined }),
       });
-      const json = await res.json().catch(() => null);
-      if (!json?.success) {
-        notify({ type: 'error', title: TASK_DETAIL_UI_MESSAGES.rerunFailed, message: json?.error?.message || TASK_DETAIL_UI_MESSAGES.requestFailed });
+      const json = await readApiEnvelope<unknown>(res);
+      if (!res.ok || !json?.success) {
+        notify({
+          type: 'error',
+          title: TASK_DETAIL_UI_MESSAGES.rerunFailed,
+          message: resolveApiErrorMessage(res, json, TASK_DETAIL_UI_MESSAGES.requestFailed),
+        });
         return;
       }
       await fetchTask();
@@ -272,7 +284,7 @@ export default function TaskDetailPage() {
 
   const colorToken = TASK_STATUS_COLORS[task.status] || 'muted-foreground';
   const canCancel = ['queued', 'waiting', 'running'].includes(task.status);
-  const canRerun = ['failed', 'cancelled', 'completed'].includes(task.status);
+  const canRerun = task.source === 'scheduler' && ['failed', 'cancelled', 'completed'].includes(task.status);
   const isReview = task.status === 'awaiting_review';
 
   return (
@@ -545,10 +557,10 @@ function MetaPanel({ task, elapsed }: { task: TaskItem; elapsed: { text: string;
     { label: M.dependencyCount, value: task.dependsOn?.length ? TASK_DETAIL_UI_MESSAGES.taskCount(task.dependsOn.length) : '-' },
     { label: M.worker, value: task.assignedWorkerId || TASK_DETAIL_UI_MESSAGES.unassigned, icon: Server },
     { label: M.retryCount, value: String(task.retryCount) },
-    { label: M.createdAt, value: task.createdAt ? new Date(task.createdAt).toLocaleString('zh-CN') : '-', icon: Clock },
-    { label: M.queuedAt, value: task.queuedAt ? new Date(task.queuedAt).toLocaleString('zh-CN') : '-' },
-    { label: M.startedAt, value: task.startedAt ? new Date(task.startedAt).toLocaleString('zh-CN') : '-' },
-    { label: M.completedAt, value: task.completedAt ? new Date(task.completedAt).toLocaleString('zh-CN') : '-' },
+    { label: M.createdAt, value: formatDateTimeZhCn(task.createdAt), icon: Clock },
+    { label: M.queuedAt, value: formatDateTimeZhCn(task.queuedAt) },
+    { label: M.startedAt, value: formatDateTimeZhCn(task.startedAt) },
+    { label: M.completedAt, value: formatDateTimeZhCn(task.completedAt) },
     { label: M.elapsed, value: elapsed.text === '-' ? '-' : `${elapsed.text}${elapsed.ongoing ? TASK_DETAIL_UI_MESSAGES.elapsedOngoing : ''}` },
   ];
 
@@ -621,7 +633,7 @@ function DepsSection({ title, items }: { title: string; items: TaskMini[] }) {
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-foreground">{d.title}</p>
-                  <p className="truncate font-mono text-[11px] text-muted-foreground/60">{d.id.slice(0, 8)}</p>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground/60">{truncateText(d.id, 8)}</p>
                 </div>
                 <StatusBadge status={d.status} colorToken={token} />
               </Link>

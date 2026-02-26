@@ -1,0 +1,34 @@
+# 发布打包与版本管理（执行版）
+
+【输入】
+- scope：发布对象（应用/库/CLI/镜像/制品）与目标使用者。
+- acceptance_criteria：版本策略与发布类型（patch/minor/major）、产物形态、发布前必过验证项。
+- constraints：兼容性要求、是否允许破坏性变更、是否允许改 CI、时间预算。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 准备一次可发布版本：版本号管理、构建打包、变更说明、发布步骤与验证证据。
+- （可留空）target_version、release_notes_focus。
+
+【注意事项】
+- 通用执行基线（必须）：先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；按【输出】原样输出。
+- 如提供 `upstream_handoff_path`，必须先读取并确认发布前置条件已满足。
+- 默认从仓库识别版本来源与发布入口（`package.json/pyproject.toml/Cargo.toml` 等）并对齐现有流程。
+- 先验证再打包：未通过 test/build 的发布不算完成。
+- 变更说明优先更新现有位置（CHANGELOG/Release notes）；没有则补最小版（新增/修复/破坏变更）。
+- 能跑就跑构建与发布前检查并留痕；不能实际发布需给可执行演练步骤。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、验收口径、约束）。
+- 扫描结论（版本号位置、发布入口、构建命令、产物目录）。
+- 执行计划（3-7 步，每步含验证与回滚点）。
+- 变更清单（按文件：版本/脚本/文档/配置改动）。
+- 构建与验证命令结果摘要。
+- 发布检查清单（发布前/发布中/发布后）。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（安装/启动/核心路径/产物可消费验证）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

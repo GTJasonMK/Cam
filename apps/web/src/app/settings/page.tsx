@@ -14,6 +14,9 @@ import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { getBadgeBg, getColorVar } from '@/lib/constants';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { formatDateTimeZhCn, formatTimeZhCn } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
 import { Plus, RefreshCw, RotateCcw, Trash2, Key, Download, TerminalSquare, ShieldCheck } from 'lucide-react';
 
 // ---- 类型定义 ----
@@ -122,8 +125,8 @@ export default function SettingsPage() {
     (async () => {
       try {
         const res = await fetch('/api/settings/env');
-        const json = await res.json();
-        if (!cancelled && json.success) setData(json.data);
+        const json = await readApiEnvelope<SettingsData>(res);
+        if (!cancelled && res.ok && json?.success && json.data) setData(json.data);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -136,12 +139,12 @@ export default function SettingsPage() {
     setSecretsError(null);
     try {
       const res = await fetch('/api/secrets');
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<SecretItem[]>(res);
       if (!res.ok || !json?.success) {
-        setSecretsError(json?.error?.message || `HTTP ${res.status}`);
+        setSecretsError(resolveApiErrorMessage(res, json, '加载密钥失败'));
         return;
       }
-      setSecrets(Array.isArray(json.data) ? (json.data as SecretItem[]) : []);
+      setSecrets(Array.isArray(json.data) ? json.data : []);
     } catch (err) {
       setSecretsError((err as Error).message);
     } finally {
@@ -152,9 +155,9 @@ export default function SettingsPage() {
   const fetchRepos = useCallback(async () => {
     try {
       const res = await fetch('/api/repos');
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<Array<{ id: string; name: string }>>(res);
       if (!res.ok || !json?.success) return;
-      const rows = Array.isArray(json.data) ? (json.data as Array<{ id: string; name: string }>) : [];
+      const rows = Array.isArray(json.data) ? json.data : [];
       setRepos(rows.map((r) => ({ id: r.id, name: r.name })));
     } catch {
       // ignore
@@ -167,13 +170,13 @@ export default function SettingsPage() {
     setCliError(null);
     try {
       const res = await fetch('/api/settings/agent-cli');
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<{ statuses?: CliStatusItem[] }>(res);
       if (!res.ok || !json?.success || !Array.isArray(json?.data?.statuses)) {
-        const message = json?.error?.message || `HTTP ${res.status}`;
+        const message = resolveApiErrorMessage(res, json, 'CLI 状态检测失败');
         setCliError(message);
         return;
       }
-      setCliStatuses(json.data.statuses as CliStatusItem[]);
+      setCliStatuses(json.data.statuses);
     } catch (err) {
       setCliError((err as Error).message);
     } finally {
@@ -233,9 +236,9 @@ export default function SettingsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
     });
-    const json = await res.json().catch(() => null);
+    const json = await readApiEnvelope<unknown>(res);
     if (!res.ok || !json?.success) {
-      notify({ type: 'error', title: '轮换失败', message: json?.error?.message || `HTTP ${res.status}` });
+      notify({ type: 'error', title: '轮换失败', message: resolveApiErrorMessage(res, json, '轮换密钥失败') });
       return;
     }
     await fetchSecrets();
@@ -252,9 +255,9 @@ export default function SettingsPage() {
     if (!confirmed) return;
 
     const res = await fetch(`/api/secrets/${secret.id}`, { method: 'DELETE' });
-    const json = await res.json().catch(() => null);
+    const json = await readApiEnvelope<unknown>(res);
     if (!res.ok || !json?.success) {
-      notify({ type: 'error', title: '删除失败', message: json?.error?.message || `HTTP ${res.status}` });
+      notify({ type: 'error', title: '删除失败', message: resolveApiErrorMessage(res, json, '删除密钥失败') });
       return;
     }
     await fetchSecrets();
@@ -284,9 +287,13 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<{
+        allOk?: boolean;
+        statuses?: CliStatusItem[];
+        results?: Array<Record<string, unknown>>;
+      }>(res);
       if (!res.ok || !json?.success) {
-        const message = json?.error?.message || `HTTP ${res.status}`;
+        const message = resolveApiErrorMessage(res, json, 'CLI 部署失败');
         setCliError(message);
         notify({ type: 'error', title: '部署失败', message });
         return;
@@ -349,9 +356,9 @@ export default function SettingsPage() {
     setCliError(null);
     try {
       const res = await fetch('/api/settings/agent-cli?mode=preflight');
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<CliPreflightResult>(res);
       if (!res.ok || !json?.success || !json?.data) {
-        const message = json?.error?.message || `HTTP ${res.status}`;
+        const message = resolveApiErrorMessage(res, json, '部署前自检失败');
         setCliError(message);
         notify({ type: 'error', title: '自检失败', message });
         return;
@@ -406,7 +413,7 @@ export default function SettingsPage() {
       header: '更新时间',
       className: 'w-[150px]',
       cell: (row) => (
-        <span className="text-xs text-muted-foreground">{new Date(row.updatedAt).toLocaleString('zh-CN')}</span>
+        <span className="text-xs text-muted-foreground">{formatDateTimeZhCn(row.updatedAt)}</span>
       ),
     },
     {
@@ -501,10 +508,10 @@ export default function SettingsPage() {
                           <p className="text-xs font-medium text-foreground">{w.name}</p>
                           <p className="text-2xs text-muted-foreground/70">
                             {w.status}
-                            {w.lastHeartbeatAt ? ` · ${new Date(w.lastHeartbeatAt).toLocaleTimeString('zh-CN')}` : ''}
+                            {w.lastHeartbeatAt ? ` · ${formatTimeZhCn(w.lastHeartbeatAt)}` : ''}
                           </p>
                         </div>
-                        <span className="font-mono text-2xs text-muted-foreground/50">{w.id.slice(0, 8)}</span>
+                        <span className="font-mono text-2xs text-muted-foreground/50">{truncateText(w.id, 8)}</span>
                       </div>
 
                       {w.reportedEnvVars.length === 0 ? (
@@ -693,7 +700,7 @@ export default function SettingsPage() {
                 <p className="mt-3 text-2xs text-muted-foreground">
                   检测时间:
                   {' '}
-                  {new Date(cliPreflight.summary.checkedAt).toLocaleString('zh-CN')}
+                  {formatDateTimeZhCn(cliPreflight.summary.checkedAt)}
                   {' · '}
                   失败
                   {' '}
@@ -787,8 +794,8 @@ export default function SettingsPage() {
               agentDefinitionId: formData.agentDefinitionId || undefined,
             }),
           });
-          const json = await res.json().catch(() => null);
-          if (!res.ok || !json?.success) throw new Error(json?.error?.message || `HTTP ${res.status}`);
+          const json = await readApiEnvelope<unknown>(res);
+          if (!res.ok || !json?.success) throw new Error(resolveApiErrorMessage(res, json, '创建密钥失败'));
           await fetchSecrets();
           notify({ type: 'success', title: '密钥已创建', message: '已创建密钥。' });
         }}

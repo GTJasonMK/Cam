@@ -7,6 +7,7 @@
 import { readdir, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { toSafeTimestamp } from '../time/format.ts';
 
 /** UUID 正则（v4 格式：8-4-4-4-12） */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,7 +126,7 @@ export async function discoverClaudeSessions(
   const sessions = results.filter((s): s is ClaudeSessionSummary => s !== null);
 
   // 按最后修改时间降序排列
-  sessions.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+  sessions.sort((a, b) => toSafeTimestamp(b.lastModified) - toSafeTimestamp(a.lastModified));
 
   return sessions;
 }

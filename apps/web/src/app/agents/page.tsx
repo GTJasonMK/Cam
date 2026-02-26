@@ -9,6 +9,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAgentStore } from '@/stores';
 import type { AgentDefinitionItem } from '@/stores';
 import { getBadgeBg, getColorVar } from '@/lib/constants';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { PageHeader } from '@/components/ui/page-header';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { TabBar } from '@/components/ui/tabs';
@@ -241,7 +243,7 @@ export default function AgentsPage() {
             body: JSON.stringify({
               id: data.id.trim(),
               displayName: data.displayName.trim(),
-              description: data.description.trim() || null,
+              description: normalizeOptionalString(data.description),
               dockerImage: data.dockerImage.trim(),
               command: data.command.trim(),
               args: data.args.split(' ').filter(Boolean),
@@ -251,8 +253,10 @@ export default function AgentsPage() {
               runtime: data.runtime,
             }),
           });
-          const json = await res.json().catch(() => null);
-          if (!json?.success) throw new Error(json?.error?.message || '创建失败');
+          const json = await readApiEnvelope<unknown>(res);
+          if (!res.ok || !json?.success) {
+            throw new Error(resolveApiErrorMessage(res, json, '创建失败'));
+          }
           notify({ type: 'success', title: '智能体已创建', message: `${data.id} 已创建。` });
           fetchAgents();
         }}
@@ -291,7 +295,7 @@ export default function AgentsPage() {
             body: JSON.stringify({
               id: editingAgent.id,
               displayName: data.displayName.trim(),
-              description: data.description.trim() || null,
+              description: normalizeOptionalString(data.description),
               icon: null,
               dockerImage: data.dockerImage.trim(),
               command: data.command.trim(),
@@ -302,8 +306,10 @@ export default function AgentsPage() {
               runtime: data.runtime,
             }),
           });
-          const json = await res.json().catch(() => null);
-          if (!res.ok || !json?.success) throw new Error(json?.error?.message || '更新失败');
+          const json = await readApiEnvelope<unknown>(res);
+          if (!res.ok || !json?.success) {
+            throw new Error(resolveApiErrorMessage(res, json, '更新失败'));
+          }
           notify({ type: 'success', title: '智能体已更新', message: `${editingAgent.id} 已更新。` });
           fetchAgents();
         }}

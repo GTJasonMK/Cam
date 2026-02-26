@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-  GitFork,
   Workflow,
   ArrowRight,
   RefreshCw,
@@ -21,6 +20,7 @@ import {
   AlertTriangle,
   Eye,
   Pencil,
+  MoreHorizontal,
 } from 'lucide-react';
 import {
   buildExportDataFromForm,
@@ -29,7 +29,14 @@ import {
   parsePipelineImport,
   sanitizePipelineImportAgentIds,
 } from '@/lib/pipeline-io';
+import {
+  formatInputFiles,
+  normalizeRetries,
+  parseInputFiles,
+} from '@/lib/pipeline/form-helpers';
 import { resolveKnownAgentIdsForImport } from '@/lib/agents/known-agent-ids';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { Modal } from '@/components/ui/modal';
 
 type PipelineParallelAgent = {
@@ -119,19 +126,6 @@ function nextParallelId(): string {
   return `parallel-${parallelCounter}`;
 }
 
-function parseInputFiles(raw: string): string[] {
-  const files = raw
-    .split(/[\n,]/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return Array.from(new Set(files));
-}
-
-function formatInputFiles(files?: string[]): string {
-  if (!files || files.length === 0) return '';
-  return files.join(', ');
-}
-
 function createEmptyStep(): StepForm {
   return {
     _id: nextStepId(),
@@ -185,14 +179,6 @@ function templateToEditorForm(template: PipelineTemplateItem): PipelineEditorFor
   };
 }
 
-function normalizeRetries(value: number): number {
-  if (!Number.isFinite(value)) return 2;
-  const rounded = Math.round(value);
-  if (rounded < 0) return 0;
-  if (rounded > 20) return 20;
-  return rounded;
-}
-
 function buildEditorSnapshot(form: PipelineEditorForm): string {
   return JSON.stringify({
     id: form.id,
@@ -236,7 +222,8 @@ export default function PipelinesPage() {
   const [activeStepId, setActiveStepId] = useState('');
   const [expandedParallelStepIds, setExpandedParallelStepIds] = useState<string[]>([]);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState('');
-  const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit');
+  const [viewMode, setViewMode] = useState<'canvas' | 'edit' | 'preview'>('canvas');
+  const [projectSettingsCollapsed, setProjectSettingsCollapsed] = useState(true);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   const [promptEditorTarget, setPromptEditorTarget] = useState<PromptEditorTarget | null>(null);
   const [promptEditorDraft, setPromptEditorDraft] = useState('');
@@ -262,13 +249,16 @@ export default function PipelinesPage() {
         fetch('/api/task-templates'),
         fetch('/api/agents'),
       ]);
-      const [templateJson, agentJson] = await Promise.all([templateRes.json(), agentRes.json()]);
+      const [templateJson, agentJson] = await Promise.all([
+        readApiEnvelope<PipelineTemplateItem[]>(templateRes),
+        readApiEnvelope<AgentItem[]>(agentRes),
+      ]);
 
-      if (!templateJson.success || !Array.isArray(templateJson.data)) {
-        throw new Error(templateJson.error?.message || '加载流水线模板失败');
+      if (!templateRes.ok || !templateJson?.success || !Array.isArray(templateJson.data)) {
+        throw new Error(resolveApiErrorMessage(templateRes, templateJson, '加载流水线模板失败'));
       }
-      if (!agentJson.success || !Array.isArray(agentJson.data)) {
-        throw new Error(agentJson.error?.message || '加载智能体列表失败');
+      if (!agentRes.ok || !agentJson?.success || !Array.isArray(agentJson.data)) {
+        throw new Error(resolveApiErrorMessage(agentRes, agentJson, '加载智能体列表失败'));
       }
 
       const allTemplates = templateJson.data as PipelineTemplateItem[];
@@ -725,6 +715,7 @@ export default function PipelinesPage() {
   const saveTemplate = useCallback(async () => {
     const validationError = validateEditor();
     if (validationError) {
+      setProjectSettingsCollapsed(false);
       setError(validationError);
       const firstInvalid = editor.steps.find((step) => (stepIssues[step._id]?.length ?? 0) > 0);
       if (firstInvalid) {
@@ -739,20 +730,20 @@ export default function PipelinesPage() {
       const pipelineSteps = editor.steps.map((step) => {
         const normalizedParallel = step.parallelAgents
           .map((node) => ({
-            ...(node.title.trim() ? { title: node.title.trim() } : {}),
+            ...(normalizeOptionalString(node.title) ? { title: normalizeOptionalString(node.title) } : {}),
             description: node.description.trim(),
-            ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+            ...(normalizeOptionalString(node.agentDefinitionId) ? { agentDefinitionId: normalizeOptionalString(node.agentDefinitionId) } : {}),
           }))
           .filter((node) => node.description.length > 0);
 
         return {
           title: step.title.trim(),
           description: step.description.trim(),
-          ...(step.agentDefinitionId ? { agentDefinitionId: step.agentDefinitionId } : {}),
+          ...(normalizeOptionalString(step.agentDefinitionId) ? { agentDefinitionId: normalizeOptionalString(step.agentDefinitionId) } : {}),
           ...(parseInputFiles(step.inputFiles).length > 0
             ? { inputFiles: parseInputFiles(step.inputFiles) }
             : {}),
-          ...(step.inputCondition.trim() ? { inputCondition: step.inputCondition.trim() } : {}),
+          ...(normalizeOptionalString(step.inputCondition) ? { inputCondition: normalizeOptionalString(step.inputCondition) } : {}),
           ...(normalizedParallel.length > 0 ? { parallelAgents: normalizedParallel } : {}),
         };
       });
@@ -762,9 +753,9 @@ export default function PipelinesPage() {
         titleTemplate: '(流水线模板)',
         promptTemplate: '(流水线模板)',
         agentDefinitionId: editor.agentDefinitionId || null,
-        repoUrl: editor.repoUrl.trim() || null,
-        baseBranch: editor.baseBranch.trim() || null,
-        workDir: editor.workDir.trim() || null,
+        repoUrl: normalizeOptionalString(editor.repoUrl),
+        baseBranch: normalizeOptionalString(editor.baseBranch),
+        workDir: normalizeOptionalString(editor.workDir),
         maxRetries: normalizeRetries(editor.maxRetries),
         pipelineSteps,
       };
@@ -778,9 +769,9 @@ export default function PipelinesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const json = await res.json().catch(() => ({}));
-      if (!json.success) {
-        throw new Error(json.error?.message || (isEditing ? '保存流水线模板失败' : '创建流水线模板失败'));
+      const json = await readApiEnvelope<{ id?: string }>(res);
+      if (!res.ok || !json?.success) {
+        throw new Error(resolveApiErrorMessage(res, json, isEditing ? '保存流水线模板失败' : '创建流水线模板失败'));
       }
 
       const maybeId = typeof json.data?.id === 'string' ? json.data.id : null;
@@ -808,9 +799,9 @@ export default function PipelinesPage() {
     setError('');
     try {
       const res = await fetch(`/api/task-templates/${editor.id}`, { method: 'DELETE' });
-      const json = await res.json().catch(() => ({}));
-      if (!json.success) {
-        throw new Error(json.error?.message || '删除流水线模板失败');
+      const json = await readApiEnvelope<unknown>(res);
+      if (!res.ok || !json?.success) {
+        throw new Error(resolveApiErrorMessage(res, json, '删除流水线模板失败'));
       }
       setSelectedTemplateId('');
       setEditor(createEmptyEditorForm());
@@ -829,12 +820,12 @@ export default function PipelinesPage() {
         prompt: step.description.trim(),
         agentDefinitionId: step.agentDefinitionId.trim(),
         inputFiles: parseInputFiles(step.inputFiles),
-        inputCondition: step.inputCondition.trim() || undefined,
+        inputCondition: normalizeOptionalString(step.inputCondition) ?? undefined,
         parallelAgents: step.parallelAgents
           .map((node) => ({
-            title: node.title.trim() || undefined,
+            title: normalizeOptionalString(node.title) ?? undefined,
             prompt: node.description.trim(),
-            agentDefinitionId: node.agentDefinitionId.trim() || undefined,
+            agentDefinitionId: normalizeOptionalString(node.agentDefinitionId) ?? undefined,
           }))
           .filter((node) => node.prompt.length > 0),
       }))
@@ -982,157 +973,182 @@ export default function PipelinesPage() {
       )}
 
       {!loading && (
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-xl border border-border bg-card/70 p-3 lg:flex lg:max-h-[calc(100vh-230px)] lg:flex-col">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-semibold text-foreground">流水线模板</div>
-              <button
-                type="button"
-                onClick={setDraftNew}
-                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
-              >
-                <Plus size={12} />
-                新建
-              </button>
-            </div>
-
-            {templates.length === 0 ? (
-              <p className="text-xs text-muted-foreground">暂无流水线模板，先在右侧创建一个。</p>
-            ) : (
-              <div className="space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
-                {templates.map((tpl) => {
-                  const isSelected = selectedTemplateId === tpl.id;
-                  return (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => selectTemplate(tpl.id)}
-                      className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
-                        isSelected
-                          ? 'border-primary/35 bg-primary/10'
-                          : 'border-border bg-card/70 hover:border-border-light'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                        <GitFork size={13} />
-                        <span className="truncate">{tpl.name}</span>
-                      </div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        {(tpl.pipelineSteps?.length ?? 0)} 步骤
-                        {(tpl.pipelineSteps?.reduce((acc, step) => acc + (step.parallelAgents?.length ?? 0), 0) ?? 0) > 0
-                          ? ` · ${tpl.pipelineSteps?.reduce((acc, step) => acc + (step.parallelAgents?.length ?? 0), 0)} 并行`
-                          : ''}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </aside>
-
-          <section className="rounded-xl border border-border bg-card/70 p-4 lg:flex lg:max-h-[calc(100vh-230px)] lg:flex-col">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
-                  <Layers size={16} />
-                  {editor.id ? '编辑流水线模板' : '新建流水线模板'}
-                </h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  每个步骤可配置默认 Agent、输入约束和并行子任务（节点级 Agent/提示词）。
-                </p>
-                {hasUnsavedChanges && (
-                  <p className="mt-2 inline-flex items-center gap-1 rounded-md border border-warning/35 bg-warning/10 px-2 py-1 text-[11px] text-warning">
-                    <AlertTriangle size={12} />
-                    有未保存修改
+        <section className="rounded-xl border border-border bg-card/70 p-4 lg:flex lg:max-h-[calc(100vh-230px)] lg:flex-col">
+            <div className="mb-4 rounded-lg border border-border bg-background/30 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-[260px] flex-1 space-y-1">
+                  <h2 className="flex items-center gap-1.5 text-base font-semibold text-foreground">
+                    <Layers size={16} />
+                    {editor.id ? '编辑流水线模板' : '新建流水线模板'}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    每个步骤可配置默认 Agent、输入约束和并行子任务（节点级 Agent/提示词）。
                   </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {editor.id && (
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <select
+                      value={selectedTemplateId}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        if (!nextId) {
+                          setDraftNew();
+                          return;
+                        }
+                        selectTemplate(nextId);
+                      }}
+                      className={`w-full ${selectCls}`}
+                    >
+                      <option value="">新建草稿（不绑定模板）</option>
+                      {templates.map((tpl) => (
+                        <option key={tpl.id} value={tpl.id}>
+                          {tpl.name} · {(tpl.pipelineSteps?.length ?? 0)} 步骤
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-[11px] text-muted-foreground">
+                      共 {templates.length} 个模板
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {hasUnsavedChanges && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-warning/35 bg-warning/10 px-2 py-1 text-[11px] text-warning">
+                      <AlertTriangle size={12} />
+                      未保存
+                    </span>
+                  )}
                   <button
                     type="button"
-                    onClick={() => void deleteTemplate()}
+                    onClick={() => void saveTemplate()}
                     disabled={saving}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
                   >
-                    <Trash2 size={14} />
-                    删除
+                    <Save size={14} />
+                    {saving ? '保存中...' : editor.id ? '保存修改' : '创建模板'}
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void saveTemplate()}
-                  disabled={saving}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-                >
-                  <Save size={14} />
-                  {saving ? '保存中...' : editor.id ? '保存修改' : '创建模板'}
-                </button>
+
+                  <details className="group relative">
+                    <summary className="list-none">
+                      <span className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition-colors hover:border-border-light hover:text-foreground">
+                        <MoreHorizontal size={14} />
+                        更多
+                      </span>
+                    </summary>
+                    <div className="absolute right-0 z-20 mt-2 w-44 rounded-md border border-border bg-card p-1 shadow-lg">
+                      <button
+                        type="button"
+                        onClick={setDraftNew}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
+                      >
+                        <Plus size={13} />
+                        新建草稿
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void refreshTemplates()}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
+                      >
+                        <RefreshCw size={13} />
+                        刷新模板
+                      </button>
+                      {editor.id && (
+                        <button
+                          type="button"
+                          onClick={() => void deleteTemplate()}
+                          disabled={saving}
+                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                        >
+                          <Trash2 size={13} />
+                          删除模板
+                        </button>
+                      )}
+                    </div>
+                  </details>
+                </div>
               </div>
             </div>
 
             <div className="space-y-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">模板名称</label>
-                  <input
-                    value={editor.name}
-                    onChange={(e) => updateEditorField('name', e.target.value)}
-                    placeholder="例如：并行代码评审流水线"
-                    className={inputCls}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">默认 Agent</label>
-                  <select
-                    value={editor.agentDefinitionId}
-                    onChange={(e) => updateEditorField('agentDefinitionId', e.target.value)}
-                    className={`w-full ${selectCls}`}
-                  >
-                    <option value="">不指定</option>
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>{agent.displayName} ({agent.id})</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">仓库地址（可选）</label>
-                  <input
-                    value={editor.repoUrl}
-                    onChange={(e) => updateEditorField('repoUrl', e.target.value)}
-                    placeholder="git@github.com:org/repo.git"
-                    className={inputCls}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">基线分支（可选）</label>
-                  <input
-                    value={editor.baseBranch}
-                    onChange={(e) => updateEditorField('baseBranch', e.target.value)}
-                    placeholder="main"
-                    className={inputCls}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">工作目录（可选）</label>
-                  <input
-                    value={editor.workDir}
-                    onChange={(e) => updateEditorField('workDir', e.target.value)}
-                    placeholder="/path/to/project"
-                    className={inputCls}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">最大重试次数</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={20}
-                    value={String(editor.maxRetries)}
-                    onChange={(e) => updateEditorField('maxRetries', Number(e.target.value || 0))}
-                    className={inputCls}
-                  />
-                </div>
+              <div className="rounded-lg border border-border bg-background/20">
+                <button
+                  type="button"
+                  onClick={() => setProjectSettingsCollapsed((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-background/30"
+                >
+                  <span className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground">
+                    {projectSettingsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    项目级流水线设置
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {editor.name.trim() || '未命名模板'}
+                  </span>
+                </button>
+                {!projectSettingsCollapsed && (
+                  <div className="border-t border-border px-3 pb-3 pt-2">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">模板名称</label>
+                        <input
+                          value={editor.name}
+                          onChange={(e) => updateEditorField('name', e.target.value)}
+                          placeholder="例如：并行代码评审流水线"
+                          className={inputCls}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">默认 Agent</label>
+                        <select
+                          value={editor.agentDefinitionId}
+                          onChange={(e) => updateEditorField('agentDefinitionId', e.target.value)}
+                          className={`w-full ${selectCls}`}
+                        >
+                          <option value="">不指定</option>
+                          {agents.map((agent) => (
+                            <option key={agent.id} value={agent.id}>{agent.displayName} ({agent.id})</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">仓库地址（可选）</label>
+                        <input
+                          value={editor.repoUrl}
+                          onChange={(e) => updateEditorField('repoUrl', e.target.value)}
+                          placeholder="git@github.com:org/repo.git"
+                          className={inputCls}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">基线分支（可选）</label>
+                        <input
+                          value={editor.baseBranch}
+                          onChange={(e) => updateEditorField('baseBranch', e.target.value)}
+                          placeholder="main"
+                          className={inputCls}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">工作目录（可选）</label>
+                        <input
+                          value={editor.workDir}
+                          onChange={(e) => updateEditorField('workDir', e.target.value)}
+                          placeholder="/path/to/project"
+                          className={inputCls}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs text-muted-foreground">最大重试次数</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={20}
+                          value={String(editor.maxRetries)}
+                          onChange={(e) => updateEditorField('maxRetries', Number(e.target.value || 0))}
+                          className={inputCls}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="mt-5 space-y-3">
@@ -1150,6 +1166,18 @@ export default function PipelinesPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="inline-flex rounded-md border border-border bg-background/45 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('canvas')}
+                        className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                          viewMode === 'canvas'
+                            ? 'bg-primary/15 text-foreground'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        <Workflow size={12} />
+                        画布视角
+                      </button>
                       <button
                         type="button"
                         onClick={() => setViewMode('edit')}
@@ -1175,7 +1203,7 @@ export default function PipelinesPage() {
                         执行预览
                       </button>
                     </div>
-                    {viewMode === 'edit' && (
+                    {viewMode !== 'preview' && (
                       <button
                         type="button"
                         onClick={addStep}
@@ -1188,7 +1216,315 @@ export default function PipelinesPage() {
                   </div>
                 </div>
 
-                {viewMode === 'edit' ? (
+                {viewMode === 'canvas' ? (
+                  (() => {
+                    const selectedStep = editor.steps.find((step) => step._id === activeStepId) || editor.steps[0] || null;
+                    const selectedStepIndex = selectedStep
+                      ? editor.steps.findIndex((step) => step._id === selectedStep._id)
+                      : -1;
+                    const selectedIssueItems = selectedStep ? (stepIssues[selectedStep._id] ?? []) : [];
+                    const selectedParallelExpanded = selectedStep
+                      ? expandedParallelStepIds.includes(selectedStep._id)
+                      : false;
+
+                    return (
+                      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+                        <div className="rounded-lg border border-border bg-background/25">
+                          <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                            <p className="text-xs text-muted-foreground">
+                              拖拽功能暂未启用，可先使用“上移/下移”调整顺序；点击节点可在右侧编辑细节。
+                            </p>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <div className="flex min-w-max items-start gap-3 p-3">
+                              {editor.steps.map((step, stepIndex) => {
+                                const isSelected = selectedStep?._id === step._id;
+                                const issueCount = stepIssues[step._id]?.length ?? 0;
+                                const stepAgentLabel = step.agentDefinitionId || editor.agentDefinitionId || '默认 Agent';
+
+                                return (
+                                  <div key={step._id} className="flex items-start gap-3">
+                                    <div
+                                      role="button"
+                                      tabIndex={0}
+                                      onClick={() => setActiveStepId(step._id)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                          event.preventDefault();
+                                          setActiveStepId(step._id);
+                                        }
+                                      }}
+                                      className={`w-[280px] cursor-pointer rounded-lg border p-3 transition-colors ${
+                                        isSelected
+                                          ? 'border-primary/45 bg-primary/10'
+                                          : 'border-border bg-card/70 hover:border-border-light'
+                                      }`}
+                                    >
+                                      <div className="mb-2 flex items-center justify-between gap-2">
+                                        <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary">
+                                          步骤 {stepIndex + 1}
+                                        </span>
+                                        {issueCount > 0 && (
+                                          <span className="rounded border border-destructive/35 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                                            {issueCount} 问题
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="truncate text-sm font-medium text-foreground">
+                                        {step.title.trim() || '未命名步骤'}
+                                      </div>
+                                      <div className="mt-1 rounded border border-border bg-background/35 px-2 py-1 text-[11px] text-muted-foreground">
+                                        Agent：{stepAgentLabel}
+                                      </div>
+                                      <div className="mt-1 rounded border border-border bg-background/35 px-2 py-1 text-[11px] text-muted-foreground">
+                                        提示词：{summarizePrompt(step.description, 80)}
+                                      </div>
+                                      <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                                        <span>并行节点：{step.parallelAgents.length}</span>
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            addParallelAgent(step._id);
+                                          }}
+                                          className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 transition-colors hover:border-border-light hover:text-foreground"
+                                        >
+                                          <Plus size={11} />
+                                          并行
+                                        </button>
+                                      </div>
+                                      <div className="mt-2 flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            moveStep(step._id, -1);
+                                          }}
+                                          disabled={stepIndex === 0}
+                                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+                                          title="向左移动"
+                                        >
+                                          <ArrowUp size={12} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            moveStep(step._id, 1);
+                                          }}
+                                          disabled={stepIndex === editor.steps.length - 1}
+                                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+                                          title="向右移动"
+                                        >
+                                          <ArrowDown size={12} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            duplicateStep(step._id);
+                                          }}
+                                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
+                                          title="复制步骤"
+                                        >
+                                          <Copy size={12} />
+                                        </button>
+                                        {editor.steps.length > 2 && (
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              removeStep(step._id);
+                                            }}
+                                            className="rounded p-1 text-destructive/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                            title="删除步骤"
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {stepIndex < editor.steps.length - 1 && (
+                                      <div className="flex h-[180px] items-center text-muted-foreground/70">
+                                        <ArrowRight size={14} />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+
+                              <button
+                                type="button"
+                                onClick={addStep}
+                                className="flex h-[180px] w-[92px] shrink-0 items-center justify-center rounded-lg border border-dashed border-border bg-background/30 text-xs text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
+                              >
+                                <span className="inline-flex items-center gap-1">
+                                  <Plus size={12} />
+                                  新步骤
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg border border-border bg-card/70 p-3">
+                          {!selectedStep ? (
+                            <div className="rounded border border-border bg-background/35 px-3 py-4 text-sm text-muted-foreground">
+                              请先在左侧画布中选择一个步骤进行编辑。
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-sm font-semibold text-foreground">
+                                    步骤 {selectedStepIndex + 1} 属性
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground">
+                                    你在这里编辑，左侧画布实时反映结果
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => openStepPromptEditor(selectedStep._id)}
+                                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
+                                >
+                                  <Pencil size={11} />
+                                  编辑提示词
+                                </button>
+                              </div>
+
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <input
+                                  value={selectedStep.title}
+                                  onChange={(e) => updateStep(selectedStep._id, { title: e.target.value })}
+                                  placeholder="步骤标题"
+                                  className={inputCls}
+                                />
+                                <select
+                                  value={selectedStep.agentDefinitionId}
+                                  onChange={(e) => updateStep(selectedStep._id, { agentDefinitionId: e.target.value })}
+                                  className={`w-full ${selectCls}`}
+                                >
+                                  <option value="">使用默认 Agent</option>
+                                  {agents.map((agent) => (
+                                    <option key={agent.id} value={agent.id}>{agent.displayName} ({agent.id})</option>
+                                  ))}
+                                </select>
+                                <input
+                                  value={selectedStep.inputFiles}
+                                  onChange={(e) => updateStep(selectedStep._id, { inputFiles: e.target.value })}
+                                  placeholder="输入文件（逗号/换行分隔）"
+                                  className={inputCls}
+                                />
+                                <input
+                                  value={selectedStep.inputCondition}
+                                  onChange={(e) => updateStep(selectedStep._id, { inputCondition: e.target.value })}
+                                  placeholder="输入条件（可选）"
+                                  className={inputCls}
+                                />
+                              </div>
+
+                              <div className="rounded-md border border-border bg-background/30 px-2 py-1.5 text-xs text-muted-foreground">
+                                提示词预览：{summarizePrompt(selectedStep.description, 200)}
+                              </div>
+
+                              <div className="rounded-md border border-border bg-background/45 p-2">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleParallelPanel(selectedStep._id)}
+                                    className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                                  >
+                                    {selectedParallelExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                    并行节点（{selectedStep.parallelAgents.length}）
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => addParallelAgent(selectedStep._id)}
+                                    className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
+                                  >
+                                    <Plus size={11} />
+                                    添加节点
+                                  </button>
+                                </div>
+
+                                {selectedParallelExpanded ? (
+                                  selectedStep.parallelAgents.length === 0 ? (
+                                    <p className="text-[11px] text-muted-foreground/80">
+                                      暂无并行节点。添加后可为每个节点独立指定 Agent 和提示词。
+                                    </p>
+                                  ) : (
+                                    <div className="space-y-2">
+                                      {selectedStep.parallelAgents.map((node, nodeIndex) => (
+                                        <div key={node._id} className="rounded border border-border bg-card/60 p-2">
+                                          <div className="mb-2 flex items-center justify-between">
+                                            <span className="text-[11px] text-primary">并行节点 {nodeIndex + 1}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => removeParallelAgent(selectedStep._id, node._id)}
+                                              className="rounded p-1 text-destructive/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                              title="删除并行节点"
+                                            >
+                                              <Trash2 size={11} />
+                                            </button>
+                                          </div>
+                                          <div className="grid gap-2 sm:grid-cols-2">
+                                            <input
+                                              value={node.title}
+                                              onChange={(e) => updateParallelAgent(selectedStep._id, node._id, 'title', e.target.value)}
+                                              placeholder="节点标题（可选）"
+                                              className={inputCls}
+                                            />
+                                            <select
+                                              value={node.agentDefinitionId}
+                                              onChange={(e) => updateParallelAgent(selectedStep._id, node._id, 'agentDefinitionId', e.target.value)}
+                                              className={`w-full ${selectCls}`}
+                                            >
+                                              <option value="">使用步骤/默认 Agent</option>
+                                              {agents.map((agent) => (
+                                                <option key={agent.id} value={agent.id}>{agent.displayName} ({agent.id})</option>
+                                              ))}
+                                            </select>
+                                            <div className="space-y-1 sm:col-span-2">
+                                              <div className="flex items-center justify-between gap-2">
+                                                <label className="text-[11px] text-muted-foreground">节点提示词</label>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => openParallelPromptEditor(selectedStep._id, node._id)}
+                                                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
+                                                >
+                                                  <Pencil size={11} />
+                                                  编辑提示词
+                                                </button>
+                                              </div>
+                                              <div className="rounded-md border border-border bg-background/30 px-2 py-1.5 text-xs text-muted-foreground">
+                                                {summarizePrompt(node.description, 150)}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )
+                                ) : (
+                                  <p className="text-[11px] text-muted-foreground/80">
+                                    已折叠并行节点区域，点击标题展开编辑。
+                                  </p>
+                                )}
+                              </div>
+
+                              {selectedIssueItems.length > 0 && (
+                                <div className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
+                                  {selectedIssueItems.join('；')}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : viewMode === 'edit' ? (
                 <div className="space-y-3">
                   {editor.steps.map((step, stepIndex) => {
                     const stepIssueItems = stepIssues[step._id] ?? [];
@@ -1461,7 +1797,7 @@ export default function PipelinesPage() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setViewMode('edit');
+                                    setViewMode('canvas');
                                     setActiveStepId(step.id);
                                   }}
                                   className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-light hover:text-foreground"
@@ -1527,7 +1863,6 @@ export default function PipelinesPage() {
               </div>
             </div>
           </section>
-        </div>
       )}
 
       <Modal

@@ -2,6 +2,9 @@
 // 任务模板 API 输入校验（无外部依赖）
 // ============================================================
 
+import { hasOwnKey, isPlainObject } from './objects.ts';
+import { normalizeOptionalString } from './strings.ts';
+
 type ParseSuccess<T> = { success: true; data: T };
 type ParseFailure = { success: false; errorMessage: string };
 type ParseResult<T> = ParseSuccess<T> | ParseFailure;
@@ -25,28 +28,18 @@ const MAX_PIPELINE_TEMPLATE_STEPS = 50;
 const MAX_PARALLEL_AGENTS_PER_STEP = 8;
 const MAX_STEP_INPUT_FILES = 50;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function toTrimmedString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
 function readOptionalStringField(
   source: Record<string, unknown>,
   key: string
 ): { exists: boolean; valid: boolean; value: NullableString } {
-  if (!Object.prototype.hasOwnProperty.call(source, key)) {
+  if (!hasOwnKey(source, key)) {
     return { exists: false, valid: true, value: null };
   }
   const raw = source[key];
   if (raw === null) {
     return { exists: true, valid: true, value: null };
   }
-  const value = toTrimmedString(raw);
+  const value = normalizeOptionalString(raw);
   return { exists: true, valid: value !== null, value };
 }
 
@@ -70,7 +63,7 @@ export function parseCreateTaskTemplatePayload(input: unknown): ParseResult<Task
     return { success: false, errorMessage: '请求体必须是 JSON object' };
   }
 
-  const name = toTrimmedString(input.name);
+  const name = normalizeOptionalString(input.name);
   if (!name) {
     return { success: false, errorMessage: '缺少必填字段: name' };
   }
@@ -85,8 +78,8 @@ export function parseCreateTaskTemplatePayload(input: unknown): ParseResult<Task
 
   // 单任务模板：titleTemplate + promptTemplate 必填
   // 流水线模板：titleTemplate + promptTemplate 可选（自动填充占位）
-  const titleTemplate = toTrimmedString(input.titleTemplate);
-  const promptTemplate = toTrimmedString(input.promptTemplate);
+  const titleTemplate = normalizeOptionalString(input.titleTemplate);
+  const promptTemplate = normalizeOptionalString(input.promptTemplate);
 
   if (!isPipeline && (!titleTemplate || !promptTemplate)) {
     return {
@@ -106,11 +99,11 @@ export function parseCreateTaskTemplatePayload(input: unknown): ParseResult<Task
       name,
       titleTemplate: titleTemplate || '(流水线模板)',
       promptTemplate: promptTemplate || '(流水线模板)',
-      agentDefinitionId: toTrimmedString(input.agentDefinitionId),
-      repositoryId: toTrimmedString(input.repositoryId),
-      repoUrl: toTrimmedString(input.repoUrl),
-      baseBranch: toTrimmedString(input.baseBranch),
-      workDir: toTrimmedString(input.workDir),
+      agentDefinitionId: normalizeOptionalString(input.agentDefinitionId),
+      repositoryId: normalizeOptionalString(input.repositoryId),
+      repoUrl: normalizeOptionalString(input.repoUrl),
+      baseBranch: normalizeOptionalString(input.baseBranch),
+      workDir: normalizeOptionalString(input.workDir),
       pipelineSteps,
       maxRetries,
     },
@@ -142,19 +135,19 @@ function parsePipelineStepsField(
     if (!isPlainObject(item)) {
       return { steps: null, errorMessage: `pipelineSteps[${i}] 必须是对象` };
     }
-    const title = toTrimmedString(item.title);
-    const description = toTrimmedString(item.description);
+    const title = normalizeOptionalString(item.title);
+    const description = normalizeOptionalString(item.description);
     if (!title || !description) {
       return { steps: null, errorMessage: `pipelineSteps[${i}] 缺少有效的 title/description` };
     }
-    const agentDefinitionId = toTrimmedString(item.agentDefinitionId);
+    const agentDefinitionId = normalizeOptionalString(item.agentDefinitionId);
 
     let inputCondition: string | undefined;
-    if (Object.prototype.hasOwnProperty.call(item, 'inputCondition')) {
+    if (hasOwnKey(item, 'inputCondition')) {
       if (item.inputCondition === null || item.inputCondition === undefined) {
         inputCondition = undefined;
       } else {
-        const parsed = toTrimmedString(item.inputCondition);
+        const parsed = normalizeOptionalString(item.inputCondition);
         if (!parsed) {
           return { steps: null, errorMessage: `pipelineSteps[${i}].inputCondition 必须是非空字符串或 null` };
         }
@@ -163,7 +156,7 @@ function parsePipelineStepsField(
     }
 
     let inputFiles: string[] | undefined;
-    if (Object.prototype.hasOwnProperty.call(item, 'inputFiles')) {
+    if (hasOwnKey(item, 'inputFiles')) {
       if (item.inputFiles === null || item.inputFiles === undefined) {
         inputFiles = undefined;
       } else if (!Array.isArray(item.inputFiles)) {
@@ -172,7 +165,7 @@ function parsePipelineStepsField(
         const files = new Set<string>();
         for (let j = 0; j < item.inputFiles.length; j++) {
           const raw = item.inputFiles[j];
-          const path = toTrimmedString(raw);
+          const path = normalizeOptionalString(raw);
           if (!path) {
             return { steps: null, errorMessage: `pipelineSteps[${i}].inputFiles[${j}] 必须是非空字符串` };
           }
@@ -186,7 +179,7 @@ function parsePipelineStepsField(
     }
 
     let parallelAgents: PipelineParallelAgent[] | undefined;
-    if (Object.prototype.hasOwnProperty.call(item, 'parallelAgents')) {
+    if (hasOwnKey(item, 'parallelAgents')) {
       if (item.parallelAgents === null || item.parallelAgents === undefined) {
         parallelAgents = undefined;
       } else if (!Array.isArray(item.parallelAgents)) {
@@ -204,15 +197,15 @@ function parsePipelineStepsField(
           if (!isPlainObject(rawNode)) {
             return { steps: null, errorMessage: `pipelineSteps[${i}].parallelAgents[${j}] 必须是对象` };
           }
-          const nodeDescription = toTrimmedString(rawNode.description);
+          const nodeDescription = normalizeOptionalString(rawNode.description);
           if (!nodeDescription) {
             return {
               steps: null,
               errorMessage: `pipelineSteps[${i}].parallelAgents[${j}] 缺少有效的 description`,
             };
           }
-          const nodeTitle = toTrimmedString(rawNode.title);
-          const nodeAgentDefinitionId = toTrimmedString(rawNode.agentDefinitionId);
+          const nodeTitle = normalizeOptionalString(rawNode.title);
+          const nodeAgentDefinitionId = normalizeOptionalString(rawNode.agentDefinitionId);
           nodes.push({
             description: nodeDescription,
             ...(nodeTitle ? { title: nodeTitle } : {}),
@@ -282,7 +275,7 @@ export function parsePatchTaskTemplatePayload(input: unknown): ParseResult<TaskT
   }
 
   // 流水线字段
-  if (Object.prototype.hasOwnProperty.call(input, 'pipelineSteps')) {
+  if (hasOwnKey(input, 'pipelineSteps')) {
     touched += 1;
     const pipelineResult = parsePipelineStepsField(input.pipelineSteps);
     if (pipelineResult.errorMessage) {
@@ -290,7 +283,7 @@ export function parsePatchTaskTemplatePayload(input: unknown): ParseResult<TaskT
     }
     updateData.pipelineSteps = pipelineResult.steps;
   }
-  if (Object.prototype.hasOwnProperty.call(input, 'maxRetries')) {
+  if (hasOwnKey(input, 'maxRetries')) {
     touched += 1;
     updateData.maxRetries = typeof input.maxRetries === 'number'
       ? Math.max(0, Math.min(20, Math.floor(input.maxRetries)))

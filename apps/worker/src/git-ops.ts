@@ -81,6 +81,11 @@ function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | nul
   }
 }
 
+function isInternalCollaborationArtifact(filePath: string): boolean {
+  const normalized = (filePath || '').replace(/\\/g, '/');
+  return normalized === '.conversations' || normalized.startsWith('.conversations/');
+}
+
 function getGitUrlForGitHubRepo(repoUrl: string, env?: Record<string, string>): { cloneUrl: string; displayUrl: string } {
   const parsed = parseGitHubRepo(repoUrl);
   if (!parsed) return { cloneUrl: repoUrl, displayUrl: sanitizeRepoUrlForDisplay(repoUrl) };
@@ -187,9 +192,23 @@ export async function commitAndPush(
     return;
   }
 
-  console.log(`[Git] 提交 ${status.files.length} 个文件变更`);
+  // 协作流水线会写入 .conversations/*，这些文件用于运行时协作，不应进入代码提交
+  const filesToCommit = status.files
+    .map((file) => file.path)
+    .filter((filePath) => !isInternalCollaborationArtifact(filePath));
+  if (filesToCommit.length === 0) {
+    console.log('[Git] 仅检测到协作产物变更(.conversations/*)，跳过提交');
+    return;
+  }
+
+  console.log(`[Git] 提交 ${filesToCommit.length} 个文件变更（已排除协作产物）`);
   await ensureGitIdentity(git, env);
-  await git.add('-A');
+  await git.add(filesToCommit);
+  const staged = (await git.diff(['--cached', '--name-only'])).trim();
+  if (!staged) {
+    console.log('[Git] 没有可提交的代码变更，跳过提交');
+    return;
+  }
   await git.commit(message);
 
   // 确保 GitHub 私有仓库 push 可用（remote 使用 token HTTPS）

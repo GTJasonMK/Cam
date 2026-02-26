@@ -1,0 +1,32 @@
+# 后端模块重构（执行版）
+
+【输入】
+- scope：模块路径/子系统范围。
+- analysis_report_path：重构分析报告路径（默认 `.conversations/reports/refactor-analysis-report.md`）。
+- acceptance_criteria：重构目标（可读性/边界/可测性/去重复）与不丢功能回归点。
+- constraints：兼容性要求、是否允许破坏性变更、时间预算。
+- （可留空）upstream_handoff_path：上一步交接文件路径。
+- （可留空）handoff_output_dir：默认 `.conversations/pipeline-handoffs/<pipeline_id>/`。
+
+【需要完成的功能】
+- 基于重构分析报告执行改造：按既定计划重构模块并保证功能不回退。
+
+【注意事项】
+- 通用执行基线（必须）：先确认目标与验收（≤3 行）→扫描仓库事实→3-7 步执行（每步含影响面/验证/回滚）→回填证据；最多追问 3 个阻塞问题；每条 `acceptance_criteria` 必须映射证据；至少 1 条失败路径验证；按【输出】原样输出。
+- 必须先读取 `analysis_report_path`（以及可选的 `upstream_handoff_path`），只执行纳入范围的重构任务。
+- 先补最小回归护栏，再执行结构改造；允许必要重构，但禁止无目标重写。
+- 每条改动需映射到报告问题或计划步骤编号。
+- 能跑就跑 test/build/smoke 并留痕；不能跑给阻塞原因与最小手工回归。
+- 如提供 `handoff_output_dir`，结束时必须写 `step-summary.md` 与 `step-handoff.json`。
+
+【输出】
+- 输入确认结果（范围、验收口径、约束）。
+- 扫描结论（报告输入、模块入口、计划改造点）。
+- 执行计划（3-7 步，每步含验证与回滚点）。
+- 变更清单（按文件：改动内容/原因/对应计划编号）。
+- 验证命令与结果摘要。
+- 风险补充（未完成项/原因/下一步）。
+- 回归清单（核心路径）。
+- 流水线交接文件（若提供 `handoff_output_dir`：`step-summary.md` + `step-handoff.json`）。
+- 验收映射表（acceptance_criteria → 改动点 → 验证证据）。
+- 机器可读摘要（JSON）：{"status":"success|partial|blocked","scope":[],"changed_files":[],"verification":[],"unresolved":[],"next_actions":[]}。

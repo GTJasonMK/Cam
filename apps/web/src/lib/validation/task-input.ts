@@ -3,23 +3,15 @@
 // 说明：当前环境无法新增 zod 依赖，先用统一校验函数保证行为一致
 // ============================================================
 
+import { hasOwnKey, isPlainObject } from './objects.ts';
+import { normalizeOptionalString } from './strings.ts';
+
 type ParseSuccess<T> = { success: true; data: T };
 type ParseFailure = { success: false; errorMessage: string };
 type ParseResult<T> = ParseSuccess<T> | ParseFailure;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function asTrimmedString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
 function parseOptionalString(value: unknown): string | null {
-  const normalized = asTrimmedString(value);
-  return normalized || null;
+  return normalizeOptionalString(value);
 }
 
 function parseOptionalBoolean(value: unknown): boolean {
@@ -43,7 +35,7 @@ function parseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const unique = new Set<string>();
   for (const item of value) {
-    const normalized = asTrimmedString(item);
+    const normalized = normalizeOptionalString(item);
     if (!normalized) continue;
     unique.add(normalized);
   }
@@ -68,10 +60,10 @@ export function parseCreateTaskPayload(input: unknown): ParseResult<CreateTaskPa
     return { success: false, errorMessage: '请求体必须是 JSON object' };
   }
 
-  const title = asTrimmedString(input.title);
-  const description = asTrimmedString(input.description);
-  const agentDefinitionId = asTrimmedString(input.agentDefinitionId);
-  const repoUrl = asTrimmedString(input.repoUrl);
+  const title = normalizeOptionalString(input.title);
+  const description = normalizeOptionalString(input.description);
+  const agentDefinitionId = normalizeOptionalString(input.agentDefinitionId);
+  const repoUrl = normalizeOptionalString(input.repoUrl);
 
   if (!title || !description || !agentDefinitionId || !repoUrl) {
     return {
@@ -88,7 +80,7 @@ export function parseCreateTaskPayload(input: unknown): ParseResult<CreateTaskPa
       agentDefinitionId,
       repositoryId: parseOptionalString(input.repositoryId),
       repoUrl,
-      baseBranch: asTrimmedString(input.baseBranch) || 'main',
+      baseBranch: normalizeOptionalString(input.baseBranch) || 'main',
       workDir: parseOptionalString(input.workDir),
       maxRetries: parseOptionalInteger(input.maxRetries, 2, 0, 20),
       dependsOn: parseStringArray(input.dependsOn),
@@ -120,8 +112,8 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
     return { success: false, errorMessage: '请求体必须是 JSON object' };
   }
 
-  const agentDefinitionId = asTrimmedString(input.agentDefinitionId);
-  const repoUrl = asTrimmedString(input.repoUrl);
+  const agentDefinitionId = normalizeOptionalString(input.agentDefinitionId);
+  const repoUrl = normalizeOptionalString(input.repoUrl);
   if (!repoUrl) {
     return {
       success: false,
@@ -152,18 +144,18 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
       };
     }
 
-    const title = asTrimmedString(rawStep.title);
-    const description = asTrimmedString(rawStep.description);
+    const title = normalizeOptionalString(rawStep.title);
+    const description = normalizeOptionalString(rawStep.description);
     if (!title || !description) {
       return {
         success: false,
         errorMessage: 'steps 必须是非空数组，且每项包含 title/description',
       };
     }
-    const stepAgent = asTrimmedString(rawStep.agentDefinitionId);
+    const stepAgent = normalizeOptionalString(rawStep.agentDefinitionId);
 
     let inputFiles: string[] | undefined;
-    if (Object.prototype.hasOwnProperty.call(rawStep, 'inputFiles')) {
+    if (hasOwnKey(rawStep, 'inputFiles')) {
       const rawInputFiles = rawStep.inputFiles;
       if (rawInputFiles !== undefined && rawInputFiles !== null) {
         if (!Array.isArray(rawInputFiles)) {
@@ -174,7 +166,7 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
         }
         const normalized = new Set<string>();
         for (const rawFile of rawInputFiles) {
-          const filePath = asTrimmedString(rawFile);
+          const filePath = normalizeOptionalString(rawFile);
           if (!filePath) {
             return {
               success: false,
@@ -188,10 +180,10 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
     }
 
     let inputCondition: string | undefined;
-    if (Object.prototype.hasOwnProperty.call(rawStep, 'inputCondition')) {
+    if (hasOwnKey(rawStep, 'inputCondition')) {
       const rawInputCondition = rawStep.inputCondition;
       if (rawInputCondition !== undefined && rawInputCondition !== null) {
-        const parsedInputCondition = asTrimmedString(rawInputCondition);
+        const parsedInputCondition = normalizeOptionalString(rawInputCondition);
         if (!parsedInputCondition) {
           return {
             success: false,
@@ -203,7 +195,7 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
     }
 
     let parallelAgents: Array<{ title?: string; description: string; agentDefinitionId?: string }> | undefined;
-    if (Object.prototype.hasOwnProperty.call(rawStep, 'parallelAgents')) {
+    if (hasOwnKey(rawStep, 'parallelAgents')) {
       const rawParallelAgents = rawStep.parallelAgents;
       if (rawParallelAgents !== undefined && rawParallelAgents !== null) {
         if (!Array.isArray(rawParallelAgents)) {
@@ -220,15 +212,15 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
               errorMessage: 'steps[].parallelAgents[] 必须是对象',
             };
           }
-          const nodeDescription = asTrimmedString(rawNode.description);
+          const nodeDescription = normalizeOptionalString(rawNode.description);
           if (!nodeDescription) {
             return {
               success: false,
               errorMessage: 'steps[].parallelAgents[] 缺少 description',
             };
           }
-          const nodeTitle = asTrimmedString(rawNode.title);
-          const nodeAgent = asTrimmedString(rawNode.agentDefinitionId);
+          const nodeTitle = normalizeOptionalString(rawNode.title);
+          const nodeAgent = normalizeOptionalString(rawNode.agentDefinitionId);
           nodes.push({
             description: nodeDescription,
             ...(nodeTitle ? { title: nodeTitle } : {}),
@@ -282,7 +274,7 @@ export function parseCreatePipelinePayload(input: unknown): ParseResult<CreatePi
       agentDefinitionId: resolvedDefaultAgentId,
       repositoryId: parseOptionalString(input.repositoryId),
       repoUrl,
-      baseBranch: asTrimmedString(input.baseBranch) || 'main',
+      baseBranch: normalizeOptionalString(input.baseBranch) || 'main',
       workDir: parseOptionalString(input.workDir),
       maxRetries: parseOptionalInteger(input.maxRetries, 2, 0, 20),
       groupId: parseOptionalString(input.groupId),
@@ -365,7 +357,7 @@ function readNullableStringField(
   record: Record<string, unknown>,
   key: string
 ): { hasKey: boolean; value: string | null; valid: boolean } {
-  const hasKey = Object.prototype.hasOwnProperty.call(record, key);
+  const hasKey = hasOwnKey(record, key);
   if (!hasKey) {
     return { hasKey: false, value: null, valid: true };
   }
@@ -391,9 +383,9 @@ export function parseTaskPatchPayload(input: unknown): ParseResult<TaskPatchData
   const updateData: TaskPatchData = {};
   let touched = 0;
 
-  if (Object.prototype.hasOwnProperty.call(input, 'status')) {
+  if (hasOwnKey(input, 'status')) {
     touched += 1;
-    const status = asTrimmedString(input.status);
+    const status = normalizeOptionalString(input.status);
     if (!status || !ALLOWED_TASK_STATUS.has(status)) {
       return { success: false, errorMessage: 'status 非法' };
     }

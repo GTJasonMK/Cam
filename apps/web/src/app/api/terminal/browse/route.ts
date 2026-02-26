@@ -4,12 +4,13 @@
 // agent 参数指定发现哪种 Agent 的会话
 // ============================================================
 
-import { NextResponse } from 'next/server';
 import { readdir, access } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { discoverClaudeSessions } from '@/lib/terminal/claude-session-discovery';
 import { discoverCodexSessions } from '@/lib/terminal/codex-session-discovery';
+import { normalizeHostPathInput } from '@/lib/terminal/path-normalize';
+import { apiError, apiSuccess } from '@/lib/http/api-response';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -174,11 +175,11 @@ async function handleGet(request: AuthenticatedRequest) {
       agentSessions: [],
       claudeSessions: [],
     };
-    return NextResponse.json({ success: true, data: response });
+    return apiSuccess(response);
   }
 
   // 规范化路径
-  const targetPath = resolve(rawPath);
+  const targetPath = resolve(normalizeHostPathInput(rawPath));
 
   // 验证路径存在且为目录
   let dirents: import('node:fs').Dirent[];
@@ -187,15 +188,9 @@ async function handleGet(request: AuthenticatedRequest) {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOTDIR') {
-      return NextResponse.json(
-        { success: false, error: { code: 'NOT_DIRECTORY', message: '指定路径不是目录' } },
-        { status: 400 },
-      );
+      return apiError('NOT_DIRECTORY', '指定路径不是目录', { status: 400 });
     }
-    return NextResponse.json(
-      { success: false, error: { code: 'NOT_FOUND', message: '路径不存在或无权访问' } },
-      { status: 404 },
-    );
+    return apiError('NOT_FOUND', '路径不存在或无权访问', { status: 404 });
   }
 
   // 并行：扫描子目录 + 检测当前目录特征 + 发现 Agent 会话
@@ -237,7 +232,7 @@ async function handleGet(request: AuthenticatedRequest) {
     claudeSessions: agentSessions,
   };
 
-  return NextResponse.json({ success: true, data: response });
+  return apiSuccess(response);
 }
 
-export const GET = withAuth(handleGet, 'task:read');
+export const GET = withAuth(handleGet, 'terminal:access');

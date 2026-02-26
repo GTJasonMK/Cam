@@ -12,7 +12,9 @@ import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { EVENT_TYPE_COLORS, getColorVar } from '@/lib/constants';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { EVENTS_UI_MESSAGES } from '@/lib/i18n/ui-messages';
+import { formatDateTimeZhCn } from '@/lib/time/format';
 import { Download, RefreshCw, ChevronDown, ChevronRight, Inbox } from 'lucide-react';
 
 // ---- 类型定义 ----
@@ -81,9 +83,9 @@ export default function EventsPage() {
     try {
       const params = buildQueryParams();
       const res = await fetch(`/api/events?${params.toString()}`);
-      const json: EventsResponse = await res.json().catch(() => ({ success: false }));
-      if (!res.ok || !json.success || !json.data) {
-        setError(json.error?.message || EVENTS_UI_MESSAGES.requestFailedWithStatus(res.status));
+      const json = await readApiEnvelope<EventsResponse['data']>(res);
+      if (!res.ok || !json?.success || !json.data) {
+        setError(resolveApiErrorMessage(res, json, EVENTS_UI_MESSAGES.requestFailedWithStatus(res.status)));
         return;
       }
 
@@ -105,8 +107,12 @@ export default function EventsPage() {
       params.set('limit', '5000');
       const res = await fetch(`/api/events?${params.toString()}`);
       if (!res.ok) {
-        const json = await res.json().catch(() => ({} as { error?: { message?: string } }));
-        notify({ type: 'error', title: EVENTS_UI_MESSAGES.exportFailed, message: json?.error?.message || EVENTS_UI_MESSAGES.exportFailedWithStatus(res.status) });
+        const json = await readApiEnvelope<unknown>(res);
+        notify({
+          type: 'error',
+          title: EVENTS_UI_MESSAGES.exportFailed,
+          message: resolveApiErrorMessage(res, json, EVENTS_UI_MESSAGES.exportFailedWithStatus(res.status)),
+        });
         return;
       }
       const blob = await res.blob();
@@ -190,7 +196,7 @@ export default function EventsPage() {
       header: '时间',
       className: 'w-[160px]',
       cell: (row) => (
-        <span className="text-sm text-muted-foreground">{new Date(row.timestamp).toLocaleString('zh-CN')}</span>
+        <span className="text-sm text-muted-foreground">{formatDateTimeZhCn(row.timestamp)}</span>
       ),
     },
     {

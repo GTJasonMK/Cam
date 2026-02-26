@@ -20,7 +20,10 @@ import { DataTable, type Column } from '@/components/ui/data-table';
 import { TabBar } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { getStatusDisplayLabel, TASK_STATUS_COLORS } from '@/lib/constants';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { formatDurationMs } from '@/lib/time/duration';
+import { formatDateTimeZhCn, toSafeTimestamp } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
 import { cn } from '@/lib/utils';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import type { AgentSessionStatus } from '@/lib/terminal/protocol';
@@ -96,24 +99,6 @@ const PIPELINE_STATUS_LABELS: Record<PipelineStatus, string> = {
   failed: '失败',
   cancelled: '已取消',
 };
-
-function shortId(id: string, length = 12): string {
-  if (id.length <= length) return id;
-  return `${id.slice(0, length)}...`;
-}
-
-function toTimestamp(input?: string | null): number {
-  if (!input) return 0;
-  const t = new Date(input).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-function formatDateTime(input?: string | null): string {
-  if (!input) return '-';
-  const t = new Date(input);
-  if (!Number.isFinite(t.getTime())) return '-';
-  return t.toLocaleString('zh-CN');
-}
 
 function canDeleteTerminalHistoryTask(status: string): boolean {
   return TERMINAL_TASK_DELETABLE_STATUSES.has(status) || TERMINAL_TASK_CANCELLABLE_STATUSES.has(status);
@@ -211,12 +196,12 @@ export default function TerminalPage() {
     if (!silent) setHistoryLoading(true);
     try {
       const res = await fetch('/api/tasks?source=terminal');
-      const json = await res.json().catch(() => null);
+      const json = await readApiEnvelope<Array<Record<string, unknown>>>(res);
       if (!res.ok || !json?.success || !Array.isArray(json?.data)) {
-        setHistoryError(json?.error?.message || `HTTP ${res.status}`);
+        setHistoryError(resolveApiErrorMessage(res, json, '加载终端历史失败'));
         return;
       }
-      const normalized = (json.data as Array<Record<string, unknown>>).map<HistoryTaskRow>((item) => ({
+      const normalized = json.data.map<HistoryTaskRow>((item) => ({
         id: typeof item.id === 'string' ? item.id : '',
         title: typeof item.title === 'string' ? item.title : '(未命名任务)',
         description: typeof item.description === 'string' ? item.description : '',
@@ -234,6 +219,56 @@ export default function TerminalPage() {
       if (!silent) setHistoryLoading(false);
     }
   }, []);
+
+  const stopHistoryTaskById = useCallback(async (taskId: string, reason: string, notifyOnError = true) => {
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      const json = await readApiEnvelope<unknown>(res);
+      if (!res.ok || !json?.success) {
+        if (notifyOnError) {
+          notify({
+            type: 'error',
+            title: '停止任务失败',
+            message: resolveApiErrorMessage(res, json, '请求失败'),
+          });
+        }
+        return false;
+      }
+      return true;
+    } catch (err) {
+      if (notifyOnError) {
+        notify({ type: 'error', title: '停止任务失败', message: (err as Error).message });
+      }
+      return false;
+    }
+  }, [notify]);
+
+  const deleteHistoryTaskById = useCallback(async (taskId: string, notifyOnError = true) => {
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+      const json = await readApiEnvelope<unknown>(res);
+      if (!res.ok || !json?.success) {
+        if (notifyOnError) {
+          notify({
+            type: 'error',
+            title: '删除失败',
+            message: resolveApiErrorMessage(res, json, '请求失败'),
+          });
+        }
+        return false;
+      }
+      return true;
+    } catch (err) {
+      if (notifyOnError) {
+        notify({ type: 'error', title: '删除失败', message: (err as Error).message });
+      }
+      return false;
+    }
+  }, [notify]);
 
   const handleDeleteHistoryTask = useCallback(async (task: HistoryTaskRow) => {
     if (!canDeleteTerminalHistoryTask(task.status)) {
@@ -259,24 +294,12 @@ export default function TerminalPage() {
 
     try {
       if (stopThenDelete) {
-        const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason: '用户在终端历史执行停止并删除' }),
-        });
-        const cancelJson = await cancelRes.json().catch(() => null);
-        if (!cancelRes.ok || !cancelJson?.success) {
-          notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
-          return;
-        }
+        const stopped = await stopHistoryTaskById(task.id, '用户在终端历史执行停止并删除');
+        if (!stopped) return;
       }
 
-      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: 'DELETE' });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        notify({ type: 'error', title: '删除失败', message: json?.error?.message || '请求失败' });
-        return;
-      }
+      const deleted = await deleteHistoryTaskById(task.id);
+      if (!deleted) return;
 
       setHistoryTasks((prev) => prev.filter((item) => item.id !== task.id));
       notify({
@@ -287,7 +310,7 @@ export default function TerminalPage() {
     } catch (err) {
       notify({ type: 'error', title: '删除失败', message: (err as Error).message });
     }
-  }, [confirmDialog, notify]);
+  }, [confirmDialog, deleteHistoryTaskById, notify, stopHistoryTaskById]);
 
   const handleStopHistoryTask = useCallback(async (task: HistoryTaskRow) => {
     if (!canStopTerminalHistoryTask(task.status)) {
@@ -303,18 +326,10 @@ export default function TerminalPage() {
     });
     if (!confirmed) return;
 
-    try {
-      const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: '用户在终端历史执行停止任务' }),
-      });
-      const cancelJson = await cancelRes.json().catch(() => null);
-      if (!cancelRes.ok || !cancelJson?.success) {
-        notify({ type: 'error', title: '停止任务失败', message: cancelJson?.error?.message || '请求失败' });
-        return;
-      }
+    const stopped = await stopHistoryTaskById(task.id, '用户在终端历史执行停止任务');
+    if (!stopped) return;
 
+    try {
       const nowIso = new Date().toISOString();
       setHistoryTasks((prev) => prev.map((item) => {
         if (item.id !== task.id) return item;
@@ -328,7 +343,7 @@ export default function TerminalPage() {
     } catch (err) {
       notify({ type: 'error', title: '停止任务失败', message: (err as Error).message });
     }
-  }, [confirmDialog, notify]);
+  }, [confirmDialog, notify, stopHistoryTaskById]);
 
   const handleBulkDeleteHistory = useCallback(async () => {
     const kw = historyKeyword.trim().toLowerCase();
@@ -363,21 +378,15 @@ export default function TerminalPage() {
     for (const task of targets) {
       try {
         if (needsStopBeforeDelete(task.status)) {
-          const cancelRes = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: '用户在终端历史执行一键停止并删除' }),
-          });
-          const cancelJson = await cancelRes.json().catch(() => null);
-          if (!cancelRes.ok || !cancelJson?.success) {
+          const stopped = await stopHistoryTaskById(task.id, '用户在终端历史执行一键停止并删除', false);
+          if (!stopped) {
             failed += 1;
             continue;
           }
         }
 
-        const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, { method: 'DELETE' });
-        const json = await res.json().catch(() => null);
-        if (!res.ok || !json?.success) {
+        const deleted = await deleteHistoryTaskById(task.id, false);
+        if (!deleted) {
           failed += 1;
           continue;
         }
@@ -411,6 +420,8 @@ export default function TerminalPage() {
     historyStatusFilter,
     historyRunningOnly,
     historyPipelineOnly,
+    deleteHistoryTaskById,
+    stopHistoryTaskById,
   ]);
 
   useEffect(() => {
@@ -467,14 +478,14 @@ export default function TerminalPage() {
         meta: `${session.isAgent ? 'Agent' : '终端'}${elapsed}`,
         sessionId: session.sessionId,
         running: status.status === 'running' || status.status === 'attached',
-        sortTs: toTimestamp(session.createdAt),
+        sortTs: toSafeTimestamp(session.createdAt),
       };
     });
 
     const pipelineRows = pipelines.map<ExecutionRow>((pipeline) => ({
       id: `pipeline:${pipeline.pipelineId}`,
       executionId: pipeline.pipelineId,
-      title: `流水线 ${shortId(pipeline.pipelineId, 14)}`,
+      title: `流水线 ${truncateText(pipeline.pipelineId, 14)}`,
       kind: 'pipeline',
       kindLabel: '流水线',
       status: {
@@ -559,7 +570,7 @@ export default function TerminalPage() {
         const searchable = `${task.id} ${task.title} ${task.description} ${task.groupId || ''}`;
         return searchable.toLowerCase().includes(kw);
       })
-      .sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt));
+      .sort((a, b) => toSafeTimestamp(b.createdAt) - toSafeTimestamp(a.createdAt));
   }, [historyTasks, historyKeyword, historyStatusFilter, historyRunningOnly, historyPipelineOnly]);
 
   const bulkDeletableHistoryCount = useMemo(
@@ -584,7 +595,7 @@ export default function TerminalPage() {
             )}
             <span className="max-w-[260px] truncate text-sm font-medium text-foreground">{row.title}</span>
           </div>
-          <p className="font-mono text-[11px] text-muted-foreground">{shortId(row.executionId, 14)}</p>
+          <p className="font-mono text-[11px] text-muted-foreground">{truncateText(row.executionId, 14)}</p>
           <p className="text-[11px] text-muted-foreground">{row.meta}</p>
         </div>
       ),
@@ -697,7 +708,7 @@ export default function TerminalPage() {
             <TerminalSquare size={13} className="text-muted-foreground" />
             <span className="max-w-[300px] truncate text-sm font-medium text-foreground">{row.title}</span>
           </div>
-          <p className="font-mono text-[11px] text-muted-foreground">{shortId(row.id, 14)}</p>
+          <p className="font-mono text-[11px] text-muted-foreground">{truncateText(row.id, 14)}</p>
           <p className="text-[11px] text-muted-foreground">
             {row.groupId ? `流水线 ${row.groupId}` : '独立终端会话'}
           </p>
@@ -723,9 +734,9 @@ export default function TerminalPage() {
       className: 'w-[220px]',
       cell: (row) => (
         <div className="space-y-1 text-[11px] text-muted-foreground">
-          <p>创建: {formatDateTime(row.createdAt)}</p>
-          <p>开始: {formatDateTime(row.startedAt)}</p>
-          <p>结束: {formatDateTime(row.completedAt)}</p>
+          <p>创建: {formatDateTimeZhCn(row.createdAt)}</p>
+          <p>开始: {formatDateTimeZhCn(row.startedAt)}</p>
+          <p>结束: {formatDateTimeZhCn(row.completedAt)}</p>
         </div>
       ),
     },

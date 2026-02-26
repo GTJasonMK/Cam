@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TASK_STATUS_COLORS, getStatusDisplayLabel } from '@/lib/constants';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/ui/page-header';
 import { DataTable, type Column } from '@/components/ui/data-table';
@@ -16,6 +17,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { Activity, RefreshCw } from 'lucide-react';
 import { formatDurationMs } from '@/lib/time/duration';
+import { truncateText } from '@/lib/terminal/display';
 
 type RuntimeSessionStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -72,6 +74,20 @@ type RuntimeSummary = {
   activePipelines: number;
   runningPipelines: number;
   pausedPipelines: number;
+  managedSessionPoolSize?: number;
+};
+
+type RuntimeManagedSession = {
+  sessionKey: string;
+  repoPath: string;
+  agentDefinitionId: string;
+  mode: 'resume' | 'continue';
+  resumeSessionId: string | null;
+  source: 'external' | 'managed';
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  leased: boolean;
 };
 
 const RUNTIME_SESSION_STATUS_COLORS: Record<RuntimeSessionStatus, string> = {
@@ -109,6 +125,7 @@ export default function WorkerTerminalPage() {
   });
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSessionItem[]>([]);
   const [runtimePipelines, setRuntimePipelines] = useState<RuntimePipelineItem[]>([]);
+  const [runtimeManagedSessions, setRuntimeManagedSessions] = useState<RuntimeManagedSession[]>([]);
   const [runtimeSessionKeyword, setRuntimeSessionKeyword] = useState(sessionIdFromQuery);
   const [runtimeRunningOnly, setRuntimeRunningOnly] = useState(false);
   const [runtimePipelineFilter, setRuntimePipelineFilter] = useState<string>(
@@ -120,14 +137,22 @@ export default function WorkerTerminalPage() {
     if (!silent) setRuntimeLoading(true);
     try {
       const res = await fetch('/api/workers/runtime');
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.success) {
-        setRuntimeError(json?.error?.message || `HTTP ${res.status}`);
+      const json = await readApiEnvelope<{
+        summary: RuntimeSummary;
+        agentSessions: RuntimeSessionItem[];
+        pipelines: RuntimePipelineItem[];
+        managedSessions?: RuntimeManagedSession[];
+      }>(res);
+      if (!res.ok || !json?.success || !json.data) {
+        setRuntimeError(resolveApiErrorMessage(res, json, `HTTP ${res.status}`));
         return;
       }
-      setRuntimeSummary(json.data.summary as RuntimeSummary);
-      setRuntimeSessions(json.data.agentSessions as RuntimeSessionItem[]);
-      setRuntimePipelines(json.data.pipelines as RuntimePipelineItem[]);
+      setRuntimeSummary(json.data.summary);
+      setRuntimeSessions(json.data.agentSessions);
+      setRuntimePipelines(json.data.pipelines);
+      setRuntimeManagedSessions(Array.isArray(json.data.managedSessions)
+        ? json.data.managedSessions
+        : []);
       setRuntimeError(null);
     } catch (err) {
       setRuntimeError((err as Error).message);
@@ -192,6 +217,11 @@ export default function WorkerTerminalPage() {
   const runtimePipelineSessionCount = useMemo(
     () => runtimeSessions.filter((session) => Boolean(session.pipelineId)).length,
     [runtimeSessions],
+  );
+
+  const runtimeManagedLeasedCount = useMemo(
+    () => runtimeManagedSessions.filter((session) => session.leased).length,
+    [runtimeManagedSessions],
   );
 
   const runtimePipelineFilterOptions = useMemo(() => {
@@ -312,7 +342,7 @@ export default function WorkerTerminalPage() {
       cell: (row) => (
         row.taskId ? (
           <Link href={`/tasks/${row.taskId}`} className="font-mono text-xs text-primary hover:underline">
-            {row.taskId.slice(0, 8)}...
+            {truncateText(row.taskId, 8)}
           </Link>
         ) : <span className="text-xs text-muted-foreground">-</span>
       ),
@@ -334,6 +364,9 @@ export default function WorkerTerminalPage() {
         <div className="flex items-center gap-2">
           <Link href="/workers" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
             任务节点
+          </Link>
+          <Link href="/workers/sessions" className={buttonVariants({ variant: 'secondary', size: 'sm' })}>
+            托管会话池
           </Link>
           <Button size="sm" variant="secondary" loading={runtimeLoading} onClick={() => void fetchRuntime()}>
             <RefreshCw size={14} className="mr-1.5" />
@@ -370,6 +403,16 @@ export default function WorkerTerminalPage() {
             运行中流水线
             {' '}
             <span className="font-semibold text-primary">{runtimeSummary.runningPipelines}</span>
+          </span>
+          <span className="text-muted-foreground">
+            托管会话
+            {' '}
+            <span className="font-semibold text-foreground">{runtimeSummary.managedSessionPoolSize ?? runtimeManagedSessions.length}</span>
+          </span>
+          <span className="text-muted-foreground">
+            托管会话(使用中)
+            {' '}
+            <span className="font-semibold text-warning">{runtimeManagedLeasedCount}</span>
           </span>
         </div>
 
@@ -496,11 +539,11 @@ export default function WorkerTerminalPage() {
                               size="sm"
                             />
                             {node.sessionId && (
-                              <span className="font-mono text-muted-foreground">{node.sessionId.slice(0, 10)}</span>
+                              <span className="font-mono text-muted-foreground">{truncateText(node.sessionId, 10)}</span>
                             )}
                             {node.taskId && (
                               <Link href={`/tasks/${node.taskId}`} className="font-mono text-primary hover:underline">
-                                {node.taskId.slice(0, 8)}...
+                                {truncateText(node.taskId, 8)}
                               </Link>
                             )}
                           </div>
@@ -513,6 +556,35 @@ export default function WorkerTerminalPage() {
             ))}
           </div>
         )}
+
+        <div className="space-y-2">
+          <div className="text-xs text-muted-foreground">托管会话池（当前用户）</div>
+          {runtimeManagedSessions.length === 0 ? (
+            <div className="rounded border border-border bg-background/45 px-3 py-2 text-xs text-muted-foreground">
+              暂无托管会话，可在“托管会话池”页面导入或维护。
+            </div>
+          ) : (
+            <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+              {runtimeManagedSessions.map((session) => (
+                <div
+                  key={session.sessionKey}
+                  className="flex flex-wrap items-center gap-2 rounded border border-border bg-background/45 px-2 py-1.5 text-[11px]"
+                >
+                  <span className="font-mono text-muted-foreground">{truncateText(session.sessionKey, 18)}</span>
+                  <span className="text-muted-foreground">{session.agentDefinitionId}</span>
+                  <span className="text-muted-foreground">{session.mode}</span>
+                  <StatusBadge
+                    status={session.leased ? 'leased' : 'available'}
+                    colorToken={session.leased ? 'warning' : 'success'}
+                    size="sm"
+                    label={session.leased ? '使用中' : '空闲'}
+                  />
+                  <span className="ml-auto text-muted-foreground">{session.repoPath}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

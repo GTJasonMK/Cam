@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { AGENT_SESSION_UI_MESSAGES as MSG } from '@/lib/i18n/ui-messages';
+import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import type { ClientMessage } from '@/lib/terminal/protocol';
 import {
   buildExportDataFromForm,
@@ -26,11 +27,19 @@ import {
   parsePipelineImport,
   sanitizePipelineImportAgentIds,
 } from '@/lib/pipeline-io';
+import { formatInputFiles, parseInputFiles } from '@/lib/pipeline/form-helpers';
+import { formatDateTimeZhCn, toSafeTimestamp } from '@/lib/time/format';
+import { truncateText } from '@/lib/terminal/display';
+import { normalizeOptionalString } from '@/lib/validation/strings';
 import { resolveKnownAgentIdsForImport } from '@/lib/agents/known-agent-ids';
 
 // ---- 类型 ----
 
-interface AgentDef { id: string; displayName: string }
+interface AgentDef {
+  id: string;
+  displayName: string;
+  runtime?: string;
+}
 
 interface PipelineTemplateItem {
   id: string;
@@ -78,27 +87,102 @@ interface Props {
   send: (msg: ClientMessage) => boolean;
 }
 
+interface DiscoveredSessionItem {
+  sessionId: string;
+  lastModified: string;
+  sizeBytes: number;
+}
+
+interface ManagedSessionItem {
+  sessionKey: string;
+  userId: string;
+  repoPath: string;
+  agentDefinitionId: string;
+  mode: 'resume' | 'continue';
+  resumeSessionId?: string;
+  source: 'external' | 'managed';
+  title?: string;
+  createdAt: string;
+  updatedAt: string;
+  leased: boolean;
+}
+
 // ---- 样式 ----
 const inputCls = 'w-full rounded-lg border border-border bg-input-bg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
 const selectCls = 'rounded-lg border border-border bg-input-bg px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30';
 let parallelIdCounter = 0;
+const SESSION_GOVERNED_AGENTS = new Set(['claude-code', 'codex']);
+
+function isSessionGovernedAgent(agentDefinitionId: string): boolean {
+  return SESSION_GOVERNED_AGENTS.has(agentDefinitionId);
+}
 
 function nextParallelId(): string {
   parallelIdCounter += 1;
   return `p-${parallelIdCounter}`;
 }
 
-function parseInputFiles(raw: string): string[] {
-  const files = raw
-    .split(/[\n,]/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return Array.from(new Set(files));
+function toOptionalString(value: string): string | undefined {
+  return normalizeOptionalString(value) ?? undefined;
 }
 
-function formatInputFiles(files?: string[]): string {
-  if (!files || files.length === 0) return '';
-  return files.join(', ');
+function parseAllowCreateStepIndexes(raw: string, totalSteps: number): { indexes: number[]; invalidTokens: string[] } {
+  const tokens = raw.split(/[,\s，]+/g).map((token) => token.trim()).filter(Boolean);
+  if (tokens.length === 0) {
+    return { indexes: [], invalidTokens: [] };
+  }
+
+  const indexes = new Set<number>();
+  const invalidTokens: string[] = [];
+
+  for (const token of tokens) {
+    const value = Number(token);
+    if (!Number.isInteger(value) || value < 1 || value > totalSteps) {
+      invalidTokens.push(token);
+      continue;
+    }
+    indexes.add(value - 1); // 前端使用 1-based 输入，发送 0-based 索引
+  }
+
+  return {
+    indexes: Array.from(indexes).sort((a, b) => a - b),
+    invalidTokens,
+  };
+}
+
+function getStepResolvedAgentIds(step: PipelineStep, defaultAgent: string): string[] {
+  if (step.parallelAgents.length > 0) {
+    return step.parallelAgents.map((node) => node.agentDefinitionId || step.agentDefinitionId || defaultAgent).filter(Boolean);
+  }
+  const fallback = step.agentDefinitionId || defaultAgent;
+  return fallback ? [fallback] : [];
+}
+
+function collectSessionGovernedAgents(steps: PipelineStep[], defaultAgent: string): string[] {
+  const ids = new Set<string>();
+  for (const step of steps) {
+    for (const agentId of getStepResolvedAgentIds(step, defaultAgent)) {
+      if (isSessionGovernedAgent(agentId)) {
+        ids.add(agentId);
+      }
+    }
+  }
+  return Array.from(ids);
+}
+
+function collectRequiredSessionCountByAgent(steps: PipelineStep[], defaultAgent: string): Record<string, number> {
+  const required: Record<string, number> = {};
+  for (const step of steps) {
+    const stepCount: Record<string, number> = {};
+    for (const agentId of getStepResolvedAgentIds(step, defaultAgent)) {
+      if (!isSessionGovernedAgent(agentId)) continue;
+      stepCount[agentId] = (stepCount[agentId] ?? 0) + 1;
+    }
+    for (const [agentId, count] of Object.entries(stepCount)) {
+      required[agentId] = Math.max(required[agentId] ?? 0, count);
+    }
+  }
+  return required;
 }
 
 // ============================================================
@@ -131,40 +215,221 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
   const [saveName, setSaveName] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // 会话治理：默认仅复用已准备会话（禁止隐式新建）
+  const [sessionPolicy, setSessionPolicy] = useState<'reuse-only' | 'allow-create'>('reuse-only');
+  const [allowCreateStepsInput, setAllowCreateStepsInput] = useState('');
+  const [sessionDiscovering, setSessionDiscovering] = useState(false);
+  const [managedSessionsLoading, setManagedSessionsLoading] = useState(false);
+  const [discoveredSessionsByAgent, setDiscoveredSessionsByAgent] = useState<Record<string, DiscoveredSessionItem[]>>({});
+  const [selectedSessionIdsByAgent, setSelectedSessionIdsByAgent] = useState<Record<string, string[]>>({});
+  const [managedSessionsByAgent, setManagedSessionsByAgent] = useState<Record<string, ManagedSessionItem[]>>({});
+  const [selectedManagedSessionKeysByAgent, setSelectedManagedSessionKeysByAgent] = useState<Record<string, string[]>>({});
+  const [managedPoolOnly, setManagedPoolOnly] = useState(true);
+
   // ---- 数据加载 ----
   useEffect(() => {
     if (!open) return;
 
-    fetch('/api/agents').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) {
-        const list = d.data.map((a: AgentDef) => ({ id: a.id, displayName: a.displayName }));
-        setAgents(list);
-        if (list.length > 0 && !defaultAgent) setDefaultAgent(list[0].id);
-      }
-    }).catch(() => {});
+    let cancelled = false;
+    const loadInitialData = async () => {
+      try {
+        const [agentRes, templateRes] = await Promise.all([
+          fetch('/api/agents'),
+          fetch('/api/task-templates'),
+        ]);
+        const [agentJson, templateJson] = await Promise.all([
+          readApiEnvelope<AgentDef[]>(agentRes),
+          readApiEnvelope<Array<PipelineTemplateItem & { promptTemplate?: string | null }>>(templateRes),
+        ]);
 
-    fetch('/api/task-templates').then((r) => r.json()).then((d) => {
-      if (d.success && Array.isArray(d.data)) {
-        // 分离流水线模板和单任务模板
-        const pipelineTpls: PipelineTemplateItem[] = [];
-        const singleTpls: SingleTemplateItem[] = [];
-        for (const t of d.data) {
-          if (t.pipelineSteps && Array.isArray(t.pipelineSteps) && t.pipelineSteps.length > 0) {
-            pipelineTpls.push(t);
-          } else {
-            singleTpls.push({
-              id: t.id,
-              name: t.name,
-              promptTemplate: t.promptTemplate,
-              agentDefinitionId: t.agentDefinitionId,
-            });
-          }
+        if (cancelled) return;
+
+        if (agentRes.ok && agentJson?.success && Array.isArray(agentJson.data)) {
+          const list = agentJson.data.map((a) => ({
+            id: a.id,
+            displayName: a.displayName,
+            runtime: a.runtime,
+          }));
+          setAgents(list);
+          setDefaultAgent((prev) => prev || list[0]?.id || '');
         }
-        setPipelineTemplates(pipelineTpls);
-        setSingleTemplates(singleTpls);
+
+        if (templateRes.ok && templateJson?.success && Array.isArray(templateJson.data)) {
+          const pipelineTpls: PipelineTemplateItem[] = [];
+          const singleTpls: SingleTemplateItem[] = [];
+          for (const t of templateJson.data) {
+            if (t.pipelineSteps && Array.isArray(t.pipelineSteps) && t.pipelineSteps.length > 0) {
+              pipelineTpls.push(t);
+            } else {
+              singleTpls.push({
+                id: t.id,
+                name: t.name,
+                promptTemplate: t.promptTemplate || '',
+                agentDefinitionId: t.agentDefinitionId,
+              });
+            }
+          }
+          setPipelineTemplates(pipelineTpls);
+          setSingleTemplates(singleTpls);
+        }
+      } catch {
+        // ignore
       }
-    }).catch(() => {});
-  }, [open, defaultAgent]);
+    };
+
+    void loadInitialData();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const sessionGovernedAgentIds = useMemo(
+    () => collectSessionGovernedAgents(steps, defaultAgent),
+    [steps, defaultAgent],
+  );
+
+  const requiredSessionCountByAgent = useMemo(
+    () => collectRequiredSessionCountByAgent(steps, defaultAgent),
+    [steps, defaultAgent],
+  );
+
+  const agentNameMap = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.displayName])),
+    [agents],
+  );
+
+  // 按步骤涉及的 CLI Agent 自动发现会话，作为流水线会话池候选
+  useEffect(() => {
+    if (!open) return;
+
+    const dir = workDir.trim();
+    if (!dir || sessionGovernedAgentIds.length === 0) {
+      setDiscoveredSessionsByAgent({});
+      setSelectedSessionIdsByAgent({});
+      setSessionDiscovering(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const discover = async () => {
+      setSessionDiscovering(true);
+      const nextDiscovered: Record<string, DiscoveredSessionItem[]> = {};
+
+      await Promise.all(sessionGovernedAgentIds.map(async (agentId) => {
+        try {
+          const runtime = agents.find((item) => item.id === agentId)?.runtime;
+          const runtimeParam = runtime && runtime !== 'native'
+            ? `&runtime=${encodeURIComponent(runtime)}`
+            : '';
+          const res = await fetch(
+            `/api/terminal/browse?path=${encodeURIComponent(dir)}&agent=${encodeURIComponent(agentId)}${runtimeParam}`,
+          );
+          const json = await readApiEnvelope<{ agentSessions?: DiscoveredSessionItem[] }>(res);
+          if (!res.ok || !json?.success || !json?.data) {
+            nextDiscovered[agentId] = [];
+            return;
+          }
+          const sessionsRaw: DiscoveredSessionItem[] = Array.isArray(json.data.agentSessions)
+            ? json.data.agentSessions as DiscoveredSessionItem[]
+            : [];
+          nextDiscovered[agentId] = sessionsRaw
+            .map((item) => ({
+              sessionId: item.sessionId,
+              lastModified: item.lastModified,
+              sizeBytes: item.sizeBytes,
+            }))
+            .filter((item: DiscoveredSessionItem) => Boolean(item.sessionId))
+            .sort((a: DiscoveredSessionItem, b: DiscoveredSessionItem) => (
+              toSafeTimestamp(b.lastModified) - toSafeTimestamp(a.lastModified)
+            ));
+        } catch {
+          nextDiscovered[agentId] = [];
+        }
+      }));
+
+      if (cancelled) return;
+
+      setDiscoveredSessionsByAgent(nextDiscovered);
+      setSelectedSessionIdsByAgent((prev) => {
+        const next: Record<string, string[]> = {};
+        for (const agentId of sessionGovernedAgentIds) {
+          const discoveredIds = new Set((nextDiscovered[agentId] ?? []).map((session) => session.sessionId));
+          const preserved = (prev[agentId] ?? []).filter((sessionId) => discoveredIds.has(sessionId));
+          if (preserved.length > 0) {
+            next[agentId] = preserved;
+            continue;
+          }
+          // 无历史选择时，默认选中满足并发需求的最近会话
+          const requiredCount = requiredSessionCountByAgent[agentId] ?? 0;
+          next[agentId] = (nextDiscovered[agentId] ?? [])
+            .slice(0, requiredCount)
+            .map((session) => session.sessionId);
+        }
+        return next;
+      });
+      setSessionDiscovering(false);
+    };
+
+    void discover();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, workDir, sessionGovernedAgentIds, agents, requiredSessionCountByAgent]);
+
+  const refreshManagedSessions = useCallback(async () => {
+    const dir = workDir.trim();
+    if (!open || !dir || sessionGovernedAgentIds.length === 0) {
+      setManagedSessionsByAgent({});
+      setSelectedManagedSessionKeysByAgent({});
+      setManagedSessionsLoading(false);
+      return;
+    }
+
+    setManagedSessionsLoading(true);
+    const nextManaged: Record<string, ManagedSessionItem[]> = {};
+
+    await Promise.all(sessionGovernedAgentIds.map(async (agentId) => {
+      try {
+        const query = new URLSearchParams({
+          workDir: dir,
+          agentDefinitionId: agentId,
+        });
+        const res = await fetch(`/api/terminal/session-pool?${query.toString()}`);
+        const json = await readApiEnvelope<ManagedSessionItem[]>(res);
+        if (!res.ok || !json?.success || !Array.isArray(json?.data)) {
+          nextManaged[agentId] = [];
+          return;
+        }
+        nextManaged[agentId] = (json.data as ManagedSessionItem[]).filter((item) => item.agentDefinitionId === agentId);
+      } catch {
+        nextManaged[agentId] = [];
+      }
+    }));
+
+    setManagedSessionsByAgent(nextManaged);
+    setSelectedManagedSessionKeysByAgent((prev) => {
+      const next: Record<string, string[]> = {};
+      for (const agentId of sessionGovernedAgentIds) {
+        const managed = nextManaged[agentId] ?? [];
+        const managedKeySet = new Set(managed.map((item) => item.sessionKey));
+        const preserved = (prev[agentId] ?? []).filter((key) => managedKeySet.has(key));
+        if (preserved.length > 0) {
+          next[agentId] = preserved;
+          continue;
+        }
+        const requiredCount = requiredSessionCountByAgent[agentId] ?? 0;
+        next[agentId] = managed.slice(0, requiredCount).map((item) => item.sessionKey);
+      }
+      return next;
+    });
+    setManagedSessionsLoading(false);
+  }, [open, workDir, sessionGovernedAgentIds, requiredSessionCountByAgent]);
+
+  useEffect(() => {
+    void refreshManagedSessions();
+  }, [refreshManagedSessions]);
 
   // ---- 模板加载 ----
   const applyTemplate = useCallback((templateId: string) => {
@@ -262,6 +527,126 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
     }));
   }, []);
 
+  const togglePreparedSession = useCallback((agentId: string, sessionId: string) => {
+    setSelectedSessionIdsByAgent((prev) => {
+      const current = prev[agentId] ?? [];
+      const exists = current.includes(sessionId);
+      return {
+        ...prev,
+        [agentId]: exists
+          ? current.filter((id) => id !== sessionId)
+          : [...current, sessionId],
+      };
+    });
+  }, []);
+
+  const toggleManagedSession = useCallback((agentId: string, sessionKey: string) => {
+    setSelectedManagedSessionKeysByAgent((prev) => {
+      const current = prev[agentId] ?? [];
+      const exists = current.includes(sessionKey);
+      return {
+        ...prev,
+        [agentId]: exists
+          ? current.filter((key) => key !== sessionKey)
+          : [...current, sessionKey],
+      };
+    });
+  }, []);
+
+  const importSelectedDiscoveredSessions = useCallback(async (agentId: string) => {
+    const dir = workDir.trim();
+    if (!dir) {
+      setError('请先填写项目目录');
+      return;
+    }
+
+    const selectedSessionIds = selectedSessionIdsByAgent[agentId] ?? [];
+    if (selectedSessionIds.length === 0) {
+      setError(`请先选择要导入会话池的 ${agentId} 会话`);
+      return;
+    }
+
+    try {
+      const sessionsPayload = selectedSessionIds.map((sessionId) => ({
+        agentDefinitionId: agentId,
+        mode: 'resume' as const,
+        resumeSessionId: sessionId,
+        source: 'external' as const,
+        title: `${agentId}#${truncateText(sessionId, 8)}`,
+      }));
+      const res = await fetch('/api/terminal/session-pool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workDir: dir,
+          sessions: sessionsPayload,
+        }),
+      });
+      const json = await readApiEnvelope<unknown>(res);
+      if (!res.ok || !json?.success) {
+        setError(resolveApiErrorMessage(res, json, '导入会话池失败'));
+        return;
+      }
+      await refreshManagedSessions();
+      setError('');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [workDir, selectedSessionIdsByAgent, refreshManagedSessions]);
+
+  const preparedSessionsPayload = useMemo(
+    () => {
+      const managedPayload: Array<{
+        sessionKey: string;
+        agentDefinitionId: string;
+        mode: 'resume' | 'continue';
+        resumeSessionId?: string;
+        source: 'managed' | 'external';
+        title: string;
+      }> = [];
+
+      for (const [agentId, sessionKeys] of Object.entries(selectedManagedSessionKeysByAgent)) {
+        const managedList = managedSessionsByAgent[agentId] ?? [];
+        for (const sessionKey of sessionKeys) {
+          const item = managedList.find((session) => session.sessionKey === sessionKey);
+          if (!item) continue;
+          managedPayload.push({
+            sessionKey: item.sessionKey,
+            agentDefinitionId: item.agentDefinitionId,
+            mode: item.mode,
+            ...(item.resumeSessionId ? { resumeSessionId: item.resumeSessionId } : {}),
+            source: 'managed',
+            title: item.title || `${item.agentDefinitionId}#${truncateText(item.resumeSessionId || item.sessionKey, 8)}`,
+          });
+        }
+      }
+
+      if (managedPoolOnly) {
+        return managedPayload;
+      }
+
+      const tempPayload = Object.entries(selectedSessionIdsByAgent).flatMap(([agentId, sessionIds]) => (
+        sessionIds.map((sessionId) => ({
+          sessionKey: `temp:${agentId}:${sessionId}`,
+          agentDefinitionId: agentId,
+          mode: 'resume' as const,
+          resumeSessionId: sessionId,
+          source: 'external' as const,
+          title: `${agentId}#${truncateText(sessionId, 8)}`,
+        }))
+      ));
+
+      // 优先托管池，临时会话按 key 去重补充
+      const usedKeys = new Set(managedPayload.map((item) => item.sessionKey));
+      for (const item of tempPayload) {
+        if (usedKeys.has(item.sessionKey)) continue;
+        managedPayload.push(item);
+      }
+      return managedPayload;
+    },
+    [selectedManagedSessionKeysByAgent, managedSessionsByAgent, managedPoolOnly, selectedSessionIdsByAgent],
+  );
+
   // ---- 保存为模板 ----
   const handleSaveAsTemplate = useCallback(async () => {
     if (!saveName.trim()) return;
@@ -300,9 +685,9 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
           titleTemplate: '(流水线模板)',
           promptTemplate: '(流水线模板)',
           agentDefinitionId: defaultAgent || null,
-          repoUrl: repoUrl.trim() || null,
-          baseBranch: baseBranch.trim() || null,
-          workDir: workDir.trim() || null,
+          repoUrl: normalizeOptionalString(repoUrl),
+          baseBranch: normalizeOptionalString(baseBranch),
+          workDir: normalizeOptionalString(workDir),
           pipelineSteps,
           maxRetries: 2,
         }),
@@ -312,16 +697,17 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         setSaveDialogOpen(false);
         setSaveName('');
         // 刷新模板列表
-        const d = await fetch('/api/task-templates').then((r) => r.json());
-        if (d.success && Array.isArray(d.data)) {
-          const pipelineTpls: PipelineTemplateItem[] = d.data.filter(
+        const listRes = await fetch('/api/task-templates');
+        const listJson = await readApiEnvelope<PipelineTemplateItem[]>(listRes);
+        if (listRes.ok && listJson?.success && Array.isArray(listJson.data)) {
+          const pipelineTpls: PipelineTemplateItem[] = listJson.data.filter(
             (t: PipelineTemplateItem) => t.pipelineSteps && Array.isArray(t.pipelineSteps) && t.pipelineSteps.length > 0,
           );
           setPipelineTemplates(pipelineTpls);
         }
       } else {
-        const d = await res.json().catch(() => ({}));
-        setError(d?.error?.message || MSG.pipeline.saveFailed);
+        const json = await readApiEnvelope<unknown>(res);
+        setError(resolveApiErrorMessage(res, json, MSG.pipeline.saveFailed));
       }
     } catch {
       setError(MSG.pipeline.saveFailed);
@@ -342,12 +728,12 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
         prompt: step.prompt,
         agentDefinitionId: step.agentDefinitionId,
         inputFiles: parseInputFiles(step.inputFiles),
-        inputCondition: step.inputCondition.trim() || undefined,
+        inputCondition: toOptionalString(step.inputCondition),
         parallelAgents: step.parallelAgents
           .map((node) => ({
-            title: node.title.trim() || undefined,
+            title: toOptionalString(node.title),
             prompt: node.prompt,
-            agentDefinitionId: node.agentDefinitionId || undefined,
+            agentDefinitionId: toOptionalString(node.agentDefinitionId),
           }))
           .filter((node) => node.prompt.trim().length > 0),
       })),
@@ -412,33 +798,75 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       return;
     }
 
+    const allowCreateResult = parseAllowCreateStepIndexes(allowCreateStepsInput, steps.length);
+    if (allowCreateResult.invalidTokens.length > 0) {
+      setError(`允许自动新建步骤填写有误：${allowCreateResult.invalidTokens.join(', ')}`);
+      return;
+    }
+
+    const preparedCountByAgent = preparedSessionsPayload.reduce<Record<string, number>>((acc, item) => {
+      acc[item.agentDefinitionId] = (acc[item.agentDefinitionId] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    if (managedPoolOnly && sessionGovernedAgentIds.length > 0 && preparedSessionsPayload.length === 0) {
+      setError('当前启用了“仅使用托管会话池”，请先选择托管会话或导入会话池');
+      return;
+    }
+
+    // 前端快速校验：严格复用模式下，步骤并发需求不能超过已准备会话数
+    if (sessionPolicy === 'reuse-only') {
+      const allowCreateStepsSet = new Set(allowCreateResult.indexes);
+      for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+        if (allowCreateStepsSet.has(stepIndex)) {
+          continue;
+        }
+        const step = steps[stepIndex];
+        const stepCount: Record<string, number> = {};
+        for (const agentId of getStepResolvedAgentIds(step, defaultAgent)) {
+          if (!isSessionGovernedAgent(agentId)) continue;
+          stepCount[agentId] = (stepCount[agentId] ?? 0) + 1;
+        }
+        for (const [agentId, required] of Object.entries(stepCount)) {
+          const prepared = preparedCountByAgent[agentId] ?? 0;
+          if (prepared < required) {
+            setError(`步骤 ${stepIndex + 1} 需要 ${required} 个 ${agentId} 会话，但当前仅准备 ${prepared} 个`);
+            return;
+          }
+        }
+      }
+    }
+
     const ok = send({
       type: 'pipeline-create',
       agentDefinitionId: defaultAgent,
-      workDir: workDir.trim() || undefined,
-      repoUrl: repoUrl.trim() || undefined,
-      baseBranch: baseBranch.trim() || undefined,
+      workDir: toOptionalString(workDir),
+      repoUrl: toOptionalString(repoUrl),
+      baseBranch: toOptionalString(baseBranch),
       cols: 80,
       rows: 24,
+      sessionPolicy,
+      preparedSessions: preparedSessionsPayload,
+      allowCreateSteps: allowCreateResult.indexes,
       steps: steps.map((s) => ({
         title: s.title.trim(),
         prompt: s.prompt.trim(),
-        ...(s.agentDefinitionId ? { agentDefinitionId: s.agentDefinitionId } : {}),
+        ...(toOptionalString(s.agentDefinitionId) ? { agentDefinitionId: toOptionalString(s.agentDefinitionId) } : {}),
         ...(parseInputFiles(s.inputFiles).length > 0 ? { inputFiles: parseInputFiles(s.inputFiles) } : {}),
-        ...(s.inputCondition.trim() ? { inputCondition: s.inputCondition.trim() } : {}),
+        ...(toOptionalString(s.inputCondition) ? { inputCondition: toOptionalString(s.inputCondition) } : {}),
         ...(s.parallelAgents
           .map((node) => ({
-            ...(node.title.trim() ? { title: node.title.trim() } : {}),
+            ...(toOptionalString(node.title) ? { title: toOptionalString(node.title) } : {}),
             prompt: node.prompt.trim(),
-            ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+            ...(toOptionalString(node.agentDefinitionId) ? { agentDefinitionId: toOptionalString(node.agentDefinitionId) } : {}),
           }))
           .filter((node) => node.prompt.length > 0).length > 0
           ? {
               parallelAgents: s.parallelAgents
                 .map((node) => ({
-                  ...(node.title.trim() ? { title: node.title.trim() } : {}),
+                  ...(toOptionalString(node.title) ? { title: toOptionalString(node.title) } : {}),
                   prompt: node.prompt.trim(),
-                  ...(node.agentDefinitionId ? { agentDefinitionId: node.agentDefinitionId } : {}),
+                  ...(toOptionalString(node.agentDefinitionId) ? { agentDefinitionId: toOptionalString(node.agentDefinitionId) } : {}),
                 }))
                 .filter((node) => node.prompt.length > 0),
             }
@@ -456,10 +884,31 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
       { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
       { title: '', prompt: '', agentDefinitionId: '', inputFiles: '', inputCondition: '', parallelAgents: [] },
     ]);
+    setSessionPolicy('reuse-only');
+    setAllowCreateStepsInput('');
+    setDiscoveredSessionsByAgent({});
+    setSelectedSessionIdsByAgent({});
+    setManagedSessionsByAgent({});
+    setSelectedManagedSessionKeysByAgent({});
+    setManagedPoolOnly(true);
     setSelectedTemplateId('');
     setError('');
     onOpenChange(false);
-  }, [canLaunch, defaultAgent, workDir, repoUrl, baseBranch, steps, send, onOpenChange]);
+  }, [
+    canLaunch,
+    allowCreateStepsInput,
+    steps,
+    sessionPolicy,
+    defaultAgent,
+    managedPoolOnly,
+    sessionGovernedAgentIds,
+    workDir,
+    repoUrl,
+    baseBranch,
+    preparedSessionsPayload,
+    send,
+    onOpenChange,
+  ]);
 
   const close = useCallback(() => {
     setError('');
@@ -527,6 +976,152 @@ export function PipelineCreateDialog({ open, onOpenChange, send }: Props) {
               placeholder={MSG.workDirPlaceholder}
               className={inputCls}
             />
+          </div>
+
+          {/* 会话准备（Claude/Codex 治理） */}
+          <div className="rounded-lg border border-border bg-card/70 p-3 space-y-3">
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-foreground">会话准备</label>
+              <p className="text-[11px] text-muted-foreground">
+                流水线默认只复用这里准备的会话，不再隐式新建 Claude/Codex 会话。
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">会话策略</label>
+                <select
+                  value={sessionPolicy}
+                  onChange={(e) => setSessionPolicy(e.target.value as 'reuse-only' | 'allow-create')}
+                  className={`w-full ${selectCls}`}
+                >
+                  <option value="reuse-only">仅复用已准备会话（推荐）</option>
+                  <option value="allow-create">会话不足时允许自动新建</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">允许自动新建步骤（可选，1-based）</label>
+                <input
+                  type="text"
+                  value={allowCreateStepsInput}
+                  onChange={(e) => setAllowCreateStepsInput(e.target.value)}
+                  placeholder="例如：2,4"
+                  className={inputCls}
+                />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={managedPoolOnly}
+                onChange={(e) => setManagedPoolOnly(e.target.checked)}
+              />
+              仅使用托管会话池（不直接使用本次扫描到的临时会话）
+            </label>
+
+            {!workDir.trim() ? (
+              <p className="text-[11px] text-muted-foreground">
+                先填写项目目录，再自动发现可复用会话。
+              </p>
+            ) : sessionGovernedAgentIds.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                当前步骤未使用 Claude/Codex，不需要准备会话池。
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {sessionDiscovering && (
+                  <p className="text-[11px] text-muted-foreground">正在扫描目录中的可复用会话...</p>
+                )}
+                {managedSessionsLoading && (
+                  <p className="text-[11px] text-muted-foreground">正在加载项目托管会话池...</p>
+                )}
+
+                {sessionGovernedAgentIds.map((agentId) => {
+                  const sessions = discoveredSessionsByAgent[agentId] ?? [];
+                  const selectedDiscovered = new Set(selectedSessionIdsByAgent[agentId] ?? []);
+                  const managedSessions = managedSessionsByAgent[agentId] ?? [];
+                  const selectedManaged = new Set(selectedManagedSessionKeysByAgent[agentId] ?? []);
+                  const required = requiredSessionCountByAgent[agentId] ?? 0;
+                  return (
+                    <div key={agentId} className="rounded-md border border-border bg-card/60 p-2 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-foreground">
+                          {agentNameMap.get(agentId) || agentId}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          托管已选 {selectedManaged.size}/{managedSessions.length}，建议至少 {required}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1">
+                        <p className="text-[11px] text-muted-foreground">项目托管会话池</p>
+                        {managedSessions.length === 0 ? (
+                          <p className="text-[11px] text-muted-foreground">暂无托管会话</p>
+                        ) : (
+                          <div className="max-h-28 overflow-y-auto space-y-1">
+                            {managedSessions.map((session) => (
+                              <label
+                                key={session.sessionKey}
+                                className="flex cursor-pointer items-center gap-2 rounded border border-border-subtle px-2 py-1 text-[11px] hover:bg-input-bg/70"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedManaged.has(session.sessionKey)}
+                                  onChange={() => toggleManagedSession(agentId, session.sessionKey)}
+                                />
+                                <span className="font-mono text-foreground">
+                                  {(session.resumeSessionId || session.sessionKey).slice(0, 12)}
+                                </span>
+                                <span className="text-muted-foreground">
+                                  {session.leased ? '已租用' : '空闲'}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[11px] text-muted-foreground">本地发现（可导入托管池）</p>
+                          <button
+                            type="button"
+                            onClick={() => void importSelectedDiscoveredSessions(agentId)}
+                            disabled={selectedDiscovered.size === 0}
+                            className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                          >
+                            导入已选
+                          </button>
+                        </div>
+                        {sessions.length === 0 ? (
+                          <p className="text-[11px] text-muted-foreground">未发现可复用会话</p>
+                        ) : (
+                          <div className="max-h-28 overflow-y-auto space-y-1">
+                            {sessions.map((session) => (
+                              <label
+                                key={`${agentId}:${session.sessionId}`}
+                                className="flex cursor-pointer items-center gap-2 rounded border border-border-subtle px-2 py-1 text-[11px] hover:bg-input-bg/70"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedDiscovered.has(session.sessionId)}
+                                  onChange={() => togglePreparedSession(agentId, session.sessionId)}
+                                />
+                                <span className="font-mono text-foreground">{session.sessionId.slice(0, 12)}</span>
+                                <span className="text-muted-foreground">
+                                  {formatDateTimeZhCn(session.lastModified)}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* 步骤列表 */}
