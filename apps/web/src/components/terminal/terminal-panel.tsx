@@ -87,15 +87,31 @@ export default function TerminalPanel({
     toastTimerRef.current = setTimeout(() => setToastText(null), 1200);
   }
 
-  // 读取终端光标所在行内容（rAF 节流，避免高频输出时过度渲染）
+  // 读取终端光标所在的完整逻辑行（自动合并因终端宽度换行的多行）
   function updateCursorLine() {
     cancelAnimationFrame(cursorLineRaf.current);
     cursorLineRaf.current = requestAnimationFrame(() => {
       const terminal = terminalRef.current;
       if (!terminal) return;
       const buf = terminal.buffer.active;
-      const line = buf.getLine(buf.baseY + buf.cursorY);
-      const text = line?.translateToString(true) ?? '';
+      const cursorAbsY = buf.baseY + buf.cursorY;
+
+      // 从光标行向上回溯，找到连续 isWrapped 的起始行（即命令的第一行）
+      let startY = cursorAbsY;
+      while (startY > 0) {
+        const above = buf.getLine(startY);
+        if (!above || !above.isWrapped) break;
+        startY--;
+      }
+
+      // 拼接从起始行到光标行的所有文本
+      let text = '';
+      for (let y = startY; y <= cursorAbsY; y++) {
+        const line = buf.getLine(y);
+        if (!line) break;
+        text += line.translateToString(true);
+      }
+
       if (text !== cursorLineCache.current) {
         cursorLineCache.current = text;
         setCursorLine(text);
@@ -398,17 +414,17 @@ export default function TerminalPanel({
       {/* 移动端底部区域（光标行预览 + 辅助工具栏） */}
       {showToolbar && (
         <div className="shrink-0">
-          {/* 光标行预览 — 实时镜像终端当前光标所在行 */}
+          {/* 光标行预览 — 实时镜像终端当前光标所在的完整命令行 */}
           <div className="border-t border-border/50 bg-[#0f1923] px-3 py-1.5">
             <div
-              className="flex items-center overflow-hidden text-sm leading-5"
+              className="max-h-[3.75rem] overflow-y-auto text-sm leading-5"
               style={{ fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace" }}
             >
-              <span className="min-w-0 truncate whitespace-pre text-foreground/80">{cursorLine}</span>
+              <span className="whitespace-pre-wrap break-all text-foreground/80">{cursorLine}</span>
               {composingText && (
-                <span className="shrink-0 border-b border-primary text-primary">{composingText}</span>
+                <span className="border-b border-primary text-primary">{composingText}</span>
               )}
-              <span className="ml-px shrink-0 animate-pulse text-primary/70">▎</span>
+              <span className="ml-px animate-pulse text-primary/70">▎</span>
             </div>
           </div>
           {/* 辅助工具栏 */}
