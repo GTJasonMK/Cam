@@ -8,7 +8,6 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import path from 'node:path';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { agentDefinitions, repositories, taskLogs, tasks, terminalSessionPool } from '@/lib/db/schema';

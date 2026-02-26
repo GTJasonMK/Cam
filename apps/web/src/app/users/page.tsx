@@ -188,7 +188,7 @@ export default function UsersPage() {
       successMessage: `${user.username} 已${label}`,
       errorTitle: `${label}失败`,
     });
-  }, [updateUser, confirm, notify, notifyMutationResult]);
+  }, [updateUser, confirm, notifyMutationResult]);
 
   // 权限检查 — 放在所有 hooks 之后
   if (currentUser && !currentUser.id.startsWith('__') && currentUser.role !== 'admin') {
