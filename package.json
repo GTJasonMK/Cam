@@ -14,7 +14,7 @@
     "db:migrate": "pnpm --filter @cam/web db:migrate",
     "db:seed": "pnpm --filter @cam/web db:seed",
     "docker:build:worker-base": "docker build -t cam-worker-base -f apps/worker/Dockerfile .",
-    "docker:build:agents": "pnpm docker:build:worker-base && docker build -t cam-worker:claude-code -f docker/claude-code/Dockerfile . && docker build -t cam-worker:codex -f docker/codex/Dockerfile . && docker build -t cam-worker:aider -f docker/aider/Dockerfile ."
+    "docker:build:agents": "pnpm docker:build:worker-base && docker build -t cam-worker:claude-code -f docker/claude-code/Dockerfile . && docker build -t cam-worker:codex -f docker/codex/Dockerfile ."
   },
   "engines": {
     "node": ">=20.0.0",

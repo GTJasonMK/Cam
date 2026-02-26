@@ -55,8 +55,12 @@ echo "[INFO] 初始化数据库"
 DATABASE_PATH="$CAM_DATA_DIR/cam.db" pnpm db:migrate
 DATABASE_PATH="$CAM_DATA_DIR/cam.db" pnpm db:seed
 
-echo "[INFO] 构建 worker agent 镜像"
-pnpm docker:build:agents
+if [[ "${CAM_BUILD_AGENT_IMAGES:-false}" == "true" ]]; then
+  echo "[INFO] 构建 worker agent 镜像"
+  pnpm docker:build:agents
+else
+  echo "[INFO] 跳过 worker agent 镜像构建（如需构建请设置 CAM_BUILD_AGENT_IMAGES=true）"
+fi
 
 echo "[INFO] 启动服务"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build

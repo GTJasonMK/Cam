@@ -44,25 +44,4 @@ export const BUILTIN_AGENTS = [
     builtIn: true,
     runtime: 'native',
   },
-  {
-    id: 'aider',
-    displayName: 'Aider',
-    description: 'AI pair programming in terminal, supports multiple LLM providers',
-    dockerImage: 'cam-worker:aider',
-    command: 'aider',
-    args: ['--yes-always', '--no-auto-lint', '--message', '{{prompt}}'],
-    requiredEnvVars: [
-      { name: 'ANTHROPIC_API_KEY', description: 'Anthropic API Key', required: false, sensitive: true },
-      { name: 'OPENAI_API_KEY', description: 'OpenAI API Key', required: false, sensitive: true },
-    ],
-    capabilities: {
-      nonInteractive: true,
-      autoGitCommit: true,
-      outputSummary: false,
-      promptFromFile: true,
-    },
-    defaultResourceLimits: { memoryLimitMb: 2048, timeoutMinutes: 60 },
-    builtIn: true,
-    runtime: 'native',
-  },
 ];
