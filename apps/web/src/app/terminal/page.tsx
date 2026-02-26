@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Bot, GitBranch, Plus, RefreshCw, Search, Square, TerminalSquare, Trash2, Wifi, WifiOff } from 'lucide-react';
 import { useTerminalWs } from '@/hooks/useTerminalWs';
 import { useTerminalStore } from '@/stores/terminal';
+import { TerminalDetailDialog } from '@/components/terminal/terminal-detail-dialog';
 import { AgentCreateDialog } from '@/components/terminal/agent-create-dialog';
 import { PipelineCreateDialog } from '@/components/terminal/pipeline-create-dialog';
 import { PageHeader } from '@/components/ui/page-header';
@@ -132,11 +133,44 @@ function getSessionStatus(session: TerminalSession): SessionStatusPresentation {
 
 export default function TerminalPage() {
   const router = useRouter();
-  const { send } = useTerminalWs();
+  const { send, onOutput, onExit } = useTerminalWs();
   const { confirm: confirmDialog, notify } = useFeedback();
   const sessions = useTerminalStore((s) => s.sessions);
   const connected = useTerminalStore((s) => s.connected);
   const pipelines = useTerminalStore((s) => s.pipelines);
+
+  // ---- 终端详情弹窗 ----
+  const [terminalDialogSessionId, setTerminalDialogSessionId] = useState<string | null>(null);
+  const terminalDialogSession = useMemo(
+    () => sessions.find((s) => s.sessionId === terminalDialogSessionId) ?? null,
+    [sessions, terminalDialogSessionId],
+  );
+
+  // ---- 输出路由：sessionId → handler ----
+  const outputHandlersRef = useRef<Map<string, (data: string) => void>>(new Map());
+
+  const registerOutput = useCallback((sessionId: string, handler: (data: string) => void) => {
+    outputHandlersRef.current.set(sessionId, handler);
+    send({ type: 'attach', sessionId });
+  }, [send]);
+
+  const unregisterOutput = useCallback((sessionId: string) => {
+    outputHandlersRef.current.delete(sessionId);
+  }, []);
+
+  useEffect(() => {
+    onOutput.current = (sessionId: string, data: string) => {
+      const handler = outputHandlersRef.current.get(sessionId);
+      handler?.(data);
+    };
+    onExit.current = (sessionId: string, _exitCode: number) => {
+      outputHandlersRef.current.delete(sessionId);
+    };
+    return () => {
+      onOutput.current = null;
+      onExit.current = null;
+    };
+  }, [onOutput, onExit]);
 
   const [pageMode, setPageMode] = useState<TerminalPageMode>('runtime');
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
@@ -625,13 +659,26 @@ export default function TerminalPage() {
       className: 'w-[360px] text-right',
       cell: (row) => (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {row.sessionId ? (
-            <Link
-              href={`/workers/terminal?sessionId=${encodeURIComponent(row.sessionId)}`}
-              className="rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card-elevated hover:text-foreground"
+          {/* 终端会话：弹窗打开终端 */}
+          {row.sessionId && row.kind === 'terminal' ? (
+            <button
+              type="button"
+              onClick={() => setTerminalDialogSessionId(row.sessionId!)}
+              className="rounded border border-primary/30 px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/10"
             >
-              节点详情
-            </Link>
+              终端详情
+            </button>
+          ) : null}
+
+          {/* Agent 会话：弹窗打开终端 */}
+          {row.sessionId && row.kind === 'agent' ? (
+            <button
+              type="button"
+              onClick={() => setTerminalDialogSessionId(row.sessionId!)}
+              className="rounded border border-primary/30 px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/10"
+            >
+              终端详情
+            </button>
           ) : null}
 
           {row.pipelineId ? (
@@ -695,7 +742,7 @@ export default function TerminalPage() {
         </div>
       ),
     },
-  ]), [send, handleDestroySession]);
+  ]), [send, handleDestroySession, setTerminalDialogSessionId]);
 
   const historyColumns = useMemo<Column<HistoryTaskRow>[]>(() => ([
     {
@@ -989,6 +1036,18 @@ export default function TerminalPage() {
         onOpenChange={setPipelineDialogOpen}
         send={send}
       />
+
+      {terminalDialogSession && (
+        <TerminalDetailDialog
+          open={terminalDialogSessionId !== null}
+          onOpenChange={(open) => { if (!open) setTerminalDialogSessionId(null); }}
+          sessionId={terminalDialogSession.sessionId}
+          title={terminalDialogSession.title}
+          send={send}
+          registerOutput={registerOutput}
+          unregisterOutput={unregisterOutput}
+        />
+      )}
     </div>
   );
 }

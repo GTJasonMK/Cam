@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "@xterm/xterm/css/xterm.css";
 
 @theme {
   /* 控制台主题色板（简洁、专业、低噪点） */

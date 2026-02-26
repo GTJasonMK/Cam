@@ -75,21 +75,7 @@ export default function TerminalPanel({
         import('@xterm/addon-web-links'),
       ]);
 
-      // 动态加载 xterm CSS
-      if (!document.querySelector('link[data-xterm-css]')) {
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.dataset.xtermCss = '';
-        // 尝试从 node_modules 获取 CSS 路径
-        try {
-          // @ts-expect-error -- CSS module 无类型声明，运行时由 webpack 处理
-          await import('@xterm/xterm/css/xterm.css');
-        } catch {
-          // webpack 可能不处理该 CSS，手动注入 link 标签
-          link.href = '/xterm.css';
-          document.head.appendChild(link);
-        }
-      }
+      // xterm CSS 已在 globals.css 中全局导入
 
       terminal = new XTerm({
         theme: CAM_THEME,
