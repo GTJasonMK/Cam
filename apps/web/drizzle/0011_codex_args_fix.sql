@@ -7,9 +7,14 @@ SET args = '["--quiet","--full-auto","{{prompt}}"]',
 WHERE id = 'codex' AND built_in = 1;
 --> statement-breakpoint
 -- 新增 Codex 专用任务模板
-INSERT OR IGNORE INTO task_templates (id, name, title_template, prompt_template, agent_definition_id, created_at, updated_at)
-VALUES
-  ('tpl-codex-bug-fix', '缺陷修复（Codex）', '修复: {{问题简述}}', '请分析并修复以下缺陷。
+INSERT OR IGNORE INTO task_templates (
+  id, name, title_template, prompt_template, agent_definition_id, created_at, updated_at
+)
+SELECT
+  'tpl-codex-bug-fix',
+  '缺陷修复（Codex）',
+  '修复: {{问题简述}}',
+  '请分析并修复以下缺陷。
 
 ## 问题描述
 {{问题简述}}
@@ -22,9 +27,20 @@ VALUES
 2. 编写或补充覆盖该场景的测试
 3. 确保修复不引入新的回归问题
 4. 每个逻辑变更独立 commit，使用 Conventional Commits 格式
-5. 如果修改了公共接口，更新相关文档或注释', 'codex', datetime('now'), datetime('now')),
-
-  ('tpl-codex-feature', '新功能开发（Codex）', '功能: {{功能名称}}', '请实现以下新功能。
+5. 如果修改了公共接口，更新相关文档或注释',
+  'codex',
+  datetime('now'),
+  datetime('now')
+WHERE EXISTS (SELECT 1 FROM agent_definitions WHERE id = 'codex');
+--> statement-breakpoint
+INSERT OR IGNORE INTO task_templates (
+  id, name, title_template, prompt_template, agent_definition_id, created_at, updated_at
+)
+SELECT
+  'tpl-codex-feature',
+  '新功能开发（Codex）',
+  '功能: {{功能名称}}',
+  '请实现以下新功能。
 
 ## 功能描述
 {{功能名称}}
@@ -41,9 +57,20 @@ VALUES
 3. 处理边界条件和错误场景
 4. 如涉及 API 变更，更新相关类型定义
 5. 每个功能点独立 commit，保持每次提交可编译
-6. 使用 Conventional Commits 格式', 'codex', datetime('now'), datetime('now')),
-
-  ('tpl-codex-refactor', '代码重构（Codex）', '重构: {{重构目标}}', '请对指定模块进行重构。
+6. 使用 Conventional Commits 格式',
+  'codex',
+  datetime('now'),
+  datetime('now')
+WHERE EXISTS (SELECT 1 FROM agent_definitions WHERE id = 'codex');
+--> statement-breakpoint
+INSERT OR IGNORE INTO task_templates (
+  id, name, title_template, prompt_template, agent_definition_id, created_at, updated_at
+)
+SELECT
+  'tpl-codex-refactor',
+  '代码重构（Codex）',
+  '重构: {{重构目标}}',
+  '请对指定模块进行重构。
 
 ## 重构目标
 {{重构目标}}
@@ -57,9 +84,20 @@ VALUES
 3. 每个函数/方法不超过 50 行，每个文件不超过 400 行
 4. 提取重复逻辑为可复用的工具函数
 5. 改善命名，使代码自文档化
-6. 分多个小 commit 提交，每个 commit 保持可编译状态', 'codex', datetime('now'), datetime('now')),
-
-  ('tpl-codex-review', '代码审查（Codex）', '审查: {{审查范围}}', '请对指定代码进行全面审查。
+6. 分多个小 commit 提交，每个 commit 保持可编译状态',
+  'codex',
+  datetime('now'),
+  datetime('now')
+WHERE EXISTS (SELECT 1 FROM agent_definitions WHERE id = 'codex');
+--> statement-breakpoint
+INSERT OR IGNORE INTO task_templates (
+  id, name, title_template, prompt_template, agent_definition_id, created_at, updated_at
+)
+SELECT
+  'tpl-codex-review',
+  '代码审查（Codex）',
+  '审查: {{审查范围}}',
+  '请对指定代码进行全面审查。
 
 ## 审查范围
 {{审查范围（分支名/文件路径）}}
@@ -77,4 +115,8 @@ VALUES
 ## 输出格式
 - 每个问题标注严重级别：严重 / 建议 / 优化
 - 给出具体的修复建议和代码示例
-- 最后给出总结评分（0-100）和通过/退回建议', 'codex', datetime('now'), datetime('now'));
+- 最后给出总结评分（0-100）和通过/退回建议',
+  'codex',
+  datetime('now'),
+  datetime('now')
+WHERE EXISTS (SELECT 1 FROM agent_definitions WHERE id = 'codex');
