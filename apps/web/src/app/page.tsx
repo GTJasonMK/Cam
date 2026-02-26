@@ -13,6 +13,9 @@ import { fetchDashboardData } from '@/lib/dashboard/queries';
 import { ensureSchedulerStarted } from '@/lib/scheduler/auto-start';
 import DashboardClient from './dashboard-client';
 
+// 依赖数据库和 cookies，禁止静态预渲染
+export const dynamic = 'force-dynamic';
+
 export default async function DashboardPage() {
   // 服务端认证检查：根据认证模式判断是否需要重定向
   const authMode = await getAuthMode();
