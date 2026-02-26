@@ -1,0 +1,58 @@
+# ============================================================
+# Docker Compose - 服务器生产部署（反向代理场景）
+# - web 仅监听 127.0.0.1:3000（通过 Nginx/Caddy 暴露公网）
+# - worker 容器由 scheduler 动态拉起
+# ============================================================
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CAM_DATA_DIR:-/opt/cam/data}:/app/data
+      - ${CAM_LOGS_DIR:-/opt/cam/logs}:/app/logs
+      - ${CAM_REPOS_DIR:-/opt/cam/repos}:/app/repos
+    environment:
+      - DATABASE_PATH=/app/data/cam.db
+      - DOCKER_SOCKET_PATH=/var/run/docker.sock
+      - CAM_REPOS_DIR=/app/repos
+
+      - CAM_ALLOW_ANONYMOUS_ACCESS=${CAM_ALLOW_ANONYMOUS_ACCESS:-false}
+      - CAM_AUTH_TOKEN=${CAM_AUTH_TOKEN}
+      - CAM_MASTER_KEY=${CAM_MASTER_KEY}
+      - CAM_PUBLIC_BASE_URL=${CAM_PUBLIC_BASE_URL}
+      - CAM_COOKIE_SECURE=${CAM_COOKIE_SECURE:-true}
+      - CAM_COOKIE_DOMAIN=${CAM_COOKIE_DOMAIN}
+
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      - GITEA_TOKEN=${GITEA_TOKEN:-}
+      - CAM_GIT_PROVIDER=${CAM_GIT_PROVIDER:-}
+
+      - CAM_OAUTH_STATE_SECRET=${CAM_OAUTH_STATE_SECRET:-}
+      - CAM_OAUTH_GITHUB_CLIENT_ID=${CAM_OAUTH_GITHUB_CLIENT_ID:-}
+      - CAM_OAUTH_GITHUB_CLIENT_SECRET=${CAM_OAUTH_GITHUB_CLIENT_SECRET:-}
+      - CAM_OAUTH_GITLAB_CLIENT_ID=${CAM_OAUTH_GITLAB_CLIENT_ID:-}
+      - CAM_OAUTH_GITLAB_CLIENT_SECRET=${CAM_OAUTH_GITLAB_CLIENT_SECRET:-}
+      - CAM_OAUTH_GITLAB_BASE_URL=${CAM_OAUTH_GITLAB_BASE_URL:-}
+
+      - CAM_WEBHOOK_URL=${CAM_WEBHOOK_URL:-}
+      - CAM_WEBHOOK_URLS=${CAM_WEBHOOK_URLS:-}
+      - CAM_WEBHOOK_TOKEN=${CAM_WEBHOOK_TOKEN:-}
+      - CAM_WEBHOOK_TIMEOUT_MS=${CAM_WEBHOOK_TIMEOUT_MS:-4000}
+      - CAM_WEBHOOK_PROVIDER=${CAM_WEBHOOK_PROVIDER:-generic}
+      - CAM_WEBHOOK_EVENTS=${CAM_WEBHOOK_EVENTS:-}
+      - CAM_WEBHOOK_PROGRESS_STATUSES=${CAM_WEBHOOK_PROGRESS_STATUSES:-running,awaiting_review,completed,failed,cancelled}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

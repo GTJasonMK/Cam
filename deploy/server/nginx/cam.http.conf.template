@@ -1,0 +1,37 @@
+# ============================================================
+# CAM Nginx 配置模板（HTTP 入口）
+# 1. 先将 __DOMAIN__ 替换为实际域名
+# 2. 配置到 /etc/nginx/sites-available/cam.conf 并启用
+# 3. 用 certbot --nginx 自动签发并注入 HTTPS 配置
+# ============================================================
+
+server {
+  listen 80;
+  server_name __DOMAIN__;
+
+  # SSE：关闭缓冲，避免事件长时间堆积
+  location /api/events/stream {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;
+    proxy_read_timeout 3600;
+  }
+
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    # WebSocket：终端页 /api/terminal/ws 依赖
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 3600;
+    proxy_send_timeout 3600;
+  }
+}
