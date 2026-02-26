@@ -29,12 +29,29 @@ set +a
 : "${CAM_DATA_DIR:=/opt/cam/data}"
 : "${CAM_DEPLOY_MODE:=host}"
 
+echo "[INFO] 升级模式: ${CAM_DEPLOY_MODE}"
+
 echo "[INFO] 安装依赖"
 corepack enable
 pnpm install --frozen-lockfile
 
 echo "[INFO] 执行数据库迁移"
 DATABASE_PATH="$CAM_DATA_DIR/cam.db" pnpm db:migrate
+
+# 验证关键表存在
+if command -v sqlite3 >/dev/null 2>&1; then
+  tables=$(sqlite3 "$CAM_DATA_DIR/cam.db" ".tables")
+  for required_table in users tasks agent_definitions system_events; do
+    if ! echo "$tables" | grep -qw "$required_table"; then
+      echo "[WARN] 数据库缺少 $required_table 表，尝试手动补建..."
+      migration_file=$(grep -rl "CREATE TABLE \`$required_table\`" "$ROOT_DIR/apps/web/drizzle/" 2>/dev/null | head -1)
+      if [[ -n "$migration_file" ]]; then
+        sed '/^-->/d' "$migration_file" | sqlite3 "$CAM_DATA_DIR/cam.db" 2>/dev/null || true
+        echo "[INFO] 已补建 $required_table 表"
+      fi
+    fi
+  done
+fi
 
 if [[ "${CAM_BUILD_AGENT_IMAGES:-false}" == "true" ]]; then
   echo "[INFO] 重新构建 worker agent 镜像"
@@ -49,9 +66,12 @@ else
   pnpm --filter @cam/shared build
   pnpm --filter @cam/web build
 
-  # standalone 输出不包含静态资源，需手动复制
-  echo "[INFO] 复制静态资源到 standalone 目录"
+  # standalone 输出不包含静态资源和原生 .node 二进制，需补充
+  echo "[INFO] 补充 standalone 缺失资源"
+  mkdir -p "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next"
   cp -r "$ROOT_DIR/apps/web/.next/static" "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next/static"
+  rm -rf "$ROOT_DIR/apps/web/.next/standalone/node_modules"
+  ln -s "$ROOT_DIR/node_modules" "$ROOT_DIR/apps/web/.next/standalone/node_modules"
 
   echo "[INFO] 重启服务"
   systemctl restart cam-web
@@ -60,7 +80,7 @@ fi
 
 echo "[INFO] 健康检查"
 retries=0
-while (( retries < 10 )); do
+while (( retries < 15 )); do
   if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
     echo "[OK] 升级完成 (模式: ${CAM_DEPLOY_MODE})"
     exit 0

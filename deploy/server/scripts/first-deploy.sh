@@ -20,11 +20,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  echo "[ERROR] 未检测到 pnpm"
-  exit 1
-fi
-
 cd "$ROOT_DIR"
 
 echo "[INFO] 载入环境变量: $ENV_FILE"
@@ -38,6 +33,58 @@ set +a
 : "${CAM_REPOS_DIR:=/opt/cam/repos}"
 : "${CAM_DEPLOY_MODE:=host}"
 
+echo "[INFO] 部署模式: ${CAM_DEPLOY_MODE}"
+
+# ============================================================
+# 前置检查
+# ============================================================
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "[ERROR] 未检测到 pnpm，请先安装 Node.js 和 pnpm"
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "[ERROR] 未检测到 curl，请先安装: apt install -y curl"
+  exit 1
+fi
+
+# 宿主机模式需要编译原生模块（node-pty, better-sqlite3）
+if [[ "$CAM_DEPLOY_MODE" == "host" ]]; then
+  missing_tools=()
+  for tool in python3 make gcc g++; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing_tools+=("$tool")
+    fi
+  done
+  if [[ ${#missing_tools[@]} -gt 0 ]]; then
+    echo "[ERROR] 宿主机模式需要编译工具，缺少: ${missing_tools[*]}"
+    echo "请先安装: apt install -y python3 make gcc g++"
+    exit 1
+  fi
+fi
+
+# 检查 3000 端口是否被占用
+if command -v fuser >/dev/null 2>&1 && fuser 3000/tcp >/dev/null 2>&1; then
+  echo "[WARN] 端口 3000 被占用，尝试释放..."
+  # 先停掉可能残留的 Docker 容器
+  if command -v docker >/dev/null 2>&1 && [[ -f "$COMPOSE_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" down 2>/dev/null || true
+  fi
+  # 停掉可能残留的 systemd 服务
+  systemctl stop cam-web 2>/dev/null || true
+  sleep 1
+  # 如果还被占用，强制释放
+  if fuser 3000/tcp >/dev/null 2>&1; then
+    fuser -k 3000/tcp 2>/dev/null || true
+    sleep 1
+  fi
+fi
+
+# ============================================================
+# 安装依赖 & 初始化数据库
+# ============================================================
+
 mkdir -p "$CAM_DATA_DIR" "$CAM_LOGS_DIR" "$CAM_REPOS_DIR"
 
 echo "[INFO] 安装依赖"
@@ -48,11 +95,22 @@ echo "[INFO] 初始化数据库"
 DATABASE_PATH="$CAM_DATA_DIR/cam.db" pnpm db:migrate
 DATABASE_PATH="$CAM_DATA_DIR/cam.db" pnpm db:seed
 
+# 验证关键表存在
+if command -v sqlite3 >/dev/null 2>&1; then
+  tables=$(sqlite3 "$CAM_DATA_DIR/cam.db" ".tables")
+  for required_table in users tasks agent_definitions system_events; do
+    if ! echo "$tables" | grep -qw "$required_table"; then
+      echo "[ERROR] 数据库缺少 $required_table 表，迁移可能不完整"
+      echo "尝试手动修复: sqlite3 $CAM_DATA_DIR/cam.db < apps/web/drizzle/对应迁移文件.sql"
+      exit 1
+    fi
+  done
+  echo "[INFO] 数据库表验证通过"
+fi
+
 if [[ "${CAM_BUILD_AGENT_IMAGES:-false}" == "true" ]]; then
   echo "[INFO] 构建 worker agent 镜像"
   pnpm docker:build:agents
-else
-  echo "[INFO] 跳过 worker agent 镜像构建（如需构建请设置 CAM_BUILD_AGENT_IMAGES=true）"
 fi
 
 # ============================================================
@@ -79,12 +137,15 @@ else
   pnpm --filter @cam/shared build
   pnpm --filter @cam/web build
 
-  # standalone 输出不包含静态资源，需手动复制
-  echo "[INFO] 复制静态资源到 standalone 目录"
+  # standalone 输出不包含静态资源和原生 .node 二进制，需补充
+  echo "[INFO] 补充 standalone 缺失资源"
+  mkdir -p "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next"
   cp -r "$ROOT_DIR/apps/web/.next/static" "$ROOT_DIR/apps/web/.next/standalone/apps/web/.next/static"
+  # 用符号链接替换 standalone 的 node_modules，确保原生模块（node-pty 等）可用
+  rm -rf "$ROOT_DIR/apps/web/.next/standalone/node_modules"
+  ln -s "$ROOT_DIR/node_modules" "$ROOT_DIR/apps/web/.next/standalone/node_modules"
 
   echo "[INFO] 安装 systemd 服务"
-  # 生成 service 文件（注入实际路径和环境变量）
   mkdir -p /etc/systemd/system
   sed \
     -e "s|__ROOT_DIR__|${ROOT_DIR}|g" \
@@ -102,9 +163,13 @@ else
   sleep 3
 fi
 
+# ============================================================
+# 健康检查
+# ============================================================
+
 echo "[INFO] 健康检查"
 retries=0
-while (( retries < 10 )); do
+while (( retries < 15 )); do
   if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
     echo "[OK] 部署完成 (模式: ${CAM_DEPLOY_MODE})，web 已启动在 127.0.0.1:3000"
     exit 0
