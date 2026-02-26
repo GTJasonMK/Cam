@@ -30,8 +30,8 @@ RUN pnpm --filter @cam/shared build && pnpm --filter @cam/web build
 # 运行阶段：使用自定义 server.ts（包含 WebSocket 终端支持）
 FROM base AS runner
 
-# tsx 运行 TypeScript 需要的最小运行时
-RUN corepack enable
+# tsx 运行 TypeScript 需要的最小运行时；安装 Agent CLI 供终端使用
+RUN corepack enable && npm install -g @anthropic-ai/claude-code @openai/codex
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

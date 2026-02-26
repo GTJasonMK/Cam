@@ -11,9 +11,11 @@ Environment=NODE_ENV=production
 Environment=DATABASE_PATH=__CAM_DATA_DIR__/cam.db
 Environment=CAM_REPOS_DIR=__CAM_REPOS_DIR__
 Environment=PORT=3000
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # 使用自定义服务器（包含 WebSocket 终端支持）
-ExecStart=__ROOT_DIR__/node_modules/.bin/tsx __ROOT_DIR__/apps/web/server.ts
+# 通过 npx tsx 执行，避免直接调用 pnpm bin 符号链接导致 systemd 203/EXEC
+ExecStart=/bin/bash -c 'exec npx tsx server.ts'
 
 Restart=on-failure
 RestartSec=5
