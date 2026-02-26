@@ -712,7 +712,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
             <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
               {MSG.browse?.advancedOptions ?? '高级选项（仓库地址 / 基线分支）'}
             </summary>
-            <div className="mt-2 grid grid-cols-2 gap-3">
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-foreground">{MSG.repoUrlLabel}</label>
                 <input type="text" value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} placeholder={MSG.repoUrlPlaceholder} className={inputCls} />

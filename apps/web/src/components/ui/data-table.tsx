@@ -233,7 +233,8 @@ export function DataTable<T>({
         !borderless && 'rounded-2xl border border-border bg-card shadow-[var(--shadow-card)]',
       )}
     >
-      <Table>
+      <div className="overflow-x-auto">
+        <Table className="min-w-[640px]">
         {/* 表头 */}
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (
@@ -327,6 +328,7 @@ export function DataTable<T>({
           )}
         </TableBody>
       </Table>
+      </div>
     </div>
   );
 }

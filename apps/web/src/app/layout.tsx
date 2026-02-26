@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Plus_Jakarta_Sans, Noto_Sans_SC } from 'next/font/google';
 import './globals.css';
 import { Sidebar } from '@/components/layout/sidebar';
@@ -24,6 +24,13 @@ const notoSansSc = Noto_Sans_SC({
 export const metadata: Metadata = {
   title: 'CodingAgentsManager',
   description: 'Coding Agent CI/CD 编排平台',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -46,10 +46,18 @@ export function TerminalDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[80vh] max-w-5xl flex-col p-0">
-        <DialogHeader className="shrink-0 border-b border-border px-5 py-3">
-          <DialogTitle className="text-base">{title}</DialogTitle>
-          <DialogDescription className="text-xs">
+      <DialogContent className="flex h-[100dvh] max-w-[100vw] flex-col rounded-none p-0 sm:h-[80vh] sm:max-w-5xl sm:rounded-2xl">
+        <DialogHeader
+          className="shrink-0 border-b border-border px-3 py-2 sm:px-5 sm:py-3"
+          onTouchStart={() => {
+            // 移动端：触摸标题栏收起虚拟键盘
+            if (document.activeElement instanceof HTMLElement) {
+              document.activeElement.blur();
+            }
+          }}
+        >
+          <DialogTitle className="truncate text-sm sm:text-base">{title}</DialogTitle>
+          <DialogDescription className="truncate text-xs">
             会话 ID: {sessionId}
           </DialogDescription>
         </DialogHeader>

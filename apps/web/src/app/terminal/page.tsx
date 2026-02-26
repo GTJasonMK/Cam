@@ -616,7 +616,7 @@ export default function TerminalPage() {
     {
       key: 'execution',
       header: '执行项',
-      className: 'w-[280px]',
+      className: 'min-w-[180px] sm:w-[280px]',
       cell: (row) => (
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5">
@@ -637,7 +637,7 @@ export default function TerminalPage() {
     {
       key: 'kind',
       header: '类型',
-      className: 'w-[120px]',
+      className: 'w-[120px] hidden sm:table-cell',
       cell: (row) => <span className="text-xs text-muted-foreground">{row.kindLabel}</span>,
     },
     {
@@ -656,7 +656,7 @@ export default function TerminalPage() {
     {
       key: 'actions',
       header: '',
-      className: 'w-[360px] text-right',
+      className: 'w-auto min-w-[120px] text-right sm:w-[360px]',
       cell: (row) => (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {/* 终端会话：弹窗打开终端 */}
@@ -748,7 +748,7 @@ export default function TerminalPage() {
     {
       key: 'task',
       header: '终端任务',
-      className: 'w-[320px]',
+      className: 'min-w-[200px] sm:w-[320px]',
       cell: (row) => (
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5">
@@ -778,7 +778,7 @@ export default function TerminalPage() {
     {
       key: 'time',
       header: '时间',
-      className: 'w-[220px]',
+      className: 'w-[220px] hidden sm:table-cell',
       cell: (row) => (
         <div className="space-y-1 text-[11px] text-muted-foreground">
           <p>创建: {formatDateTimeZhCn(row.createdAt)}</p>
@@ -790,7 +790,7 @@ export default function TerminalPage() {
     {
       key: 'actions',
       header: '',
-      className: 'w-[260px] text-right',
+      className: 'w-auto min-w-[100px] text-right sm:w-[260px]',
       cell: (row) => (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           <Link
@@ -848,9 +848,10 @@ export default function TerminalPage() {
           ? '执行视图（流水线 / 终端命令）；详细会话与 Agent 信息请在工作节点查看'
           : '历史回溯（终端来源任务）；可回看历史执行与日志'}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
           <Button
             variant="secondary"
+            className="w-full sm:w-auto"
             disabled={!connected}
             onClick={() => setPipelineDialogOpen(true)}
           >
@@ -859,13 +860,14 @@ export default function TerminalPage() {
           </Button>
           <Button
             variant="secondary"
+            className="w-full sm:w-auto"
             disabled={!connected}
             onClick={() => setAgentDialogOpen(true)}
           >
             <Bot size={15} className="mr-1" />
             新建 Agent
           </Button>
-          <Button disabled={!connected} onClick={handleNewTerminal}>
+          <Button className="w-full sm:w-auto" disabled={!connected} onClick={handleNewTerminal}>
             <Plus size={15} className="mr-1" />
             新建终端
           </Button>
@@ -880,7 +882,7 @@ export default function TerminalPage() {
 
       {pageMode === 'runtime' ? (
         <>
-          <div className="flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card/70 px-5 py-4">
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card/70 px-3 py-3 sm:gap-5 sm:px-5 sm:py-4">
             <span className="inline-flex items-center gap-2 text-sm">
               {connected ? <Wifi size={15} className="text-success" /> : <WifiOff size={15} className="text-destructive" />}
               <span className={cn('font-medium', connected ? 'text-success' : 'text-destructive')}>
@@ -899,9 +901,9 @@ export default function TerminalPage() {
             onChange={(key) => setFilterKey((key as ExecutionFilter) || 'all')}
           />
 
-          <div className="flex flex-wrap items-end justify-between gap-5">
-            <div className="flex flex-wrap items-end gap-5">
-              <div className="relative w-80 max-w-full">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-5">
+            <div className="flex flex-wrap items-end gap-3 sm:gap-5">
+              <div className="relative w-full sm:w-80">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={keyword}
@@ -920,7 +922,7 @@ export default function TerminalPage() {
               </Button>
             </div>
 
-            <div className="flex items-center gap-2.5">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:gap-2.5">
               <Button variant="ghost" size="sm" onClick={() => router.push('/workers/terminal')}>
                 查看终端节点详情
               </Button>
@@ -937,7 +939,7 @@ export default function TerminalPage() {
         </>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card/70 px-5 py-4">
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card/70 px-3 py-3 sm:gap-5 sm:px-5 sm:py-4">
             <span className="text-sm text-muted-foreground">历史终端任务 <span className="font-semibold text-foreground">{historySummary.total}</span></span>
             <span className="text-sm text-muted-foreground">运行中 <span className="font-semibold text-primary">{historySummary.running}</span></span>
             <span className="text-sm text-muted-foreground">流水线任务 <span className="font-semibold text-primary">{historySummary.pipelines}</span></span>
@@ -949,9 +951,9 @@ export default function TerminalPage() {
             onChange={(key) => setHistoryStatusFilter(key || 'all')}
           />
 
-          <div className="flex flex-wrap items-end justify-between gap-5">
-            <div className="flex flex-wrap items-end gap-5">
-              <div className="relative w-96 max-w-full">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-5">
+            <div className="flex flex-wrap items-end gap-3 sm:gap-5">
+              <div className="relative w-full sm:w-96">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={historyKeyword}
@@ -978,7 +980,7 @@ export default function TerminalPage() {
               </Button>
             </div>
 
-            <div className="flex items-center gap-2.5">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:gap-2.5">
               <Button
                 variant="destructive"
                 size="sm"
