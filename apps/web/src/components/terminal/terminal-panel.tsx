@@ -263,21 +263,35 @@ export default function TerminalPanel({
         // ---- 移动端标点/空格输入补丁 ----
         // 部分虚拟键盘（尤其 Android GBoard）的标点和空格不触发 keydown 事件，
         // xterm.js 依赖 keydown 来处理输入，导致这些字符被丢弃。
-        // 通过 input 事件检测：如果下一帧 textarea 仍有未消费的文本，
-        // 说明 xterm.js 未处理该输入，手动转发到终端。
+        // 利用事件顺序：keydown → (xterm onData) → input。
+        // 如果 onData 已在 input 之前触发，说明 xterm.js 处理了该输入，跳过。
+        // 否则手动转发。
         if (isTouchDevice()) {
+          let xtermHandled = false;
+
+          // onData 在 keydown 同步处理中触发，早于 input 事件
+          terminal.onData(() => { xtermHandled = true; });
+
           helperTextarea.addEventListener('input', (e: Event) => {
             const ie = e as InputEvent;
-            // IME 组合中不干预
             if (ie.isComposing || isComposingRef.current) return;
-            requestAnimationFrame(() => {
-              if (isComposingRef.current) return;
-              const val = helperTextarea.value;
-              if (val) {
-                send({ type: 'input', sessionId, data: val });
-                helperTextarea.value = '';
-              }
-            });
+
+            // 同步检查：keydown → onData 已在此 input 事件之前同步执行过？
+            const handled = xtermHandled;
+            xtermHandled = false; // 复位，准备下一次按键
+
+            if (handled) {
+              // xterm.js 已处理，不重复发送；清理残留值防止累积
+              helperTextarea.value = '';
+              return;
+            }
+
+            // xterm.js 未处理（keydown 未触发或未识别），手动转发
+            const val = helperTextarea.value;
+            if (val) {
+              send({ type: 'input', sessionId, data: val });
+              helperTextarea.value = '';
+            }
           });
         }
       }
