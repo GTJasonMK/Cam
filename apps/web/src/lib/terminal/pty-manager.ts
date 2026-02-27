@@ -39,7 +39,7 @@ interface PtySession {
 }
 
 const SCROLLBACK_LIMIT = 64 * 1024; // 64KB
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
+const IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 小时
 export const MAX_SESSIONS_PER_USER = 5;
 
 function detectDefaultShell(): string {

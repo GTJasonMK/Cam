@@ -81,6 +81,13 @@ export default function TerminalPanel({
   const [composingText, setComposingText] = useState('');
   const isComposingRef = useRef(false);
 
+  // 触摸滑动滚动状态
+  const touchScrollRef = useRef({
+    startY: 0, lastY: 0, lastTime: 0,
+    velocityY: 0, isScrolling: false,
+    momentumRaf: 0, accDelta: 0,
+  });
+
   function showToast(text: string) {
     setToastText(text);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -194,6 +201,9 @@ export default function TerminalPanel({
 
     let terminal: Terminal;
     let fitAddon: FitAddon;
+    let touchCleanup: (() => void) | undefined;
+    let writeBuffer = '';
+    let writeRaf = 0;
 
     void (async () => {
       const [
@@ -310,21 +320,106 @@ export default function TerminalPanel({
       // fit 到容器实际尺寸（触发 resize → 同步到服务端 PTY）
       fitAddon.fit();
 
-      // 注册输出监听（触发缓冲输出回放）
+      // 注册输出监听（RAF 批量合并写入，消除高频重绘导致的终端抖动）
       registerOutput(sessionId, (data) => {
-        terminal.write(data);
+        writeBuffer += data;
+        if (!writeRaf) {
+          writeRaf = requestAnimationFrame(() => {
+            terminal.write(writeBuffer);
+            writeBuffer = '';
+            writeRaf = 0;
+          });
+        }
       });
 
       // 初始化后检测是否为触摸设备
-      setShowToolbar(isTouchDevice());
+      const isTouch = isTouchDevice();
+      setShowToolbar(isTouch);
+
+      // ---- 移动端触摸滑动翻页 ----
+      if (isTouch) {
+        const scrollContainer = xtermContainerRef.current!;
+        const LINE_PX = 20; // 每行约 20px
+        const ts = touchScrollRef.current;
+
+        const onTouchStart = (e: TouchEvent) => {
+          if (e.touches.length !== 1) return;
+          cancelAnimationFrame(ts.momentumRaf);
+          ts.startY = e.touches[0].clientY;
+          ts.lastY = e.touches[0].clientY;
+          ts.lastTime = Date.now();
+          ts.velocityY = 0;
+          ts.isScrolling = false;
+          ts.accDelta = 0;
+        };
+
+        const onTouchMove = (e: TouchEvent) => {
+          if (e.touches.length !== 1) return;
+          const currentY = e.touches[0].clientY;
+          const deltaY = ts.lastY - currentY; // 上滑为正（向历史滚动）
+          const now = Date.now();
+          const dt = now - ts.lastTime;
+
+          // 超过阈值才视为滑动（避免误触）
+          if (!ts.isScrolling && Math.abs(currentY - ts.startY) > 10) {
+            ts.isScrolling = true;
+          }
+
+          if (ts.isScrolling) {
+            ts.accDelta += deltaY;
+            const lines = Math.trunc(ts.accDelta / LINE_PX);
+            if (lines !== 0) {
+              terminal.scrollLines(lines);
+              ts.accDelta -= lines * LINE_PX;
+            }
+            if (dt > 0) ts.velocityY = deltaY / dt;
+            e.preventDefault(); // 阻止页面滚动
+          }
+
+          ts.lastY = currentY;
+          ts.lastTime = now;
+        };
+
+        const onTouchEnd = () => {
+          if (!ts.isScrolling) return;
+          // 惯性滑动
+          let v = ts.velocityY * 16; // 每帧位移（约 16ms/帧）
+          const decay = 0.95;
+          const animate = () => {
+            if (Math.abs(v) < 0.5) return;
+            ts.accDelta += v;
+            const lines = Math.trunc(ts.accDelta / LINE_PX);
+            if (lines !== 0) {
+              terminal.scrollLines(lines);
+              ts.accDelta -= lines * LINE_PX;
+            }
+            v *= decay;
+            ts.momentumRaf = requestAnimationFrame(animate);
+          };
+          ts.momentumRaf = requestAnimationFrame(animate);
+        };
+
+        scrollContainer.addEventListener('touchstart', onTouchStart, { passive: true });
+        scrollContainer.addEventListener('touchmove', onTouchMove, { passive: false });
+        scrollContainer.addEventListener('touchend', onTouchEnd, { passive: true });
+
+        touchCleanup = () => {
+          scrollContainer.removeEventListener('touchstart', onTouchStart);
+          scrollContainer.removeEventListener('touchmove', onTouchMove);
+          scrollContainer.removeEventListener('touchend', onTouchEnd);
+          cancelAnimationFrame(ts.momentumRaf);
+        };
+      }
     })();
 
     return () => {
       unregisterOutput(sessionId);
+      cancelAnimationFrame(writeRaf);
       terminal?.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       cancelAnimationFrame(cursorLineRaf.current);
+      touchCleanup?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
@@ -500,6 +595,7 @@ function ToolbarBtn({
   return (
     <button
       type="button"
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       title={title}
       className={[

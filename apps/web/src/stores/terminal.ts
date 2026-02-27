@@ -104,7 +104,37 @@ interface TerminalState {
   resumePipeline: (pipelineId: string, currentStep?: number, sessionIds?: string[]) => void;
 }
 
-let sessionCounter = 0;
+// ---- 会话状态持久化（localStorage） ----
+const PERSIST_KEY = 'cam-terminal-state';
+
+interface PersistedTerminalState {
+  activeSessionId: string | null;
+  sessionCounter: number;
+  /** sessionId → 用户自定义标题 */
+  titles: Record<string, string>;
+}
+
+function loadPersisted(): PersistedTerminalState {
+  if (typeof window === 'undefined') return { activeSessionId: null, sessionCounter: 0, titles: {} };
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (!raw) return { activeSessionId: null, sessionCounter: 0, titles: {} };
+    return JSON.parse(raw);
+  } catch {
+    return { activeSessionId: null, sessionCounter: 0, titles: {} };
+  }
+}
+
+function savePersisted(patch: Partial<PersistedTerminalState>) {
+  if (typeof window === 'undefined') return;
+  try {
+    const current = loadPersisted();
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({ ...current, ...patch }));
+  } catch { /* localStorage 不可用时静默忽略 */ }
+}
+
+const persisted = loadPersisted();
+let sessionCounter = persisted.sessionCounter;
 
 export const useTerminalStore = create<TerminalState>((set, get) => ({
   viewMode: 'terminal',
@@ -129,6 +159,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       sessions: [...state.sessions, session],
       activeSessionId: info.sessionId,
     }));
+    savePersisted({ activeSessionId: info.sessionId, sessionCounter });
   },
 
   removeSession: (sessionId) => {
@@ -138,17 +169,22 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       if (newActive === sessionId) {
         newActive = newSessions.length > 0 ? newSessions[newSessions.length - 1].sessionId : null;
       }
+      savePersisted({ activeSessionId: newActive });
       return { sessions: newSessions, activeSessionId: newActive };
     });
   },
 
-  setActiveSession: (sessionId) => set({ activeSessionId: sessionId }),
+  setActiveSession: (sessionId) => {
+    set({ activeSessionId: sessionId });
+    savePersisted({ activeSessionId: sessionId });
+  },
 
   setConnected: (connected) => set({ connected }),
 
   setSessions: (serverSessions) => {
     const { sessions: existing } = get();
     const existingMap = new Map(existing.map((s) => [s.sessionId, s]));
+    const savedState = loadPersisted();
 
     const merged = serverSessions.map((ss) => {
       const prev = existingMap.get(ss.sessionId);
@@ -157,18 +193,26 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       return {
         sessionId: ss.sessionId,
         shell: ss.shell,
-        title: `终端 ${sessionCounter}`,
+        // 优先恢复持久化的标题
+        title: savedState.titles[ss.sessionId] || `终端 ${sessionCounter}`,
         createdAt: ss.createdAt,
         attached: false,
       };
     });
 
-    set((state) => ({
-      sessions: merged,
-      activeSessionId: state.activeSessionId && merged.some((s) => s.sessionId === state.activeSessionId)
-        ? state.activeSessionId
-        : merged.length > 0 ? merged[0].sessionId : null,
-    }));
+    // 优先恢复持久化的 activeSessionId（如果该会话仍存在于服务端列表中）
+    const restoredActive = savedState.activeSessionId && merged.some((s) => s.sessionId === savedState.activeSessionId)
+      ? savedState.activeSessionId
+      : null;
+
+    set((state) => {
+      const nextActive = restoredActive
+        ?? (state.activeSessionId && merged.some((s) => s.sessionId === state.activeSessionId)
+          ? state.activeSessionId
+          : merged.length > 0 ? merged[0].sessionId : null);
+      return { sessions: merged, activeSessionId: nextActive };
+    });
+    savePersisted({ sessionCounter });
   },
 
   updateTitle: (sessionId, title) => {
@@ -177,6 +221,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         s.sessionId === sessionId ? { ...s, title } : s,
       ),
     }));
+    const saved = loadPersisted();
+    savePersisted({ titles: { ...saved.titles, [sessionId]: title } });
   },
 
   // ---- Agent actions ----
