@@ -4,8 +4,8 @@
 // agent 参数指定发现哪种 Agent 的会话
 // ============================================================
 
-import { readdir, access } from 'node:fs/promises';
-import { join, dirname, resolve } from 'node:path';
+import { readdir, access, stat } from 'node:fs/promises';
+import { join, dirname, resolve, extname } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { discoverClaudeSessions } from '@/lib/terminal/claude-session-discovery';
 import { discoverCodexSessions } from '@/lib/terminal/codex-session-discovery';
@@ -32,6 +32,16 @@ interface DirectoryEntry {
   hasCodex: boolean;
 }
 
+/** 文件条目 */
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDirectory: false;
+  size: number;
+  modifiedAt: string;
+  extension: string;
+}
+
 /** 浏览响应 */
 interface BrowseResponse {
   currentPath: string;
@@ -44,6 +54,10 @@ interface BrowseResponse {
   agentSessions: AgentSessionSummary[];
   /** 向后兼容：与 agentSessions 相同 */
   claudeSessions: AgentSessionSummary[];
+  /** 文件列表（仅 includeFiles=true 时返回） */
+  files?: FileEntry[];
+  /** 文件总数（可能被截断） */
+  fileCount?: number;
 }
 
 /** 检查路径是否存在 */
@@ -134,6 +148,51 @@ async function scanDirectory(dirPath: string): Promise<DirectoryEntry[]> {
   return entries;
 }
 
+const MAX_FILE_ENTRIES = 500;
+
+/**
+ * 扫描指定目录中的文件条目
+ * 复用已有的 dirents 结果，用 stat() 获取 size/mtime
+ */
+async function scanFiles(dirPath: string, dirents: import('node:fs').Dirent[]): Promise<{ files: FileEntry[]; fileCount: number }> {
+  const fileDirents = dirents.filter(
+    (d) => d.isFile() && !d.name.startsWith('.'),
+  );
+  const fileCount = fileDirents.length;
+  const truncated = fileDirents.slice(0, MAX_FILE_ENTRIES);
+
+  const files = await Promise.all(
+    truncated.map(async (d) => {
+      const fullPath = join(dirPath, d.name);
+      try {
+        const s = await stat(fullPath);
+        return {
+          name: d.name,
+          path: fullPath,
+          isDirectory: false as const,
+          size: s.size,
+          modifiedAt: s.mtime.toISOString(),
+          extension: extname(d.name),
+        };
+      } catch {
+        return {
+          name: d.name,
+          path: fullPath,
+          isDirectory: false as const,
+          size: 0,
+          modifiedAt: '',
+          extension: extname(d.name),
+        };
+      }
+    }),
+  );
+
+  // 按名称排序
+  files.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { files, fileCount };
+}
+
 /** 按 agent 类型发现会话 */
 async function discoverSessions(
   targetPath: string,
@@ -161,6 +220,8 @@ async function handleGet(request: AuthenticatedRequest) {
   // 向后兼容：discover=true 等价于 agent=claude-code
   const legacyDiscover = searchParams.get('discover') === 'true';
   const effectiveAgent = agent || (legacyDiscover ? 'claude-code' : null);
+  // includeFiles=true 时返回文件列表
+  const includeFiles = searchParams.get('includeFiles') === 'true';
 
   // 未指定路径：返回常用根目录
   if (!rawPath) {
@@ -193,12 +254,12 @@ async function handleGet(request: AuthenticatedRequest) {
     return apiError('NOT_FOUND', '路径不存在或无权访问', { status: 404 });
   }
 
-  // 并行：扫描子目录 + 检测当前目录特征 + 发现 Agent 会话
+  // 并行：扫描子目录 + 检测当前目录特征 + 发现 Agent 会话 + 扫描文件
   const dirs = dirents.filter(
     (d) => d.isDirectory() && (!d.name.startsWith('.') || d.name === '.claude'),
   );
 
-  const [entries, currentFeatures, agentSessions] = await Promise.all([
+  const [entries, currentFeatures, agentSessions, fileResult] = await Promise.all([
     Promise.all(
       dirs.map(async (d) => {
         const fullPath = join(targetPath, d.name);
@@ -208,6 +269,7 @@ async function handleGet(request: AuthenticatedRequest) {
     ),
     detectDirFeatures(targetPath),
     discoverSessions(targetPath, effectiveAgent, runtime),
+    includeFiles ? scanFiles(targetPath, dirents) : Promise.resolve(null),
   ]);
 
   // 排序
@@ -230,6 +292,7 @@ async function handleGet(request: AuthenticatedRequest) {
     agentSessions,
     // 向后兼容
     claudeSessions: agentSessions,
+    ...(fileResult ? { files: fileResult.files, fileCount: fileResult.fileCount } : {}),
   };
 
   return apiSuccess(response);

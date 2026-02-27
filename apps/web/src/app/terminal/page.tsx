@@ -6,6 +6,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Bot, GitBranch, Plus, RefreshCw, Search, Square, TerminalSquare, Trash2, Wifi, WifiOff } from 'lucide-react';
@@ -30,7 +31,9 @@ import { useFeedback } from '@/components/providers/feedback-provider';
 import type { AgentSessionStatus } from '@/lib/terminal/protocol';
 import type { TerminalSession } from '@/stores/terminal';
 
-type TerminalPageMode = 'runtime' | 'history';
+const FileManagerPanel = dynamic(() => import('@/components/terminal/file-manager-panel'), { ssr: false });
+
+type TerminalPageMode = 'runtime' | 'history' | 'files';
 type ExecutionFilter = 'all' | 'terminal' | 'agent' | 'pipeline';
 type PipelineStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
@@ -561,6 +564,7 @@ export default function TerminalPage() {
   const modeTabs = useMemo(() => ([
     { key: 'runtime', label: '运行态', count: rawRows.length },
     { key: 'history', label: '历史回溯', count: historyTasks.length },
+    { key: 'files', label: '文件管理' },
   ]), [rawRows.length, historyTasks.length]);
 
   const historySummary = useMemo(() => {
@@ -937,7 +941,9 @@ export default function TerminalPage() {
             emptyHint={keyword || filterKey !== 'all' || !runningOnly ? '请尝试调整筛选条件。' : '先创建终端命令、Agent 或流水线。'}
           />
         </>
-      ) : (
+      ) : null}
+
+      {pageMode === 'history' ? (
         <>
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card/70 px-3 py-3 sm:gap-5 sm:px-5 sm:py-4">
             <span className="text-sm text-muted-foreground">历史终端任务 <span className="font-semibold text-foreground">{historySummary.total}</span></span>
@@ -1024,7 +1030,11 @@ export default function TerminalPage() {
               : '暂无终端历史任务。'}
           />
         </>
-      )}
+      ) : null}
+
+      {pageMode === 'files' ? (
+        <FileManagerPanel />
+      ) : null}
 
       <AgentCreateDialog
         open={agentDialogOpen}

@@ -378,3 +378,50 @@ export const AGENT_SESSION_UI_MESSAGES = {
     return `${min}:${String(remSec).padStart(2, '0')}`;
   },
 } as const;
+
+export const FILE_MANAGER_UI_MESSAGES = {
+  panelTitle: '文件管理',
+  breadcrumbRoot: '根目录',
+  toolbar: {
+    search: '搜索文件名...',
+    upload: '上传',
+    refresh: '刷新',
+    back: '返回上级',
+  },
+  columns: {
+    name: '名称',
+    size: '大小',
+    modified: '修改时间',
+    actions: '操作',
+  },
+  actions: {
+    download: '下载',
+    open: '打开',
+  },
+  empty: {
+    noEntries: '空目录',
+    noFiles: '该目录下无文件',
+    noMatch: '未找到匹配项',
+  },
+  upload: {
+    success: (name: string) => `文件 ${name} 上传成功`,
+    failed: (name: string) => `文件 ${name} 上传失败`,
+    sizeExceeded: '文件大小超过 100MB 上限',
+  },
+  download: {
+    success: (name: string) => `文件 ${name} 下载完成`,
+    failed: (name: string) => `文件 ${name} 下载失败`,
+  },
+  transfer: {
+    uploading: '上传中',
+    downloading: '下载中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    cancel: '取消',
+  },
+  errors: {
+    loadFailed: '加载目录失败',
+    pathNotFound: '路径不存在',
+  },
+} as const;
