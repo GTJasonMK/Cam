@@ -258,8 +258,28 @@ export default function TerminalPanel({
         helperTextarea.addEventListener('compositionend', () => {
           isComposingRef.current = false;
           setComposingText('');
-          // 不在此回显最终文本 —— onData 会收到并处理
         });
+
+        // ---- 移动端标点/空格输入补丁 ----
+        // 部分虚拟键盘（尤其 Android GBoard）的标点和空格不触发 keydown 事件，
+        // xterm.js 依赖 keydown 来处理输入，导致这些字符被丢弃。
+        // 通过 input 事件检测：如果下一帧 textarea 仍有未消费的文本，
+        // 说明 xterm.js 未处理该输入，手动转发到终端。
+        if (isTouchDevice()) {
+          helperTextarea.addEventListener('input', (e: Event) => {
+            const ie = e as InputEvent;
+            // IME 组合中不干预
+            if (ie.isComposing || isComposingRef.current) return;
+            requestAnimationFrame(() => {
+              if (isComposingRef.current) return;
+              const val = helperTextarea.value;
+              if (val) {
+                send({ type: 'input', sessionId, data: val });
+                helperTextarea.value = '';
+              }
+            });
+          });
+        }
       }
 
       // ---- 桌面端快捷键复制粘贴 ----
