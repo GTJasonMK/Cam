@@ -227,7 +227,7 @@ export default function TerminalPanel({
         lineHeight: 1.35,
         cursorBlink: true,
         cursorStyle: 'bar',
-        scrollback: 10000,
+        scrollback: 5000,
         allowProposedApi: true,
         rightClickSelectsWord: true,
       });
