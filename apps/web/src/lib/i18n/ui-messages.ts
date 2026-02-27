@@ -5,6 +5,7 @@ export const SIDEBAR_UI_MESSAGES = {
     templates: '提示词',
     pipelines: '流水线',
     events: '事件',
+    monitoring: '监控面板',
     agents: '智能体',
     workers: '工作节点',
     workersTasks: '任务节点',

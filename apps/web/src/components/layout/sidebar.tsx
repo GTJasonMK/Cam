@@ -10,6 +10,7 @@ import {
   ListTodo,
   FileText,
   Activity,
+  Gauge,
   Bot,
   Server,
   Database,
@@ -57,6 +58,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '运维',
     items: [
       { href: '/events', label: SIDEBAR_UI_MESSAGES.nav.events, icon: Activity },
+      { href: '/monitoring', label: SIDEBAR_UI_MESSAGES.nav.monitoring, icon: Gauge },
       { href: '/agents', label: SIDEBAR_UI_MESSAGES.nav.agents, icon: Bot },
       { href: '/workers', label: SIDEBAR_UI_MESSAGES.nav.workersTasks, icon: Server, exact: true },
       { href: '/workers/terminal', label: SIDEBAR_UI_MESSAGES.nav.workersTerminal, icon: TerminalSquare },
