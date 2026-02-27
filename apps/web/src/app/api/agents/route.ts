@@ -13,11 +13,12 @@ import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { apiBadRequest, apiCreated, apiInternalError, apiSuccess } from '@/lib/http/api-response';
 import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { normalizeAgentDefinitionForExecution } from '@/lib/agents/normalize-agent-definition';
 
 async function handleGet() {
   try {
     const result = await db.select().from(agentDefinitions).orderBy(agentDefinitions.createdAt);
-    return apiSuccess(result);
+    return apiSuccess(result.map((item) => normalizeAgentDefinitionForExecution(item)));
   } catch (err) {
     console.error('[API] 获取 Agent 定义列表失败:', err);
     return apiInternalError(API_COMMON_MESSAGES.listFailed);

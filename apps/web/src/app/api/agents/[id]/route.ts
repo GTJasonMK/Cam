@@ -9,6 +9,7 @@ import { AGENT_MESSAGES, API_COMMON_MESSAGES } from '@/lib/i18n/messages';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { apiError, apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
 import { readJsonBodyAsRecord } from '@/lib/http/read-json';
+import { normalizeAgentDefinitionForExecution } from '@/lib/agents/normalize-agent-definition';
 
 async function handleGet(_request: AuthenticatedRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,7 +20,7 @@ async function handleGet(_request: AuthenticatedRequest, { params }: { params: P
       return apiNotFound(AGENT_MESSAGES.notFound(id));
     }
 
-    return apiSuccess(result[0]);
+    return apiSuccess(normalizeAgentDefinitionForExecution(result[0]));
   } catch (err) {
     console.error(`[API] 获取 Agent 定义 ${id} 失败:`, err);
     return apiInternalError(API_COMMON_MESSAGES.queryFailed);

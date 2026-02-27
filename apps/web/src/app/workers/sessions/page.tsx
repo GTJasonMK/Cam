@@ -14,6 +14,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { useFeedback } from '@/components/providers/feedback-provider';
+import { DEPLOYABLE_CLI_CONFIGS, type DeployableCliAgentId } from '@/lib/agents/cli-profiles';
 import { formatDateTimeZhCn, toSafeTimestamp } from '@/lib/time/format';
 import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { truncateText } from '@/lib/terminal/display';
@@ -40,8 +41,7 @@ type DiscoveredSessionItem = {
 
 const AGENT_OPTIONS = [
   { value: 'all', label: '全部 Agent' },
-  { value: 'claude-code', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex CLI' },
+  ...DEPLOYABLE_CLI_CONFIGS.map((item) => ({ value: item.id, label: item.label })),
 ];
 
 export default function WorkerSessionsPage() {
@@ -55,7 +55,7 @@ export default function WorkerSessionsPage() {
   const [refreshToken, setRefreshToken] = useState(0);
 
   const [scanPath, setScanPath] = useState('');
-  const [scanAgent, setScanAgent] = useState<'claude-code' | 'codex'>('claude-code');
+  const [scanAgent, setScanAgent] = useState<DeployableCliAgentId>('claude-code');
   const [scanRuntime, setScanRuntime] = useState<'native' | 'wsl'>('native');
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -432,7 +432,7 @@ export default function WorkerSessionsPage() {
           <Select
             label="Agent"
             value={scanAgent}
-            onChange={(event) => setScanAgent(event.target.value as 'claude-code' | 'codex')}
+            onChange={(event) => setScanAgent(event.target.value as DeployableCliAgentId)}
             options={AGENT_OPTIONS.filter((item) => item.value !== 'all')}
           />
           <Select

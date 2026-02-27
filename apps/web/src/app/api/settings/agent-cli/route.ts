@@ -10,20 +10,14 @@ import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { DEPLOYABLE_CLI_CONFIGS, type DeployableCliAgentId } from '@/lib/agents/cli-profiles';
 import { readJsonBodyAsRecord } from '@/lib/http/read-json';
 import { apiBadRequest, apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
 export const runtime = 'nodejs';
 
-type CliId = 'claude-code' | 'codex';
-type DeployTarget = 'all' | CliId;
-
-type CliConfig = {
-  id: CliId;
-  label: string;
-  command: string;
-  packageName: string;
-};
+type DeployTarget = 'all' | DeployableCliAgentId;
+type CliConfig = (typeof DEPLOYABLE_CLI_CONFIGS)[number];
 
 type CommandExecResult = {
   ok: boolean;
@@ -45,20 +39,8 @@ type PreflightCheck = {
   suggestion?: string;
 };
 
-const CLI_CONFIGS: CliConfig[] = [
-  {
-    id: 'claude-code',
-    label: 'Claude Code',
-    command: 'claude',
-    packageName: '@anthropic-ai/claude-code',
-  },
-  {
-    id: 'codex',
-    label: 'Codex CLI',
-    command: 'codex',
-    packageName: '@openai/codex',
-  },
-];
+const CLI_CONFIGS: CliConfig[] = DEPLOYABLE_CLI_CONFIGS;
+const CLI_DEPLOY_TARGET_SET = new Set<DeployTarget>(['all', ...CLI_CONFIGS.map((item) => item.id)]);
 
 const COMMAND_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 15_000;
@@ -613,11 +595,11 @@ async function handlePost(request: AuthenticatedRequest) {
   try {
     const body = await readJsonBodyAsRecord(request);
     const rawTarget = typeof body.target === 'string' ? body.target : 'all';
-    const target = (rawTarget === 'all' || rawTarget === 'claude-code' || rawTarget === 'codex')
-      ? rawTarget
+    const target: DeployTarget = CLI_DEPLOY_TARGET_SET.has(rawTarget as DeployTarget)
+      ? (rawTarget as DeployTarget)
       : 'all';
 
-    const targetList = resolveTargetList(target as DeployTarget);
+    const targetList = resolveTargetList(target);
     if (targetList.length === 0) {
       return apiBadRequest('无效的部署目标');
     }

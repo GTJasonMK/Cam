@@ -15,6 +15,7 @@ import { Input, Select } from '@/components/ui/input';
 import { useFeedback } from '@/components/providers/feedback-provider';
 import { getBadgeBg, getColorVar } from '@/lib/constants';
 import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
+import type { DeployableCliAgentId } from '@/lib/agents/cli-profiles';
 import { formatDateTimeZhCn, formatTimeZhCn } from '@/lib/time/format';
 import { truncateText } from '@/lib/terminal/display';
 import { Plus, RefreshCw, RotateCcw, Trash2, Key, Download, TerminalSquare, ShieldCheck } from 'lucide-react';
@@ -33,7 +34,7 @@ type SecretItem = {
 type RepoMini = { id: string; name: string };
 
 type CliStatusItem = {
-  id: 'claude-code' | 'codex';
+  id: DeployableCliAgentId;
   label: string;
   command: string;
   packageName: string;
@@ -42,7 +43,7 @@ type CliStatusItem = {
   detail: string | null;
 };
 
-type CliDeployTarget = 'all' | 'claude-code' | 'codex';
+type CliDeployTarget = 'all' | DeployableCliAgentId;
 
 type CliPreflightCheckStatus = 'pass' | 'warn' | 'fail';
 

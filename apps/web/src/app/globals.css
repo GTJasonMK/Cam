@@ -52,6 +52,8 @@
 /* ---- 自定义 CSS 变量（不影响布局，放在 unlayered 没问题） ---- */
 
 :root {
+  --font-heading: "Segoe UI", "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --background-deep: #060b11;
   --background: #0b1117;
   --background-elevated: #0f1722;

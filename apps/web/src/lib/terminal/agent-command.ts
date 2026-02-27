@@ -4,29 +4,11 @@
 // 不再拼 shell 字符串、不再需要 cd / shell 转义
 // ============================================================
 
-/**
- * 交互模式参数映射
- * claude CLI：位置参数 `claude "query"`
- * codex CLI：`codex "query"`
- * aider CLI：`aider --message "query"`
- */
-const INTERACTIVE_ARGS: Record<string, (prompt: string) => string[]> = {
-  'claude-code': (prompt) => [prompt],
-  'codex': (prompt) => ['--full-auto', prompt],
-  'aider': (prompt) => ['--message', prompt],
-};
-
-/**
- * 非交互/自动退出模式参数映射（用于流水线步骤）
- * claude CLI：`claude -p "query"` — print 模式，执行完自动退出
- * codex CLI：`codex exec --full-auto "query"` — exec 子命令，非交互执行
- * aider CLI：`aider --yes-always --message "query"` — 已是非交互
- */
-const AUTO_EXIT_ARGS: Record<string, (prompt: string) => string[]> = {
-  'claude-code': (prompt) => ['-p', prompt],
-  'codex': (prompt) => ['exec', '--full-auto', prompt],
-  'aider': (prompt) => ['--yes-always', '--message', prompt],
-};
+import {
+  getTerminalAutoExitArgs,
+  getTerminalInteractiveArgs,
+  isCodexCliAgent,
+} from '../agents/cli-profiles.ts';
 
 /** 结构化命令（直接传给 pty.spawn） */
 export interface AgentCommandSpec {
@@ -63,30 +45,34 @@ export interface ResolveCommandOpts {
  * Codex:
  *   create:       codex --full-auto ["prompt"]
  *   create+auto:  codex exec --full-auto "prompt"  （非交互，执行完退出）
- *   resume:       codex resume {sessionId} | codex resume --last
+ *   resume:       codex resume {sessionId} [--full-auto] ["prompt"] | codex resume --last [--full-auto] ["prompt"]
  */
 export function resolveAgentCommand(opts: ResolveCommandOpts): AgentCommandSpec {
   const { agentDefinitionId, command, prompt, mode, resumeSessionId, autoExit } = opts;
 
   // ---- Codex 特殊处理 ----
   // Codex CLI 的 resume 是子命令：codex resume <sessionId> 或 codex resume --last
-  if (agentDefinitionId === 'codex') {
+  if (isCodexCliAgent(agentDefinitionId)) {
     if (mode === 'resume' || mode === 'continue') {
-      if (resumeSessionId) {
-        return { file: command, args: ['resume', resumeSessionId] };
+      const args = ['resume', resumeSessionId || '--last'];
+      // 流水线场景下优先自动执行，避免进入交互等待
+      if (autoExit) {
+        args.push('--full-auto');
       }
-      return { file: command, args: ['resume', '--last'] };
+      if (prompt) {
+        args.push(prompt);
+      }
+      return { file: command, args };
     }
     if (!prompt) {
       return { file: command, args: ['--full-auto'] };
     }
     // autoExit 模式：使用 exec 子命令
     if (autoExit) {
-      const builder = AUTO_EXIT_ARGS[agentDefinitionId];
-      return { file: command, args: builder ? builder(prompt) : ['exec', '--full-auto', prompt] };
+      const args = getTerminalAutoExitArgs(agentDefinitionId, prompt);
+      return { file: command, args: args || ['exec', '--full-auto', prompt] };
     }
-    const builder = INTERACTIVE_ARGS[agentDefinitionId];
-    return { file: command, args: builder ? builder(prompt) : [prompt] };
+    return { file: command, args: getTerminalInteractiveArgs(agentDefinitionId, prompt) };
   }
 
   // ---- Claude Code / Aider / 其他 Agent ----
@@ -112,15 +98,13 @@ export function resolveAgentCommand(opts: ResolveCommandOpts): AgentCommandSpec 
 
   // autoExit 模式：使用非交互参数
   if (autoExit) {
-    const builder = AUTO_EXIT_ARGS[agentDefinitionId];
-    if (builder) {
-      return { file: command, args: builder(prompt) };
+    const args = getTerminalAutoExitArgs(agentDefinitionId, prompt);
+    if (args) {
+      return { file: command, args };
     }
   }
 
-  const builder = INTERACTIVE_ARGS[agentDefinitionId];
-  const args = builder ? builder(prompt) : [prompt];
-  return { file: command, args };
+  return { file: command, args: getTerminalInteractiveArgs(agentDefinitionId, prompt) };
 }
 
 /**

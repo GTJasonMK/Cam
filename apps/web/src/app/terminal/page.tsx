@@ -166,7 +166,7 @@ export default function TerminalPage() {
       const handler = outputHandlersRef.current.get(sessionId);
       handler?.(data);
     };
-    onExit.current = (sessionId: string, _exitCode: number) => {
+    onExit.current = (sessionId: string) => {
       outputHandlersRef.current.delete(sessionId);
     };
     return () => {

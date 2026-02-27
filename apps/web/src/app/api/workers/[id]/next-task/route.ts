@@ -15,6 +15,7 @@ import { loadTaskDependencyState } from '@/lib/tasks/dependency-state';
 import { demoteQueuedTaskToWaiting, markTaskDependencyBlocked } from '@/lib/tasks/dependency-transitions';
 import { SCHEDULER_CLAIMABLE_TASK_STATUSES } from '@/lib/tasks/status';
 import { apiInternalError, apiNotFound, apiSuccess } from '@/lib/http/api-response';
+import { normalizeAgentDefinitionForExecution } from '@/lib/agents/normalize-agent-definition';
 
 async function rollbackClaimedTaskToQueued(taskId: string, workerId: string): Promise<boolean> {
   const queuedAt = new Date().toISOString();
@@ -169,6 +170,8 @@ async function handler(_request: AuthenticatedRequest, { params }: { params: Pro
           continue;
         }
 
+        const normalizedAgentDefinition = normalizeAgentDefinitionForExecution(agentDef[0]);
+
         // 下发给外部常驻 Worker 的 env（用于无 Docker 调度场景）
         const scope = {
           repositoryId: (claimed[0] as typeof claimed[0] & { repositoryId?: string | null }).repositoryId || null,
@@ -204,7 +207,7 @@ async function handler(_request: AuthenticatedRequest, { params }: { params: Pro
 
         return apiSuccess({
           task: claimed[0],
-          agentDefinition: agentDef[0] || null,
+          agentDefinition: normalizedAgentDefinition,
           env,
         });
       } catch (dispatchErr) {
