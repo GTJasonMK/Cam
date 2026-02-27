@@ -309,8 +309,10 @@ export default function TerminalPanel({
         send({ type: 'input', sessionId, data });
       });
 
-      // 终端缓冲区更新后刷新光标行预览
-      terminal.onWriteParsed(() => updateCursorLine());
+      // 终端缓冲区更新后刷新光标行预览（仅移动端需要）
+      terminal.onWriteParsed(() => {
+        if (isTouchDevice()) updateCursorLine();
+      });
 
       // 尺寸变化 → WebSocket（必须在 fit() 之前注册，否则首次 resize 丢失）
       terminal.onResize(({ cols, rows }) => {
@@ -434,11 +436,15 @@ export default function TerminalPanel({
     }
   }, [active]);
 
-  // 监听容器 resize
+  // 监听容器 resize（防抖，避免 layout shift → fit → resize 反馈环路）
+  const resizeRaf = useRef(0);
   const handleResize = useCallback(() => {
-    if (active && fitAddonRef.current) {
-      fitAddonRef.current.fit();
-    }
+    cancelAnimationFrame(resizeRaf.current);
+    resizeRaf.current = requestAnimationFrame(() => {
+      if (active && fitAddonRef.current) {
+        fitAddonRef.current.fit();
+      }
+    });
   }, [active]);
 
   useEffect(() => {
@@ -512,7 +518,7 @@ export default function TerminalPanel({
           {/* 光标行预览 — 实时镜像终端当前光标所在的完整命令行 */}
           <div className="border-t border-border/50 bg-[#0f1923] px-3 py-1.5">
             <div
-              className="max-h-[3.75rem] overflow-y-auto text-sm leading-5"
+              className="h-10 overflow-y-auto text-sm leading-5"
               style={{ fontFamily: "'JetBrains Mono', 'Cascadia Code', monospace" }}
             >
               <span className="whitespace-pre-wrap break-all text-foreground/80">{cursorLine}</span>
