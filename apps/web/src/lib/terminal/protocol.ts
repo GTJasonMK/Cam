@@ -25,6 +25,8 @@ export interface AgentSessionInfo extends SessionInfo {
   repoUrl?: string;
   workBranch: string;
   status: AgentSessionStatus;
+  /** 绑定的托管会话池键（如有） */
+  managedSessionKey?: string;
   /** 进程退出码（运行中为 undefined） */
   exitCode?: number;
   /** 已运行毫秒数 */
@@ -99,6 +101,11 @@ export type ClientMessage =
       mode?: 'create' | 'resume' | 'continue';
       /** mode='resume' 时必填：要恢复的 Claude Code 会话 ID */
       resumeSessionId?: string;
+      /**
+       * 托管会话池键（terminal_session_pool.session_key）
+       * 传入后由后端按托管会话定义强制解析 mode/resumeSessionId/repoPath，并绑定租约。
+       */
+      sessionKey?: string;
     }
   | { type: 'agent-cancel'; sessionId: string }
   | { type: 'agent-list' }
@@ -150,6 +157,8 @@ export type ServerMessage =
       mode: 'create' | 'resume' | 'continue';
       /** 恢复的 Claude Code 会话 ID（resume/continue 模式） */
       claudeSessionId?: string;
+      /** 绑定的托管会话池键（如通过 sessionKey 启动） */
+      managedSessionKey?: string;
     }
   | {
       type: 'agent-status';

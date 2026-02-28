@@ -48,6 +48,8 @@ export interface TerminalSession {
     repoPath?: string;
     /** 恢复的 Claude Code 会话 ID */
     claudeSessionId?: string;
+    /** 绑定的托管会话池键 */
+    managedSessionKey?: string;
     /** 会话模式 */
     mode?: 'create' | 'resume' | 'continue';
   };
@@ -85,6 +87,7 @@ interface TerminalState {
     prompt: string;
     repoPath?: string;
     claudeSessionId?: string;
+    managedSessionKey?: string;
     mode?: 'create' | 'resume' | 'continue';
   }) => void;
   updateAgentStatus: (sessionId: string, status: AgentSessionStatus, exitCode?: number, elapsedMs?: number) => void;
@@ -248,6 +251,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
           elapsedMs: prev?.agentInfo?.elapsedMs ?? 0,
           repoPath: info.repoPath ?? prev?.agentInfo?.repoPath,
           claudeSessionId: info.claudeSessionId ?? prev?.agentInfo?.claudeSessionId,
+          managedSessionKey: info.managedSessionKey ?? prev?.agentInfo?.managedSessionKey,
           mode: info.mode ?? prev?.agentInfo?.mode,
         },
       };
@@ -332,6 +336,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
             elapsedMs: agent.elapsedMs,
             repoPath: prev?.agentInfo?.repoPath,
             claudeSessionId: prev?.agentInfo?.claudeSessionId,
+            managedSessionKey: agent.managedSessionKey ?? prev?.agentInfo?.managedSessionKey,
             mode: prev?.agentInfo?.mode,
           },
         });

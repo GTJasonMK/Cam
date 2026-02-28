@@ -143,6 +143,7 @@ async function handlePipelineAdvancement(
         repoPath: meta.repoPath,
         mode: meta.mode,
         claudeSessionId: meta.claudeSessionId,
+        managedSessionKey: meta.managedSessionKey,
       });
     }
   } else {
@@ -313,6 +314,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
               rows: msg.rows,
               mode: msg.mode,
               resumeSessionId: msg.resumeSessionId,
+              sessionKey: msg.sessionKey,
             },
             { id: user.id, username: user.username },
           );
@@ -330,6 +332,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
             repoPath: meta.repoPath,
             mode: meta.mode,
             claudeSessionId: meta.claudeSessionId,
+            managedSessionKey: meta.managedSessionKey,
           });
         } catch (err) {
           send(ws, { type: 'error', message: (err as Error).message });
@@ -416,6 +419,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
               status: 'running',
               repoPath: meta.repoPath,
               mode: meta.mode,
+              managedSessionKey: meta.managedSessionKey,
             });
           }
         } catch (err) {
@@ -538,6 +542,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
                 status: 'running',
                 repoPath: meta.repoPath,
                 mode: meta.mode,
+                managedSessionKey: meta.managedSessionKey,
               });
             }
           }

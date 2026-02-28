@@ -29,6 +29,19 @@ import type { ClientMessage } from '@/lib/terminal/protocol';
 
 interface AgentDef { id: string; displayName: string; description?: string; runtime?: string }
 interface AgentSession { sessionId: string; lastModified: string; sizeBytes: number }
+interface ManagedSessionItem {
+  sessionKey: string;
+  userId: string;
+  repoPath: string;
+  agentDefinitionId: string;
+  mode: 'resume' | 'continue';
+  resumeSessionId?: string;
+  source: 'external' | 'managed';
+  title?: string;
+  createdAt: string;
+  updatedAt: string;
+  leased: boolean;
+}
 interface DirEntry { name: string; path: string; isDirectory: boolean; isGitRepo: boolean; hasClaude: boolean; hasCodex?: boolean }
 interface BrowseResult {
   currentPath: string; parentPath: string | null;
@@ -159,6 +172,9 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // 已发现的 Agent 会话（Claude Code 或 Codex）
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [discoverLoading, setDiscoverLoading] = useState(false);
+  // 托管会话池（按目录 + agent 过滤）
+  const [managedSessions, setManagedSessions] = useState<ManagedSessionItem[]>([]);
+  const [managedSessionsLoading, setManagedSessionsLoading] = useState(false);
 
   const discoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 发现请求序号，防止竞态：仅最新请求的响应生效 */
@@ -264,6 +280,52 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workDir, selectedAgent, open]);
 
+  // 目录 + Agent 变化时加载托管会话池（单会话按 sessionKey 恢复）
+  useEffect(() => {
+    if (!open || !workDir.trim() || !isCLIAgent(selectedAgent)) {
+      setManagedSessions([]);
+      setManagedSessionsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const loadManagedSessions = async () => {
+      setManagedSessionsLoading(true);
+      try {
+        const query = new URLSearchParams({
+          workDir: workDir.trim(),
+          agentDefinitionId: selectedAgent,
+        });
+        const res = await fetch(`/api/terminal/session-pool?${query.toString()}`);
+        const json = await readApiEnvelope<ManagedSessionItem[]>(res);
+        if (cancelled) return;
+        if (!res.ok || !json?.success || !Array.isArray(json.data)) {
+          setManagedSessions([]);
+          return;
+        }
+        const rows = [...json.data].sort((a, b) => {
+          // 空闲优先，最近更新时间优先
+          if (a.leased !== b.leased) return a.leased ? 1 : -1;
+          return toSafeTimestamp(b.updatedAt) - toSafeTimestamp(a.updatedAt);
+        });
+        setManagedSessions(rows);
+      } catch {
+        if (!cancelled) {
+          setManagedSessions([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setManagedSessionsLoading(false);
+        }
+      }
+    };
+
+    void loadManagedSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, workDir, selectedAgent]);
+
   // ---- API ----
 
   const discover = useCallback(async (path: string) => {
@@ -318,7 +380,12 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   // ---- 核心操作：启动会话 ----
 
   /** 发送 agent-create 并关闭对话框 */
-  const launch = useCallback((mode: 'create' | 'resume', resumeSessionId?: string, prompt?: string) => {
+  const launch = useCallback((
+    mode: 'create' | 'resume',
+    resumeSessionId?: string,
+    prompt?: string,
+    sessionKey?: string,
+  ) => {
     if (!selectedAgent) { setError(MSG.agentRequired); return; }
     const dir = workDir.trim();
 
@@ -333,6 +400,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
       rows: 24,
       mode,
       resumeSessionId,
+      sessionKey: sessionKey ? toOptionalString(sessionKey) : undefined,
     });
 
     if (!ok) {
@@ -368,6 +436,11 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     launch('resume', sessionId);
   }, [launch]);
 
+  /** 从托管会话池按 sessionKey 打开（后端负责解析 mode/resumeSessionId 并加租约） */
+  const resumeManagedSession = useCallback((sessionKey: string) => {
+    launch('resume', undefined, newPrompt.trim() || undefined, sessionKey);
+  }, [launch, newPrompt]);
+
   /** 新建会话（可选 prompt） */
   const createNew = useCallback(() => {
     launch('create', undefined, newPrompt.trim());
@@ -384,6 +457,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   const hasQuickSelect = repos.length > 0 || recentDirs.length > 0;
   const breadcrumbs = browseResult ? pathToBreadcrumbs(browseResult.currentPath) : [];
   const showSessions = isCLIAgent(selectedAgent) && sessions.length > 0;
+  const showManagedSessions = isCLIAgent(selectedAgent) && managedSessions.length > 0;
   const isCodex = selectedAgent === 'codex';
 
   return (
@@ -461,6 +535,16 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                 {!discoverLoading && sessions.length > 0 && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">
                     <Clock size={10} /> {sessions.length} 个会话
+                  </span>
+                )}
+                {managedSessionsLoading && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-muted-foreground">
+                    <Loader2 size={10} className="animate-spin" /> 加载托管会话...
+                  </span>
+                )}
+                {!managedSessionsLoading && managedSessions.length > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-300">
+                    <Database size={10} /> 托管 {managedSessions.length}
                   </span>
                 )}
                 {!discoverLoading && dirInfo && !dirInfo.isGitRepo && (
@@ -645,7 +729,51 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
             </details>
           )}
 
-          {/* ---- 已有会话列表（点击即恢复） ---- */}
+          {/* ---- 托管会话池（按 sessionKey 恢复 + 租约） ---- */}
+          {showManagedSessions && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">
+                托管会话池（推荐）
+              </label>
+              <div className="rounded-lg border border-border bg-card/70 divide-y divide-border-subtle">
+                {managedSessions.map((session) => (
+                  <div
+                    key={session.sessionKey}
+                    className="flex items-center gap-3 px-3 py-2.5 hover:bg-input-bg transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-foreground">{truncateText(session.sessionKey, 18)}</span>
+                        <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-300">
+                          {session.mode}
+                        </span>
+                        {session.leased && (
+                          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">
+                            占用中
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground mt-0.5">
+                        {session.title ? `${truncateText(session.title, 32)} · ` : ''}
+                        {fmtRelative(session.updatedAt)} · {fmtTime(session.updatedAt)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={session.leased}
+                      onClick={() => resumeManagedSession(session.sessionKey)}
+                      className={`${actionBtnCls} bg-primary/10 border border-primary/20 text-primary hover:bg-primary/20 disabled:opacity-50`}
+                      title={session.leased ? '该托管会话已被占用' : '按 sessionKey 打开'}
+                    >
+                      <RotateCcw size={12} /> 打开
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---- 本机发现会话列表（点击即恢复） ---- */}
           {showSessions && (
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-foreground">

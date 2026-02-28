@@ -103,6 +103,8 @@ interface AgentSessionMeta {
   mode: 'create' | 'resume' | 'continue';
   /** 恢复的 Claude Code 会话 ID（resume/continue 模式） */
   claudeSessionId?: string;
+  /** 绑定的托管会话池键（单会话接入 session pool 时） */
+  managedSessionKey?: string;
   /** 自动关联的 tasks 表记录 ID */
   taskId?: string;
   /** 所属流水线 ID（如有） */
@@ -121,6 +123,8 @@ export interface CreateAgentSessionOpts {
   mode?: 'create' | 'resume' | 'continue';
   /** mode='resume' 时：要恢复的 Claude Code 会话 ID */
   resumeSessionId?: string;
+  /** 托管会话池键（terminal_session_pool.session_key） */
+  sessionKey?: string;
   /** 流水线步骤：使用非交互模式，执行完自动退出 */
   autoExit?: boolean;
   /** 内部：流水线步骤已预创建任务，跳过自动创建 */
@@ -258,6 +262,12 @@ class AgentSessionManager {
   private sessionFinishedAt: Map<string, number> = new Map();
   /** pipelineId → 进入终态的时间戳（用于 TTL 清理） */
   private pipelineFinishedAt: Map<string, number> = new Map();
+  /** userId::sessionKey → 单会话托管租约 */
+  private managedSessionLeases: Map<string, { userId: string; sessionKey: string; sessionId: string }> = new Map();
+  /** sessionId → userId::sessionKey（快速释放租约） */
+  private managedSessionLeaseBySessionId: Map<string, string> = new Map();
+  /** userId::sessionKey → 租约创建中的临时锁，防止并发重复创建 */
+  private managedSessionPendingLocks: Set<string> = new Set();
   /** 最近一次状态清理时间戳 */
   private lastStatePruneAtMs = 0;
 
@@ -266,151 +276,222 @@ class AgentSessionManager {
     opts: CreateAgentSessionOpts,
     user: { id: string; username: string },
   ): Promise<AgentSessionMeta & { shell: string }> {
-    const mode = opts.mode ?? 'create';
+    let mode: 'create' | 'resume' | 'continue' = opts.mode ?? 'create';
+    let resumeSessionId = opts.resumeSessionId;
+    let managedSessionKey: string | undefined;
+    let managedSessionLeaseKey: string | undefined;
+    let managedSessionRecord: TerminalSessionPoolRow | undefined;
 
-    // 1. 查询 Agent 定义
-    const [agent] = await db
-      .select()
-      .from(agentDefinitions)
-      .where(eq(agentDefinitions.id, opts.agentDefinitionId))
-      .limit(1);
-
-    if (!agent) {
-      throw new Error(`Agent 定义不存在: ${opts.agentDefinitionId}`);
-    }
-
-    // 2. 解析仓库路径
-    const repoPath = await this.resolveRepoPath(opts.repoUrl, opts.workDir);
-
-    // 3. 解密密钥 → 构建环境变量
-    const env = await this.resolveAgentEnv(agent, opts.repoUrl);
-
-    // 4. 生成工作分支（仅 create 模式）
-    const workBranch = mode === 'create' ? generateWorkBranch(crypto.randomUUID()) : '';
-
-    // 5. create 模式下，先切换到工作分支
-    if (mode === 'create' && workBranch) {
-      try {
-        await execFileAsync('git', ['checkout', '-b', workBranch], { cwd: repoPath });
-        console.log(`[AgentSession] 已创建工作分支: ${workBranch}`);
-      } catch (err) {
-        console.warn(`[AgentSession] git checkout 失败，跳过分支创建: ${(err as Error).message}`);
+    if (opts.sessionKey) {
+      const normalizedSessionKey = normalizeOptionalString(opts.sessionKey);
+      if (!normalizedSessionKey) {
+        throw new Error('sessionKey 不能为空');
       }
+
+      const managedRows = await db
+        .select()
+        .from(terminalSessionPool)
+        .where(
+          and(
+            eq(terminalSessionPool.userId, user.id),
+            eq(terminalSessionPool.sessionKey, normalizedSessionKey),
+          )
+        )
+        .limit(1);
+      if (managedRows.length === 0) {
+        throw new Error(`托管会话不存在或不属于当前用户: ${normalizedSessionKey}`);
+      }
+
+      managedSessionRecord = managedRows[0];
+      if (opts.agentDefinitionId && opts.agentDefinitionId !== managedSessionRecord.agentDefinitionId) {
+        throw new Error(
+          `托管会话 ${normalizedSessionKey} 的 Agent 与当前选择不一致（session=${managedSessionRecord.agentDefinitionId}, selected=${opts.agentDefinitionId})`
+        );
+      }
+
+      const normalizedWorkDir = normalizeOptionalString(opts.workDir)
+        ? normalizeHostPathInput(opts.workDir!)
+        : '';
+      if (normalizedWorkDir && normalizedWorkDir !== managedSessionRecord.repoPath) {
+        throw new Error(
+          `托管会话 ${normalizedSessionKey} 的目录与当前目录不一致（session=${managedSessionRecord.repoPath}, selected=${normalizedWorkDir})`
+        );
+      }
+
+      managedSessionKey = normalizedSessionKey;
+      mode = managedSessionRecord.mode as 'resume' | 'continue';
+      resumeSessionId = managedSessionRecord.resumeSessionId ?? undefined;
+      if (mode === 'resume' && !resumeSessionId) {
+        throw new Error(`托管会话 ${normalizedSessionKey} 缺少 resumeSessionId`);
+      }
+      managedSessionLeaseKey = this.acquireManagedSessionLock(user.id, normalizedSessionKey);
     }
 
-    // 6. 解析 Agent 启动命令（结构化 → 直接 spawn）
-    const spec = resolveAgentCommand({
-      agentDefinitionId: opts.agentDefinitionId,
-      command: agent.command,
-      prompt: opts.prompt,
-      mode,
-      resumeSessionId: opts.resumeSessionId,
-      autoExit: opts.autoExit,
-    });
+    const effectiveAgentDefinitionId = managedSessionRecord?.agentDefinitionId ?? opts.agentDefinitionId;
 
-    // 7. 创建 PTY 会话（直接 spawn Agent 命令，不经过 shell）
-    const { sessionId, shell } = ptyManager.create({
-      cols: opts.cols,
-      rows: opts.rows,
-      command: spec.file,
-      args: spec.args,
-      userId: user.id,
-      env,
-      cwd: repoPath,
-      idleTimeoutMs: AGENT_IDLE_TIMEOUT_MS,
-      runtime: (agent.runtime as 'native' | 'wsl') ?? 'native',
-    });
+    try {
+      // 1. 查询 Agent 定义
+      const [agent] = await db
+        .select()
+        .from(agentDefinitions)
+        .where(eq(agentDefinitions.id, effectiveAgentDefinitionId))
+        .limit(1);
 
-    // 8. 记录元数据
-    const meta: AgentSessionMeta = {
-      sessionId,
-      userId: user.id,
-      agentDefinitionId: opts.agentDefinitionId,
-      agentDisplayName: agent.displayName,
-      prompt: opts.prompt,
-      repoUrl: opts.repoUrl,
-      repoPath,
-      workBranch,
-      status: 'running',
-      startedAt: Date.now(),
-      mode,
-      claudeSessionId: opts.resumeSessionId,
-    };
-    this.sessions.set(sessionId, meta);
-    this.sessionFinishedAt.delete(sessionId);
+      if (!agent) {
+        throw new Error(`Agent 定义不存在: ${effectiveAgentDefinitionId}`);
+      }
 
-    const modeLabel = mode === 'create' ? '新建' : mode === 'resume' ? '恢复' : '继续';
-    console.log(`[AgentSession] ${modeLabel}: ${sessionId} (agent=${agent.displayName}, user=${user.username}, mode=${mode}${mode === 'resume' ? `, claude=${opts.resumeSessionId}` : ''}, 命令=${spec.file} ${spec.args.join(' ')})`);
+      // 2. 解析仓库路径（托管会话优先固定 repoPath）
+      const resolvedWorkDir = managedSessionRecord?.repoPath || opts.workDir;
+      const repoPath = await this.resolveRepoPath(opts.repoUrl, resolvedWorkDir);
 
-    // SSE 广播会话创建事件（让 Dashboard 实时感知）
-    sseManager.broadcast('agent.session.created', {
-      sessionId,
-      agentDefinitionId: meta.agentDefinitionId,
-      agentDisplayName: meta.agentDisplayName,
-      status: 'running',
-      repoPath: meta.repoPath,
-    });
+      if (managedSessionRecord && managedSessionRecord.repoPath !== repoPath) {
+        throw new Error(
+          `托管会话 ${managedSessionRecord.sessionKey} 的目录与解析结果不一致（session=${managedSessionRecord.repoPath}, resolved=${repoPath})`
+        );
+      }
 
-    // 自动持久化到 tasks 表（source='terminal'，调度器忽略）
-    // 流水线步骤已预创建任务，直接关联
-    if (opts._pipelineTaskId) {
-      const now = new Date().toISOString();
-      const promoted = await db.update(tasks)
-        .set({ status: 'running', startedAt: now })
-        .where(and(
-          eq(tasks.id, opts._pipelineTaskId),
-          inArray(tasks.status, [...TERMINAL_SESSION_ACTIVE_TASK_STATUSES]),
-        ))
-        .returning({ id: tasks.id });
-      if (promoted.length === 0) {
-        // 节点任务已被并发改到不可运行状态（如 cancelled/failed），避免继续启动孤儿会话。
-        this.sessions.delete(sessionId);
-        this.sessionFinishedAt.delete(sessionId);
+      // 3. 解密密钥 → 构建环境变量
+      const env = await this.resolveAgentEnv(agent, opts.repoUrl);
+
+      // 4. 生成工作分支（仅 create 模式）
+      const workBranch = mode === 'create' ? generateWorkBranch(crypto.randomUUID()) : '';
+
+      // 5. create 模式下，先切换到工作分支
+      if (mode === 'create' && workBranch) {
         try {
-          ptyManager.destroy(sessionId);
-        } catch {
-          // ignore
+          await execFileAsync('git', ['checkout', '-b', workBranch], { cwd: repoPath });
+          console.log(`[AgentSession] 已创建工作分支: ${workBranch}`);
+        } catch (err) {
+          console.warn(`[AgentSession] git checkout 失败，跳过分支创建: ${(err as Error).message}`);
         }
-        throw new Error(`流水线任务状态冲突，无法启动会话: ${opts._pipelineTaskId}`);
       }
 
-      meta.taskId = opts._pipelineTaskId;
-      meta.pipelineId = opts._pipelineId;
-      linkTaskSessionIndex(this.taskSessionIndex, opts._pipelineTaskId, sessionId);
-    } else {
-      const taskId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      try {
-        await db.insert(tasks).values({
-          id: taskId,
-          title: opts.prompt
-            ? `终端: ${opts.prompt.slice(0, 60)}${opts.prompt.length > 60 ? '...' : ''}`
-            : `终端: ${agent.displayName} 交互会话`,
-          description: opts.prompt || '(交互式会话)',
-          agentDefinitionId: opts.agentDefinitionId,
-          repoUrl: opts.repoUrl || '',
-          baseBranch: opts.baseBranch || '',
-          workBranch,
-          workDir: repoPath,
-          status: 'running',
-          source: 'terminal',
-          createdAt: now,
-          startedAt: now,
-          maxRetries: 0,
-        });
-        meta.taskId = taskId;
-        linkTaskSessionIndex(this.taskSessionIndex, taskId, sessionId);
-        console.log(`[AgentSession] 已创建任务记录: ${taskId.slice(0, 8)}`);
-      } catch (err) {
-        console.warn(`[AgentSession] 任务记录创建失败，不影响会话运行: ${(err as Error).message}`);
+      // 6. 解析 Agent 启动命令（结构化 → 直接 spawn）
+      const spec = resolveAgentCommand({
+        agentDefinitionId: effectiveAgentDefinitionId,
+        command: agent.command,
+        prompt: opts.prompt,
+        mode,
+        resumeSessionId,
+        autoExit: opts.autoExit,
+      });
+
+      // 7. 创建 PTY 会话（直接 spawn Agent 命令，不经过 shell）
+      const { sessionId, shell } = ptyManager.create({
+        cols: opts.cols,
+        rows: opts.rows,
+        command: spec.file,
+        args: spec.args,
+        userId: user.id,
+        env,
+        cwd: repoPath,
+        idleTimeoutMs: AGENT_IDLE_TIMEOUT_MS,
+        runtime: (agent.runtime as 'native' | 'wsl') ?? 'native',
+      });
+
+      if (managedSessionLeaseKey) {
+        this.bindManagedSessionLease(managedSessionLeaseKey, sessionId);
       }
-    }
 
-    if (meta.taskId) {
-      this.startTerminalTaskLogPersistence(sessionId, meta.taskId);
-    }
+      // 8. 记录元数据
+      const meta: AgentSessionMeta = {
+        sessionId,
+        userId: user.id,
+        agentDefinitionId: effectiveAgentDefinitionId,
+        agentDisplayName: agent.displayName,
+        prompt: opts.prompt,
+        repoUrl: opts.repoUrl,
+        repoPath,
+        workBranch,
+        status: 'running',
+        startedAt: Date.now(),
+        mode,
+        claudeSessionId: resumeSessionId,
+        managedSessionKey,
+      };
+      this.sessions.set(sessionId, meta);
+      this.sessionFinishedAt.delete(sessionId);
 
-    return { ...meta, sessionId, shell };
+      const modeLabel = mode === 'create' ? '新建' : mode === 'resume' ? '恢复' : '继续';
+      console.log(`[AgentSession] ${modeLabel}: ${sessionId} (agent=${agent.displayName}, user=${user.username}, mode=${mode}${mode === 'resume' ? `, claude=${resumeSessionId}` : ''}${managedSessionKey ? `, sessionKey=${managedSessionKey}` : ''}, 命令=${spec.file} ${spec.args.join(' ')})`);
+
+      // SSE 广播会话创建事件（让 Dashboard 实时感知）
+      sseManager.broadcast('agent.session.created', {
+        sessionId,
+        agentDefinitionId: meta.agentDefinitionId,
+        agentDisplayName: meta.agentDisplayName,
+        status: 'running',
+        repoPath: meta.repoPath,
+      });
+
+      // 自动持久化到 tasks 表（source='terminal'，调度器忽略）
+      // 流水线步骤已预创建任务，直接关联
+      if (opts._pipelineTaskId) {
+        const now = new Date().toISOString();
+        const promoted = await db.update(tasks)
+          .set({ status: 'running', startedAt: now })
+          .where(and(
+            eq(tasks.id, opts._pipelineTaskId),
+            inArray(tasks.status, [...TERMINAL_SESSION_ACTIVE_TASK_STATUSES]),
+          ))
+          .returning({ id: tasks.id });
+        if (promoted.length === 0) {
+          // 节点任务已被并发改到不可运行状态（如 cancelled/failed），避免继续启动孤儿会话。
+          this.sessions.delete(sessionId);
+          this.sessionFinishedAt.delete(sessionId);
+          this.releaseManagedSessionLeaseBySessionId(sessionId);
+          try {
+            ptyManager.destroy(sessionId);
+          } catch {
+            // ignore
+          }
+          throw new Error(`流水线任务状态冲突，无法启动会话: ${opts._pipelineTaskId}`);
+        }
+
+        meta.taskId = opts._pipelineTaskId;
+        meta.pipelineId = opts._pipelineId;
+        linkTaskSessionIndex(this.taskSessionIndex, opts._pipelineTaskId, sessionId);
+      } else {
+        const taskId = crypto.randomUUID();
+        const now = new Date().toISOString();
+        try {
+          await db.insert(tasks).values({
+            id: taskId,
+            title: opts.prompt
+              ? `终端: ${opts.prompt.slice(0, 60)}${opts.prompt.length > 60 ? '...' : ''}`
+              : `终端: ${agent.displayName} 交互会话`,
+            description: opts.prompt || '(交互式会话)',
+            agentDefinitionId: effectiveAgentDefinitionId,
+            repoUrl: opts.repoUrl || '',
+            baseBranch: opts.baseBranch || '',
+            workBranch,
+            workDir: repoPath,
+            status: 'running',
+            source: 'terminal',
+            createdAt: now,
+            startedAt: now,
+            maxRetries: 0,
+          });
+          meta.taskId = taskId;
+          linkTaskSessionIndex(this.taskSessionIndex, taskId, sessionId);
+          console.log(`[AgentSession] 已创建任务记录: ${taskId.slice(0, 8)}`);
+        } catch (err) {
+          console.warn(`[AgentSession] 任务记录创建失败，不影响会话运行: ${(err as Error).message}`);
+        }
+      }
+
+      if (meta.taskId) {
+        this.startTerminalTaskLogPersistence(sessionId, meta.taskId);
+      }
+
+      return { ...meta, sessionId, shell };
+    } catch (err) {
+      if (managedSessionLeaseKey) {
+        this.releaseManagedSessionLeaseByKey(managedSessionLeaseKey);
+      }
+      throw err;
+    }
   }
 
   /** 处理 Agent PTY 退出 */
@@ -425,6 +506,7 @@ class AgentSessionManager {
       { exitCode },
     );
     if (!transitioned) return;
+    this.releaseManagedSessionLeaseBySessionId(sessionId);
     const meta = transitioned.previous;
     const { elapsedMs } = transitioned;
 
@@ -497,6 +579,7 @@ class AgentSessionManager {
       'cancelled',
     );
     if (!transitioned) return;
+    this.releaseManagedSessionLeaseBySessionId(sessionId);
     const runningMeta = transitioned.previous;
 
     // 更新 tasks 表状态
@@ -551,6 +634,7 @@ class AgentSessionManager {
         prompt: meta.prompt,
         repoUrl: meta.repoUrl,
         workBranch: meta.workBranch,
+        managedSessionKey: meta.managedSessionKey,
         status: meta.status,
         exitCode: meta.exitCode,
         elapsedMs: (meta.finishedAt ?? now) - meta.startedAt,
@@ -630,6 +714,7 @@ class AgentSessionManager {
           unlinkTaskSessionIndexIfMatched(this.taskSessionIndex, taskId, sessionId);
         });
       }
+      this.releaseManagedSessionLeaseBySessionId(sessionId);
       this.sessionFinishedAt.delete(sessionId);
       this.sessions.delete(sessionId);
     }
@@ -1116,6 +1201,7 @@ class AgentSessionManager {
       { exitCode: 0 },
     );
     if (!transitioned) return;
+    this.releaseManagedSessionLeaseBySessionId(sessionId);
 
     // 发送 Ctrl+C 让 Claude 退出交互模式
     try {
@@ -1273,7 +1359,7 @@ class AgentSessionManager {
     const normalizedKey = sessionKey.trim();
     if (!normalizedKey) return false;
     if (this.isManagedSessionLeased(userId, normalizedKey)) {
-      throw new Error(`托管会话正在被运行中的流水线占用: ${normalizedKey}`);
+      throw new Error(`托管会话正在被运行中的会话或流水线占用: ${normalizedKey}`);
     }
     const deleted = await db
       .delete(terminalSessionPool)
@@ -1301,7 +1387,7 @@ class AgentSessionManager {
       .map((row) => row.sessionKey)
       .filter((sessionKey) => this.isManagedSessionLeased(userId, sessionKey));
     if (leasedKeys.length > 0) {
-      throw new Error(`存在 ${leasedKeys.length} 个托管会话正在被运行中的流水线占用，无法清空`);
+      throw new Error(`存在 ${leasedKeys.length} 个托管会话正在被运行中的会话或流水线占用，无法清空`);
     }
 
     const deleted = await db
@@ -1345,7 +1431,60 @@ class AgentSessionManager {
     return conditions.length === 1 ? conditions[0] : and(...conditions);
   }
 
+  private buildManagedSessionLeaseKey(userId: string, sessionKey: string): string {
+    return `${userId}::${sessionKey}`;
+  }
+
+  private acquireManagedSessionLock(userId: string, sessionKey: string): string {
+    const leaseKey = this.buildManagedSessionLeaseKey(userId, sessionKey);
+    if (this.isManagedSessionLeased(userId, sessionKey)) {
+      throw new Error(`托管会话正在被运行中的会话或流水线占用: ${sessionKey}`);
+    }
+    this.managedSessionPendingLocks.add(leaseKey);
+    return leaseKey;
+  }
+
+  private bindManagedSessionLease(leaseKey: string, sessionId: string): void {
+    const separatorIndex = leaseKey.indexOf('::');
+    const userId = separatorIndex >= 0 ? leaseKey.slice(0, separatorIndex) : '';
+    const sessionKey = separatorIndex >= 0 ? leaseKey.slice(separatorIndex + 2) : leaseKey;
+    this.managedSessionPendingLocks.delete(leaseKey);
+    this.managedSessionLeases.set(leaseKey, { userId, sessionKey, sessionId });
+    this.managedSessionLeaseBySessionId.set(sessionId, leaseKey);
+  }
+
+  private releaseManagedSessionLeaseBySessionId(sessionId: string): void {
+    const leaseKey = this.managedSessionLeaseBySessionId.get(sessionId);
+    if (!leaseKey) return;
+    this.releaseManagedSessionLeaseByKey(leaseKey);
+  }
+
+  private releaseManagedSessionLeaseByKey(leaseKey: string): void {
+    this.managedSessionPendingLocks.delete(leaseKey);
+    const lease = this.managedSessionLeases.get(leaseKey);
+    if (lease) {
+      this.managedSessionLeaseBySessionId.delete(lease.sessionId);
+    }
+    this.managedSessionLeases.delete(leaseKey);
+  }
+
   private isManagedSessionLeased(userId: string, sessionKey: string): boolean {
+    const leaseKey = this.buildManagedSessionLeaseKey(userId, sessionKey);
+    if (this.managedSessionPendingLocks.has(leaseKey)) {
+      return true;
+    }
+
+    const sessionLease = this.managedSessionLeases.get(leaseKey);
+    if (sessionLease) {
+      const meta = this.sessions.get(sessionLease.sessionId);
+      const stillRunning = Boolean(meta && meta.status === 'running' && ptyManager.has(sessionLease.sessionId));
+      if (stillRunning) {
+        return true;
+      }
+      // 清理孤儿租约：会话已终止或已被 GC。
+      this.releaseManagedSessionLeaseByKey(leaseKey);
+    }
+
     for (const pipeline of this.pipelines.values()) {
       if (pipeline.userId !== userId) continue;
       if (pipeline.status !== 'running' && pipeline.status !== 'paused') continue;
@@ -1697,12 +1836,14 @@ class AgentSessionManager {
     for (const sessionId of sessionActions.deleteSessionIds) {
       const meta = this.sessions.get(sessionId);
       if (!meta) {
+        this.releaseManagedSessionLeaseBySessionId(sessionId);
         this.sessionFinishedAt.delete(sessionId);
         continue;
       }
       if (meta.taskId) {
         unlinkTaskSessionIndexIfMatched(this.taskSessionIndex, meta.taskId, sessionId);
       }
+      this.releaseManagedSessionLeaseBySessionId(sessionId);
       this.sessions.delete(sessionId);
       this.sessionFinishedAt.delete(sessionId);
     }

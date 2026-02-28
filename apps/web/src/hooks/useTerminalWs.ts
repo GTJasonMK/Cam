@@ -208,6 +208,7 @@ export function useTerminalWs(): UseTerminalWsReturn {
             prompt: '',
             repoPath: msg.repoPath,
             claudeSessionId: msg.claudeSessionId,
+            managedSessionKey: msg.managedSessionKey,
             mode: msg.mode,
           });
           break;

@@ -31,6 +31,7 @@ async function handler(request: AuthenticatedRequest) {
         repoPath: meta?.repoPath ?? null,
         mode: meta?.mode ?? null,
         claudeSessionId: meta?.claudeSessionId ?? null,
+        managedSessionKey: meta?.managedSessionKey ?? null,
       };
     });
 
