@@ -386,6 +386,7 @@ export const FILE_MANAGER_UI_MESSAGES = {
   toolbar: {
     search: '搜索文件名...',
     upload: '上传',
+    newFolder: '新建文件夹',
     refresh: '刷新',
     back: '返回上级',
   },
@@ -398,6 +399,9 @@ export const FILE_MANAGER_UI_MESSAGES = {
   actions: {
     download: '下载',
     open: '打开',
+    rename: '重命名',
+    move: '移动',
+    delete: '删除',
   },
   empty: {
     noEntries: '空目录',
@@ -424,5 +428,6 @@ export const FILE_MANAGER_UI_MESSAGES = {
   errors: {
     loadFailed: '加载目录失败',
     pathNotFound: '路径不存在',
+    writeRootRequired: '请先进入具体目录后再执行写操作',
   },
 } as const;

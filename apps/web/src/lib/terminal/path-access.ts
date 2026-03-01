@@ -63,3 +63,11 @@ export function isPathWithinAllowedRoots(
     return !rel.startsWith('..') && !isAbsolute(rel);
   });
 }
+
+export function isAllowedRootPath(
+  targetPath: string,
+  allowedRoots: string[] = getTerminalAllowedRoots(),
+): boolean {
+  const normalizedTarget = normalizeAbsolutePath(targetPath);
+  return allowedRoots.some((root) => normalizeAbsolutePath(root) === normalizedTarget);
+}

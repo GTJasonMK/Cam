@@ -5,8 +5,9 @@
 // ============================================================
 
 import { writeFile, access, mkdir } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
+import { sanitizeTerminalEntryName } from '@/lib/terminal/file-name';
 import { isPathWithinAllowedRoots, resolveTerminalPath } from '@/lib/terminal/path-access';
 import { apiSuccess, apiBadRequest, apiError } from '@/lib/http/api-response';
 
@@ -53,8 +54,8 @@ async function handlePost(request: AuthenticatedRequest) {
   }
 
   // 写入文件
-  const safeFileName = basename((file.name || '').replace(/\\/g, '/')).trim();
-  if (!safeFileName || safeFileName === '.' || safeFileName === '..' || safeFileName.includes('\0')) {
+  const safeFileName = sanitizeTerminalEntryName(file.name || '');
+  if (!safeFileName) {
     return apiBadRequest('文件名非法');
   }
 

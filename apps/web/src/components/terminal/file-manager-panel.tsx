@@ -23,6 +23,10 @@ import {
   HardDrive,
   FileJson,
   FileCog,
+  FolderPlus,
+  Pencil,
+  ArrowRightLeft,
+  Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -71,6 +75,14 @@ interface TransferTask {
   abort?: () => void;
 }
 
+interface ApiEnvelope<T = unknown> {
+  success?: boolean;
+  data?: T;
+  error?: {
+    message?: string;
+  };
+}
+
 // ---- 图标工具 ----
 
 function FileIcon({ ext, className }: { ext: string; className?: string }) {
@@ -114,6 +126,7 @@ export default function FileManagerPanel() {
   const [error, setError] = useState<string | null>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [transfers, setTransfers] = useState<TransferTask[]>([]);
+  const [operationBusy, setOperationBusy] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadHandlesRef = useRef<Map<string, UploadHandle>>(new Map());
@@ -154,6 +167,19 @@ export default function FileManagerPanel() {
     }
   }, []);
 
+  const requestApi = useCallback(async <T,>(url: string, init?: RequestInit): Promise<T> => {
+    const response = await fetch(url, init);
+    const json = await response.json().catch(() => null) as ApiEnvelope<T> | null;
+    if (!response.ok || !json?.success) {
+      throw new Error(json?.error?.message || `HTTP ${response.status}`);
+    }
+    return json.data as T;
+  }, []);
+
+  const refreshCurrent = useCallback(async () => {
+    await browse(currentPath);
+  }, [browse, currentPath]);
+
   // 初始加载
   useEffect(() => {
     void browse('');
@@ -174,6 +200,7 @@ export default function FileManagerPanel() {
   );
 
   const hasContent = filteredEntries.length > 0 || filteredFiles.length > 0;
+  const canWriteCurrentDir = Boolean(currentPath);
 
   // ---- 上传 ----
 
@@ -231,6 +258,85 @@ export default function FileManagerPanel() {
     // 清空 file input
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [currentPath, browse]);
+
+  // ---- 文件/目录 CRUD ----
+
+  const ensureWritableCurrentDir = useCallback((): string | null => {
+    if (!currentPath) {
+      setError(MSG.errors.writeRootRequired);
+      return null;
+    }
+    return currentPath;
+  }, [currentPath]);
+
+  const withMutation = useCallback(async (runner: () => Promise<void>) => {
+    setOperationBusy(true);
+    setError(null);
+    try {
+      await runner();
+      await refreshCurrent();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setOperationBusy(false);
+    }
+  }, [refreshCurrent]);
+
+  const handleCreateFolder = useCallback(async () => {
+    const dir = ensureWritableCurrentDir();
+    if (!dir) return;
+    const name = window.prompt('请输入新文件夹名称');
+    if (name === null) return;
+    await withMutation(async () => {
+      await requestApi('/api/terminal/files/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parentDir: dir, name }),
+      });
+    });
+  }, [ensureWritableCurrentDir, requestApi, withMutation]);
+
+  const handleRenamePath = useCallback(async (path: string, currentName: string) => {
+    const newName = window.prompt('请输入新名称', currentName);
+    if (newName === null) return;
+    await withMutation(async () => {
+      await requestApi('/api/terminal/files/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, newName }),
+      });
+    });
+  }, [requestApi, withMutation]);
+
+  const handleMovePath = useCallback(async (path: string) => {
+    const currentDir = ensureWritableCurrentDir();
+    if (!currentDir) return;
+    const targetDir = window.prompt('请输入目标目录路径', currentDir);
+    if (targetDir === null) return;
+    await withMutation(async () => {
+      await requestApi('/api/terminal/files/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, targetDir }),
+      });
+    });
+  }, [ensureWritableCurrentDir, requestApi, withMutation]);
+
+  const handleDeletePath = useCallback(async (path: string, displayName: string, isDirectory: boolean) => {
+    const confirmed = window.confirm(
+      isDirectory
+        ? `确认删除目录「${displayName}」及其全部内容？`
+        : `确认删除文件「${displayName}」？`,
+    );
+    if (!confirmed) return;
+    await withMutation(async () => {
+      await requestApi('/api/terminal/files/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, recursive: isDirectory }),
+      });
+    });
+  }, [requestApi, withMutation]);
 
   // ---- 下载 ----
 
@@ -383,16 +489,27 @@ export default function FileManagerPanel() {
             size="sm"
             className="h-9"
             onClick={() => fileInputRef.current?.click()}
+            disabled={!canWriteCurrentDir || operationBusy}
           >
             <Upload size={14} className="mr-1.5" />
             {MSG.toolbar.upload}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="h-9"
+            onClick={() => { void handleCreateFolder(); }}
+            disabled={!canWriteCurrentDir || operationBusy}
+          >
+            <FolderPlus size={14} className="mr-1.5" />
+            {MSG.toolbar.newFolder}
           </Button>
           <Button
             variant="ghost"
             size="sm"
             className="h-9"
             onClick={() => void browse(currentPath)}
-            disabled={loading}
+            disabled={loading || operationBusy}
           >
             <RefreshCw size={14} className={cn(loading && 'animate-spin')} />
           </Button>
@@ -422,7 +539,7 @@ export default function FileManagerPanel() {
             <span className="flex-1">{MSG.columns.name}</span>
             <span className="hidden w-24 text-right sm:block">{MSG.columns.size}</span>
             <span className="hidden w-32 text-right sm:block">{MSG.columns.modified}</span>
-            <span className="w-20 text-right">{MSG.columns.actions}</span>
+            <span className="w-52 text-right">{MSG.columns.actions}</span>
           </div>
 
           {/* 返回上级目录 */}
@@ -439,20 +556,58 @@ export default function FileManagerPanel() {
 
           {/* 目录列表 */}
           {filteredEntries.map((entry) => (
-            <button
+            <div
               key={entry.path}
-              type="button"
-              onClick={() => void browse(entry.path)}
-              className="flex w-full items-center gap-3 border-b border-border px-4 py-2.5 text-sm transition-colors hover:bg-muted/30"
+              className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-sm transition-colors hover:bg-muted/30"
             >
-              <FolderOpen size={16} className="shrink-0 text-primary/70" />
-              <span className="min-w-0 flex-1 truncate text-left font-medium">
-                {entry.name}
-                {entry.isGitRepo && (
-                  <span className="ml-2 text-[11px] text-muted-foreground">Git</span>
+              <button
+                type="button"
+                onClick={() => void browse(entry.path)}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              >
+                <FolderOpen size={16} className="shrink-0 text-primary/70" />
+                <span className="min-w-0 truncate font-medium">
+                  {entry.name}
+                  {entry.isGitRepo && (
+                    <span className="ml-2 text-[11px] text-muted-foreground">Git</span>
+                  )}
+                </span>
+              </button>
+
+              <span className="w-52 shrink-0 text-right">
+                {canWriteCurrentDir && (
+                  <span className="inline-flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={() => { void handleRenamePath(entry.path, entry.name); }}
+                      disabled={operationBusy}
+                      title={MSG.actions.rename}
+                      className="inline-flex items-center rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleMovePath(entry.path); }}
+                      disabled={operationBusy}
+                      title={MSG.actions.move}
+                      className="inline-flex items-center rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                    >
+                      <ArrowRightLeft size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleDeletePath(entry.path, entry.name, true); }}
+                      disabled={operationBusy}
+                      title={MSG.actions.delete}
+                      className="inline-flex items-center rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive/85 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </span>
                 )}
               </span>
-            </button>
+            </div>
           ))}
 
           {/* 文件列表 */}
@@ -469,15 +624,49 @@ export default function FileManagerPanel() {
               <span className="hidden w-32 shrink-0 text-right text-xs text-muted-foreground sm:block">
                 {formatShortDate(file.modifiedAt)}
               </span>
-              <span className="w-20 shrink-0 text-right">
-                <button
-                  type="button"
-                  onClick={() => handleDownload(file)}
-                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                >
-                  <Download size={12} />
-                  {MSG.actions.download}
-                </button>
+              <span className="w-52 shrink-0 text-right">
+                <span className="inline-flex items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(file)}
+                    disabled={operationBusy}
+                    title={MSG.actions.download}
+                    className="inline-flex items-center rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                  >
+                    <Download size={12} />
+                  </button>
+                  {canWriteCurrentDir && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { void handleRenamePath(file.path, file.name); }}
+                        disabled={operationBusy}
+                        title={MSG.actions.rename}
+                        className="inline-flex items-center rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleMovePath(file.path); }}
+                        disabled={operationBusy}
+                        title={MSG.actions.move}
+                        className="inline-flex items-center rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                      >
+                        <ArrowRightLeft size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleDeletePath(file.path, file.name, false); }}
+                        disabled={operationBusy}
+                        title={MSG.actions.delete}
+                        className="inline-flex items-center rounded border border-destructive/30 px-2 py-1 text-[11px] text-destructive/85 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </>
+                  )}
+                </span>
               </span>
             </div>
           ))}

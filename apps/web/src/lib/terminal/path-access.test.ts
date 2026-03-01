@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import {
   getTerminalAllowedRoots,
+  isAllowedRootPath,
   isPathWithinAllowedRoots,
   resolveTerminalPath,
 } from './path-access.ts';
@@ -21,6 +22,12 @@ test('isPathWithinAllowedRoots: 越界路径拒绝', () => {
   const root = resolve('/tmp/cam-root');
   assert.equal(isPathWithinAllowedRoots(resolve('/tmp/cam-root/../escape/file.txt'), [root]), false);
   assert.equal(isPathWithinAllowedRoots(resolve('/tmp/cam-other/file.txt'), [root]), false);
+});
+
+test('isAllowedRootPath: 仅根目录本身命中', () => {
+  const root = resolve('/tmp/cam-root');
+  assert.equal(isAllowedRootPath(root, [root]), true);
+  assert.equal(isAllowedRootPath(resolve('/tmp/cam-root/sub'), [root]), false);
 });
 
 test('getTerminalAllowedRoots: 合并环境变量与默认目录并去重', () => {
