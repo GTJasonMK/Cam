@@ -21,6 +21,7 @@ import { AGENT_SESSION_UI_MESSAGES as MSG } from '@/lib/i18n/ui-messages';
 import { readApiEnvelope, resolveApiErrorMessage } from '@/lib/http/client-response';
 import { toSafeTimestamp } from '@/lib/time/format';
 import { truncateText } from '@/lib/terminal/display';
+import { isPathWithinAllowedRootsClient } from '@/lib/terminal/path-access-client';
 import { extractTemplateVars, renderTemplate } from '@/lib/terminal/template-render';
 import { normalizeOptionalString } from '@/lib/validation/strings';
 import type { ClientMessage } from '@/lib/terminal/protocol';
@@ -165,6 +166,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   const [browsing, setBrowsing] = useState(false);
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
+  const [allowedBrowseRoots, setAllowedBrowseRoots] = useState<string[]>([]);
 
   // 当前目录状态
   const [dirInfo, setDirInfo] = useState<{ isGitRepo: boolean; hasClaude: boolean } | null>(null);
@@ -178,8 +180,13 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
 
   const discoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const managedDiscoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allowedBrowseRootsRef = useRef<string[]>([]);
   /** 发现请求序号，防止竞态：仅最新请求的响应生效 */
   const discoverSeqRef = useRef(0);
+
+  useEffect(() => {
+    allowedBrowseRootsRef.current = allowedBrowseRoots;
+  }, [allowedBrowseRoots]);
 
   // ---- 数据加载 ----
   useEffect(() => {
@@ -370,14 +377,32 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   }, [selectedAgent, agents]);
 
   const browse = useCallback(async (path?: string) => {
+    const targetPath = path?.trim() ?? '';
+    const rootsSnapshot = allowedBrowseRootsRef.current;
+    if (
+      targetPath
+      && rootsSnapshot.length > 0
+      && !isPathWithinAllowedRootsClient(targetPath, rootsSnapshot)
+    ) {
+      setError(MSG.browse?.pathNotAllowed ?? '路径不在允许访问范围内');
+      return;
+    }
+
     setBrowseLoading(true);
+    setError('');
     try {
-      const url = path ? `/api/terminal/browse?path=${encodeURIComponent(path)}` : '/api/terminal/browse';
+      const url = targetPath ? `/api/terminal/browse?path=${encodeURIComponent(targetPath)}` : '/api/terminal/browse';
       const res = await fetch(url);
       const d = await readApiEnvelope<BrowseResult>(res);
       if (res.ok && d?.success && d.data) {
         setBrowseResult(d.data);
         setBrowsing(true);
+        if (!targetPath) {
+          const roots = d.data.entries
+            .filter((entry) => entry.isDirectory)
+            .map((entry) => entry.path);
+          setAllowedBrowseRoots(roots);
+        }
         return;
       }
       setError(resolveApiErrorMessage(res, d, '加载目录失败'));
@@ -463,12 +488,20 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
     setError('');
     setBrowsing(false);
     setBrowseResult(null);
+    setAllowedBrowseRoots([]);
     onOpenChange(false);
   }, [onOpenChange]);
 
   // ---- 派生 ----
   const hasQuickSelect = repos.length > 0 || recentDirs.length > 0;
-  const breadcrumbs = browseResult ? pathToBreadcrumbs(browseResult.currentPath) : [];
+  const breadcrumbs = useMemo(() => {
+    if (!browseResult) return [];
+    return pathToBreadcrumbs(browseResult.currentPath).map((crumb) => ({
+      ...crumb,
+      canNavigate: allowedBrowseRoots.length === 0
+        || isPathWithinAllowedRootsClient(crumb.path, allowedBrowseRoots),
+    }));
+  }, [allowedBrowseRoots, browseResult]);
   const showSessions = isCLIAgent(selectedAgent) && sessions.length > 0;
   const showManagedSessions = isCLIAgent(selectedAgent) && managedSessions.length > 0;
   const isCodex = selectedAgent === 'codex';
@@ -617,10 +650,16 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                   {breadcrumbs.map((crumb, i) => (
                     <span key={crumb.path} className="flex items-center gap-0.5">
                       <ChevronRight size={10} className="text-white/20" />
-                      <button type="button" onClick={() => browse(crumb.path)}
-                        className={`shrink-0 transition-colors ${i === breadcrumbs.length - 1 ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-primary'}`}>
-                        {crumb.label}
-                      </button>
+                      {i === breadcrumbs.length - 1 || !crumb.canNavigate ? (
+                        <span className="shrink-0 text-foreground font-medium">
+                          {crumb.label}
+                        </span>
+                      ) : (
+                        <button type="button" onClick={() => browse(crumb.path)}
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-primary">
+                          {crumb.label}
+                        </button>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -636,7 +675,9 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
                     <span className="inline-flex items-center gap-1 text-[10px] text-blue-400"><Sparkles size={10} /> Claude</span>
                   )}
                   <span className="flex-1" />
-                  {browseResult.parentPath && (
+                  {browseResult.parentPath
+                    && (allowedBrowseRoots.length === 0
+                      || isPathWithinAllowedRootsClient(browseResult.parentPath, allowedBrowseRoots)) && (
                     <button type="button" onClick={() => browse(browseResult.parentPath!)}
                       className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
                       <ChevronUp size={12} /> 上级

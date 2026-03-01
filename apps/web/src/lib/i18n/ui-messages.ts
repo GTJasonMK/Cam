@@ -290,6 +290,7 @@ export const AGENT_SESSION_UI_MESSAGES = {
     directoryLabel: '项目目录',
     createDescription: '选择 Agent 类型和项目目录，可发现并恢复已有 Claude Code 会话',
     emptyDirectory: '空目录',
+    pathNotAllowed: '路径不在允许访问范围内',
     sessionListLabel: '已有 Claude Code 会话',
     newSession: '新建会话',
     resumeSession: '恢复会话',

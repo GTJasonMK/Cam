@@ -40,6 +40,7 @@ import {
   type TransferProgress,
   type UploadHandle,
 } from '@/lib/terminal/file-transfer';
+import { isPathWithinAllowedRootsClient } from '@/lib/terminal/path-access-client';
 import type { FileEntry } from '@/app/api/terminal/browse/route';
 import { cn } from '@/lib/utils';
 
@@ -81,27 +82,6 @@ interface ApiEnvelope<T = unknown> {
   error?: {
     message?: string;
   };
-}
-
-function normalizePathForMatch(path: string): string {
-  if (!path) return '';
-  let normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '');
-  if (!normalized) return '/';
-  if (/^[A-Za-z]:/.test(normalized)) {
-    normalized = normalized[0].toLowerCase() + normalized.slice(1);
-  }
-  return normalized;
-}
-
-function isPathWithinAllowedRootsClient(targetPath: string, allowedRoots: string[]): boolean {
-  const target = normalizePathForMatch(targetPath);
-  if (!target) return false;
-  return allowedRoots.some((rootPath) => {
-    const root = normalizePathForMatch(rootPath);
-    if (!root) return false;
-    if (root === '/') return target.startsWith('/');
-    return target === root || target.startsWith(`${root}/`);
-  });
 }
 
 // ---- 图标工具 ----
@@ -153,12 +133,18 @@ export default function FileManagerPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadHandlesRef = useRef<Map<string, UploadHandle>>(new Map());
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const allowedRootsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    allowedRootsRef.current = allowedRoots;
+  }, [allowedRoots]);
 
   // ---- 浏览 ----
 
   const browse = useCallback(async (path: string) => {
     const targetPath = path.trim();
-    if (targetPath && allowedRoots.length > 0 && !isPathWithinAllowedRootsClient(targetPath, allowedRoots)) {
+    const rootsSnapshot = allowedRootsRef.current;
+    if (targetPath && rootsSnapshot.length > 0 && !isPathWithinAllowedRootsClient(targetPath, rootsSnapshot)) {
       setError(MSG.errors.pathNotAllowed ?? '路径不在允许访问范围内');
       return;
     }
@@ -200,7 +186,7 @@ export default function FileManagerPanel() {
     } finally {
       setLoading(false);
     }
-  }, [allowedRoots]);
+  }, []);
 
   const requestApi = useCallback(async <T,>(url: string, init?: RequestInit): Promise<T> => {
     const response = await fetch(url, init);
