@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useSSE, type SSEEvent } from '@/hooks/useSSE';
 import { useTaskStore, useAgentStore, useWorkerStore, useDashboardStore } from '@/stores';
+import { clearChunkReloadMarker } from '@/lib/client/chunk-load';
 
 export function SSEListener() {
   const fetchTasks = useTaskStore((s) => s.fetchTasks);
@@ -56,6 +57,11 @@ export function SSEListener() {
   );
 
   const { connected } = useSSE({ onEvent: handleEvent });
+
+  useEffect(() => {
+    // 页面正常挂载后清理一次性 chunk 自动刷新标记，便于后续版本切换继续自愈
+    clearChunkReloadMarker();
+  }, []);
 
   useEffect(() => {
     setDashboardSseConnected(connected);

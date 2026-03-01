@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { isChunkLoadError, tryReloadOnceForChunkError } from '@/lib/client/chunk-load';
 
 interface GlobalErrorProps {
   error: Error & { digest?: string };
@@ -10,6 +11,7 @@ interface GlobalErrorProps {
 export default function GlobalError({ error, reset }: GlobalErrorProps) {
   useEffect(() => {
     console.error('全局渲染异常', error);
+    tryReloadOnceForChunkError(error);
   }, [error]);
 
   return (
@@ -21,6 +23,7 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
             <h2 className="mt-2 text-xl font-semibold text-foreground">应用发生严重错误</h2>
             <p className="mt-3 text-sm text-muted-foreground">
               当前会话无法继续处理请求，请先重试；如持续失败，请返回首页后重新进入。
+              {isChunkLoadError(error) ? ' 检测到前端资源版本切换异常，建议刷新页面后重试。' : ''}
             </p>
             {error.digest ? (
               <p className="mt-3 text-xs text-muted-foreground">错误标识：{error.digest}</p>
