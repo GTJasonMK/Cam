@@ -428,6 +428,7 @@ export const FILE_MANAGER_UI_MESSAGES = {
   errors: {
     loadFailed: '加载目录失败',
     pathNotFound: '路径不存在',
+    pathNotAllowed: '路径不在允许访问范围内',
     writeRootRequired: '请先进入具体目录后再执行写操作',
   },
 } as const;

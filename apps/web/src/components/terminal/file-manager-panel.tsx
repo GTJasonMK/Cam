@@ -83,6 +83,27 @@ interface ApiEnvelope<T = unknown> {
   };
 }
 
+function normalizePathForMatch(path: string): string {
+  if (!path) return '';
+  let normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '');
+  if (!normalized) return '/';
+  if (/^[A-Za-z]:/.test(normalized)) {
+    normalized = normalized[0].toLowerCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
+function isPathWithinAllowedRootsClient(targetPath: string, allowedRoots: string[]): boolean {
+  const target = normalizePathForMatch(targetPath);
+  if (!target) return false;
+  return allowedRoots.some((rootPath) => {
+    const root = normalizePathForMatch(rootPath);
+    if (!root) return false;
+    if (root === '/') return target.startsWith('/');
+    return target === root || target.startsWith(`${root}/`);
+  });
+}
+
 // ---- 图标工具 ----
 
 function FileIcon({ ext, className }: { ext: string; className?: string }) {
@@ -122,6 +143,7 @@ export default function FileManagerPanel() {
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
+  const [allowedRoots, setAllowedRoots] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -135,13 +157,19 @@ export default function FileManagerPanel() {
   // ---- 浏览 ----
 
   const browse = useCallback(async (path: string) => {
+    const targetPath = path.trim();
+    if (targetPath && allowedRoots.length > 0 && !isPathWithinAllowedRootsClient(targetPath, allowedRoots)) {
+      setError(MSG.errors.pathNotAllowed ?? '路径不在允许访问范围内');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setSearchKeyword('');
 
     try {
       const params = new URLSearchParams();
-      if (path) params.set('path', path);
+      if (targetPath) params.set('path', targetPath);
       params.set('includeFiles', 'true');
 
       const res = await fetch(`/api/terminal/browse?${params.toString()}`);
@@ -160,12 +188,19 @@ export default function FileManagerPanel() {
       setParentPath(data.parentPath);
       setEntries(data.entries || []);
       setFiles(data.files || []);
+
+      if (!targetPath) {
+        const roots = (data.entries || [])
+          .filter((entry) => entry.isDirectory)
+          .map((entry) => entry.path);
+        setAllowedRoots(roots);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [allowedRoots]);
 
   const requestApi = useCallback(async <T,>(url: string, init?: RequestInit): Promise<T> => {
     const response = await fetch(url, init);
@@ -416,17 +451,21 @@ export default function FileManagerPanel() {
     // Unix: '/home/user' → ['', 'home', 'user']
     const sep = currentPath.includes('\\') ? '\\' : '/';
     const parts = currentPath.split(sep).filter(Boolean);
-    const crumbs: { label: string; path: string }[] = [];
+    const crumbs: { label: string; path: string; canNavigate: boolean }[] = [];
 
     for (let i = 0; i < parts.length; i++) {
       const path = currentPath.includes('\\')
         ? parts.slice(0, i + 1).join('\\') + (i === 0 ? '\\' : '')
         : '/' + parts.slice(0, i + 1).join('/');
-      crumbs.push({ label: parts[i], path });
+      crumbs.push({
+        label: parts[i],
+        path,
+        canNavigate: isPathWithinAllowedRootsClient(path, allowedRoots),
+      });
     }
 
     return crumbs;
-  }, [currentPath]);
+  }, [allowedRoots, currentPath]);
 
   // ---- 活跃传输 ----
   const activeTransfers = useMemo(() => transfers.filter((t) => t.status === 'active'), [transfers]);
@@ -451,7 +490,7 @@ export default function FileManagerPanel() {
           {breadcrumbs.map((crumb, i) => (
             <span key={crumb.path} className="flex shrink-0 items-center gap-1">
               <ChevronRight size={14} className="text-muted-foreground/50" />
-              {i === breadcrumbs.length - 1 ? (
+              {i === breadcrumbs.length - 1 || !crumb.canNavigate ? (
                 <span className="font-medium text-foreground">{crumb.label}</span>
               ) : (
                 <button
