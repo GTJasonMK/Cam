@@ -3,6 +3,8 @@
 // 上传（XHR + 进度）、下载（fetch + 流式进度）、浏览器保存
 // ============================================================
 
+import { getFileCategoryByExtension, type FileCategory } from './file-types';
+
 /** 进度回调参数 */
 export interface TransferProgress {
   loaded: number;
@@ -35,36 +37,9 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/** 文件分类（用于图标选择） */
-export type FileCategory = 'code' | 'text' | 'image' | 'archive' | 'data' | 'config' | 'unknown';
-
-const CATEGORY_MAP: Record<string, FileCategory> = {
-  // 代码
-  '.ts': 'code', '.tsx': 'code', '.js': 'code', '.jsx': 'code', '.mjs': 'code',
-  '.py': 'code', '.rs': 'code', '.go': 'code', '.java': 'code', '.c': 'code',
-  '.cpp': 'code', '.h': 'code', '.cs': 'code', '.rb': 'code', '.php': 'code',
-  '.swift': 'code', '.kt': 'code', '.scala': 'code', '.sh': 'code', '.bat': 'code',
-  '.vue': 'code', '.svelte': 'code', '.html': 'code', '.css': 'code', '.scss': 'code',
-  '.less': 'code', '.sql': 'code', '.wasm': 'code',
-  // 文本
-  '.txt': 'text', '.md': 'text', '.log': 'text', '.csv': 'text', '.rtf': 'text',
-  // 图片
-  '.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.gif': 'image',
-  '.webp': 'image', '.svg': 'image', '.ico': 'image', '.bmp': 'image',
-  // 压缩
-  '.zip': 'archive', '.gz': 'archive', '.tar': 'archive', '.7z': 'archive',
-  '.rar': 'archive', '.bz2': 'archive', '.xz': 'archive',
-  // 数据
-  '.json': 'data', '.xml': 'data', '.yaml': 'data', '.yml': 'data',
-  '.toml': 'data', '.ini': 'data', '.env': 'data', '.properties': 'data',
-  // 配置
-  '.gitignore': 'config', '.eslintrc': 'config', '.prettierrc': 'config',
-  '.editorconfig': 'config', '.npmrc': 'config',
-};
-
 /** 根据文件扩展名获取分类 */
 export function getFileCategory(ext: string): FileCategory {
-  return CATEGORY_MAP[ext.toLowerCase()] || 'unknown';
+  return getFileCategoryByExtension(ext);
 }
 
 // ---- 上传 ----

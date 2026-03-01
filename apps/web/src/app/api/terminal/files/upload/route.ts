@@ -5,9 +5,9 @@
 // ============================================================
 
 import { writeFile, access, mkdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, basename } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-import { normalizeHostPathInput } from '@/lib/terminal/path-normalize';
+import { isPathWithinAllowedRoots, resolveTerminalPath } from '@/lib/terminal/path-access';
 import { apiSuccess, apiBadRequest, apiError } from '@/lib/http/api-response';
 
 /** 100MB 上传大小上限 */
@@ -36,7 +36,10 @@ async function handlePost(request: AuthenticatedRequest) {
   }
 
   // 规范化并验证目标目录
-  const targetDir = resolve(normalizeHostPathInput(rawTargetDir));
+  const targetDir = resolveTerminalPath(rawTargetDir);
+  if (!isPathWithinAllowedRoots(targetDir)) {
+    return apiError('PATH_NOT_ALLOWED', '目标目录不在允许访问范围内', { status: 403 });
+  }
 
   try {
     await access(targetDir);
@@ -50,7 +53,15 @@ async function handlePost(request: AuthenticatedRequest) {
   }
 
   // 写入文件
-  const targetPath = join(targetDir, file.name);
+  const safeFileName = basename((file.name || '').replace(/\\/g, '/')).trim();
+  if (!safeFileName || safeFileName === '.' || safeFileName === '..' || safeFileName.includes('\0')) {
+    return apiBadRequest('文件名非法');
+  }
+
+  const targetPath = join(targetDir, safeFileName);
+  if (!isPathWithinAllowedRoots(targetPath)) {
+    return apiError('PATH_NOT_ALLOWED', '目标文件路径不在允许访问范围内', { status: 403 });
+  }
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
     await writeFile(targetPath, buffer);
@@ -60,7 +71,7 @@ async function handlePost(request: AuthenticatedRequest) {
 
   return apiSuccess({
     path: targetPath,
-    name: file.name,
+    name: safeFileName,
     size: file.size,
   });
 }

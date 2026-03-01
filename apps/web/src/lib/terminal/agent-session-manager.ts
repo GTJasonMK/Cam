@@ -8,13 +8,20 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, lt } from 'drizzle-orm';
 import { db } from '@/lib/db';
-import { agentDefinitions, repositories, taskLogs, tasks, terminalSessionPool } from '@/lib/db/schema';
+import {
+  agentDefinitions,
+  repositories,
+  taskLogs,
+  tasks,
+  terminalSessionPool,
+  terminalSessionPoolLeases,
+} from '@/lib/db/schema';
 import { resolveEnvVarValue, type SecretScope } from '@/lib/secrets/resolve';
 import { sseManager } from '@/lib/sse/manager';
 import { sleep } from '@/lib/async/sleep';
-import { isSqliteForeignKeyConstraintError } from '@/lib/db/sqlite-errors';
+import { isSqliteForeignKeyConstraintError, isSqliteMissingSchemaError } from '@/lib/db/sqlite-errors';
 import { toSafeTimestamp } from '@/lib/time/format';
 import { normalizeOptionalString } from '@/lib/validation/strings';
 import {
@@ -60,6 +67,12 @@ import { normalizeHostPathInput } from './path-normalize';
 import { MAX_SESSIONS_PER_USER, ptyManager } from './pty-manager';
 import { resolveAgentCommand, generateWorkBranch } from './agent-command';
 import { injectCompletionHook } from './hook-injector';
+import { buildLeaseStaleBeforeIso } from './session-pool-lease';
+import { trackPendingLeaseRelease, waitPendingLeaseRelease } from './lease-release-barrier';
+import {
+  createManagedSessionDbLeaseWithReclaim,
+  tryReclaimStaleManagedSessionDbLease as tryReclaimStaleManagedSessionDbLeaseCore,
+} from './session-pool-db-lease';
 import type {
   AgentSessionInfo,
   AgentSessionStatus,
@@ -81,6 +94,10 @@ const TERMINAL_LOG_MAX_LINE_LENGTH = 8000;
 const STATE_PRUNE_INTERVAL_MS = 60 * 1000;
 const FINISHED_SESSION_TTL_MS = 10 * 60 * 1000;
 const FINISHED_PIPELINE_TTL_MS = 30 * 60 * 1000;
+const MANAGED_SESSION_LEASE_HEARTBEAT_MS = 15 * 1000;
+const MANAGED_SESSION_LEASE_STALE_MS = 90 * 1000;
+const MANAGED_SESSION_LEASE_REAP_MIN_INTERVAL_MS = 15 * 1000;
+const MANAGED_SESSION_LEASE_RELEASE_WAIT_TIMEOUT_MS = 3000;
 const TERMINAL_PENDING_TASK_ALLOWED_STATUSES = [...TERMINAL_PIPELINE_PENDING_TASK_STATUSES];
 const TERMINAL_ACTIVE_TASK_ALLOWED_STATUSES = [...TERMINAL_SESSION_ACTIVE_TASK_STATUSES];
 
@@ -196,6 +213,12 @@ interface ManagedPipelineSession {
 }
 
 type TerminalSessionPoolRow = typeof terminalSessionPool.$inferSelect;
+type TerminalSessionPoolLeaseRow = typeof terminalSessionPoolLeases.$inferSelect;
+
+interface ManagedSessionLeaseHandle {
+  leaseKey: string;
+  leaseToken?: string;
+}
 
 /** 终端流水线 */
 interface TerminalPipeline {
@@ -262,14 +285,34 @@ class AgentSessionManager {
   private sessionFinishedAt: Map<string, number> = new Map();
   /** pipelineId → 进入终态的时间戳（用于 TTL 清理） */
   private pipelineFinishedAt: Map<string, number> = new Map();
-  /** userId::sessionKey → 单会话托管租约 */
-  private managedSessionLeases: Map<string, { userId: string; sessionKey: string; sessionId: string }> = new Map();
+  /** userId::sessionKey → 单会话托管租约（含 DB leaseToken） */
+  private managedSessionLeases: Map<
+    string,
+    { userId: string; sessionKey: string; sessionId: string; leaseToken?: string }
+  > = new Map();
   /** sessionId → userId::sessionKey（快速释放租约） */
   private managedSessionLeaseBySessionId: Map<string, string> = new Map();
   /** userId::sessionKey → 租约创建中的临时锁，防止并发重复创建 */
   private managedSessionPendingLocks: Set<string> = new Set();
+  /** userId::sessionKey → DB 租约释放中的 Promise，避免“刚释放立刻重建”误判占用 */
+  private managedSessionPendingDbReleaseByLeaseKey: Map<string, Promise<void>> = new Map();
+  /** userId → 最近一次 stale 回收时间（避免 list 场景写放大） */
+  private managedSessionLeaseReapAtByUser: Map<string, number> = new Map();
+  /** 租约表缺失告警（降级兼容老库） */
+  private leaseTableMissingWarned = false;
+  /** DB 租约心跳定时器（用于多实例 stale 回收） */
+  private leaseHeartbeatTimer: ReturnType<typeof setInterval>;
   /** 最近一次状态清理时间戳 */
   private lastStatePruneAtMs = 0;
+
+  constructor() {
+    this.leaseHeartbeatTimer = setInterval(() => {
+      void this.refreshManagedSessionLeaseHeartbeats();
+    }, MANAGED_SESSION_LEASE_HEARTBEAT_MS);
+    if (typeof this.leaseHeartbeatTimer.unref === 'function') {
+      this.leaseHeartbeatTimer.unref();
+    }
+  }
 
   /** 创建 Agent 会话 */
   async createAgentSession(
@@ -279,7 +322,7 @@ class AgentSessionManager {
     let mode: 'create' | 'resume' | 'continue' = opts.mode ?? 'create';
     let resumeSessionId = opts.resumeSessionId;
     let managedSessionKey: string | undefined;
-    let managedSessionLeaseKey: string | undefined;
+    let managedSessionLeaseHandle: ManagedSessionLeaseHandle | undefined;
     let managedSessionRecord: TerminalSessionPoolRow | undefined;
 
     if (opts.sessionKey) {
@@ -324,7 +367,7 @@ class AgentSessionManager {
       if (mode === 'resume' && !resumeSessionId) {
         throw new Error(`托管会话 ${normalizedSessionKey} 缺少 resumeSessionId`);
       }
-      managedSessionLeaseKey = this.acquireManagedSessionLock(user.id, normalizedSessionKey);
+      managedSessionLeaseHandle = await this.acquireManagedSessionLease(user.id, normalizedSessionKey);
     }
 
     const effectiveAgentDefinitionId = managedSessionRecord?.agentDefinitionId ?? opts.agentDefinitionId;
@@ -390,8 +433,8 @@ class AgentSessionManager {
         runtime: (agent.runtime as 'native' | 'wsl') ?? 'native',
       });
 
-      if (managedSessionLeaseKey) {
-        this.bindManagedSessionLease(managedSessionLeaseKey, sessionId);
+      if (managedSessionLeaseHandle) {
+        await this.bindManagedSessionLease(managedSessionLeaseHandle, sessionId);
       }
 
       // 8. 记录元数据
@@ -440,7 +483,9 @@ class AgentSessionManager {
           // 节点任务已被并发改到不可运行状态（如 cancelled/failed），避免继续启动孤儿会话。
           this.sessions.delete(sessionId);
           this.sessionFinishedAt.delete(sessionId);
-          this.releaseManagedSessionLeaseBySessionId(sessionId);
+          this.releaseManagedSessionLeaseBySessionId(sessionId, {
+            fallbackToDb: Boolean(managedSessionKey),
+          });
           try {
             ptyManager.destroy(sessionId);
           } catch {
@@ -487,8 +532,8 @@ class AgentSessionManager {
 
       return { ...meta, sessionId, shell };
     } catch (err) {
-      if (managedSessionLeaseKey) {
-        this.releaseManagedSessionLeaseByKey(managedSessionLeaseKey);
+      if (managedSessionLeaseHandle) {
+        await this.releaseManagedSessionLeaseHandle(managedSessionLeaseHandle);
       }
       throw err;
     }
@@ -497,6 +542,11 @@ class AgentSessionManager {
   /** 处理 Agent PTY 退出 */
   handleAgentExit(sessionId: string, exitCode: number): void {
     void this.stopTerminalTaskLogPersistence(sessionId);
+    const existingMeta = this.sessions.get(sessionId);
+    // PTY 已退出时才释放单会话租约，避免“会话仍在关闭中”时被并发复用。
+    this.releaseManagedSessionLeaseBySessionId(sessionId, {
+      fallbackToDb: Boolean(existingMeta?.managedSessionKey),
+    });
     const newStatus: AgentSessionStatus = exitCode === 0 ? 'completed' : 'failed';
     const transitioned = transitionSessionToFinalStatus(
       this.sessions,
@@ -506,7 +556,6 @@ class AgentSessionManager {
       { exitCode },
     );
     if (!transitioned) return;
-    this.releaseManagedSessionLeaseBySessionId(sessionId);
     const meta = transitioned.previous;
     const { elapsedMs } = transitioned;
 
@@ -579,7 +628,6 @@ class AgentSessionManager {
       'cancelled',
     );
     if (!transitioned) return;
-    this.releaseManagedSessionLeaseBySessionId(sessionId);
     const runningMeta = transitioned.previous;
 
     // 更新 tasks 表状态
@@ -714,7 +762,9 @@ class AgentSessionManager {
           unlinkTaskSessionIndexIfMatched(this.taskSessionIndex, taskId, sessionId);
         });
       }
-      this.releaseManagedSessionLeaseBySessionId(sessionId);
+      this.releaseManagedSessionLeaseBySessionId(sessionId, {
+        fallbackToDb: Boolean(meta.managedSessionKey),
+      });
       this.sessionFinishedAt.delete(sessionId);
       this.sessions.delete(sessionId);
     }
@@ -1201,7 +1251,6 @@ class AgentSessionManager {
       { exitCode: 0 },
     );
     if (!transitioned) return;
-    this.releaseManagedSessionLeaseBySessionId(sessionId);
 
     // 发送 Ctrl+C 让 Claude 退出交互模式
     try {
@@ -1340,13 +1389,18 @@ class AgentSessionManager {
       .select()
       .from(terminalSessionPool)
       .where(where);
+    const dbLeasedKeys = await this.listManagedSessionDbLeasedKeys(
+      userId,
+      rows.map((row) => row.sessionKey),
+      { forceReap: true },
+    );
 
     const result: Array<ManagedPipelineSession & { leased: boolean }> = [];
     for (const row of rows) {
       const mapped = this.mapManagedPipelineSession(row);
       result.push({
         ...mapped,
-        leased: this.isManagedSessionLeased(userId, row.sessionKey),
+        leased: this.isManagedSessionLeased(userId, row.sessionKey) || dbLeasedKeys.has(row.sessionKey),
       });
     }
 
@@ -1358,7 +1412,7 @@ class AgentSessionManager {
   async removeManagedPipelineSession(userId: string, sessionKey: string): Promise<boolean> {
     const normalizedKey = sessionKey.trim();
     if (!normalizedKey) return false;
-    if (this.isManagedSessionLeased(userId, normalizedKey)) {
+    if (await this.isManagedSessionLeasedWithDb(userId, normalizedKey)) {
       throw new Error(`托管会话正在被运行中的会话或流水线占用: ${normalizedKey}`);
     }
     const deleted = await db
@@ -1383,9 +1437,13 @@ class AgentSessionManager {
       .select({ sessionKey: terminalSessionPool.sessionKey })
       .from(terminalSessionPool)
       .where(where);
+    const dbLeasedKeys = await this.listManagedSessionDbLeasedKeys(
+      userId,
+      rows.map((row) => row.sessionKey),
+    );
     const leasedKeys = rows
       .map((row) => row.sessionKey)
-      .filter((sessionKey) => this.isManagedSessionLeased(userId, sessionKey));
+      .filter((sessionKey) => this.isManagedSessionLeased(userId, sessionKey) || dbLeasedKeys.has(sessionKey));
     if (leasedKeys.length > 0) {
       throw new Error(`存在 ${leasedKeys.length} 个托管会话正在被运行中的会话或流水线占用，无法清空`);
     }
@@ -1435,27 +1493,47 @@ class AgentSessionManager {
     return `${userId}::${sessionKey}`;
   }
 
-  private acquireManagedSessionLock(userId: string, sessionKey: string): string {
+  private async acquireManagedSessionLease(userId: string, sessionKey: string): Promise<ManagedSessionLeaseHandle> {
     const leaseKey = this.buildManagedSessionLeaseKey(userId, sessionKey);
-    if (this.isManagedSessionLeased(userId, sessionKey)) {
+    await waitPendingLeaseRelease(this.managedSessionPendingDbReleaseByLeaseKey, leaseKey, {
+      timeoutMs: MANAGED_SESSION_LEASE_RELEASE_WAIT_TIMEOUT_MS,
+    });
+    if (this.managedSessionPendingLocks.has(leaseKey) || this.isManagedSessionLeased(userId, sessionKey)) {
       throw new Error(`托管会话正在被运行中的会话或流水线占用: ${sessionKey}`);
     }
     this.managedSessionPendingLocks.add(leaseKey);
-    return leaseKey;
+    try {
+      const leaseToken = await this.createManagedSessionDbLease(userId, sessionKey);
+      return { leaseKey, leaseToken };
+    } catch (err) {
+      this.managedSessionPendingLocks.delete(leaseKey);
+      throw err;
+    }
   }
 
-  private bindManagedSessionLease(leaseKey: string, sessionId: string): void {
-    const separatorIndex = leaseKey.indexOf('::');
-    const userId = separatorIndex >= 0 ? leaseKey.slice(0, separatorIndex) : '';
-    const sessionKey = separatorIndex >= 0 ? leaseKey.slice(separatorIndex + 2) : leaseKey;
-    this.managedSessionPendingLocks.delete(leaseKey);
-    this.managedSessionLeases.set(leaseKey, { userId, sessionKey, sessionId });
-    this.managedSessionLeaseBySessionId.set(sessionId, leaseKey);
+  private async bindManagedSessionLease(handle: ManagedSessionLeaseHandle, sessionId: string): Promise<void> {
+    const separatorIndex = handle.leaseKey.indexOf('::');
+    const userId = separatorIndex >= 0 ? handle.leaseKey.slice(0, separatorIndex) : '';
+    const sessionKey = separatorIndex >= 0 ? handle.leaseKey.slice(separatorIndex + 2) : handle.leaseKey;
+    this.managedSessionPendingLocks.delete(handle.leaseKey);
+    this.managedSessionLeases.set(handle.leaseKey, { userId, sessionKey, sessionId, leaseToken: handle.leaseToken });
+    this.managedSessionLeaseBySessionId.set(sessionId, handle.leaseKey);
+    if (handle.leaseToken) {
+      await this.bindManagedSessionDbLeaseSessionId(handle.leaseToken, sessionId);
+    }
   }
 
-  private releaseManagedSessionLeaseBySessionId(sessionId: string): void {
+  private releaseManagedSessionLeaseBySessionId(
+    sessionId: string,
+    opts?: { fallbackToDb?: boolean },
+  ): void {
     const leaseKey = this.managedSessionLeaseBySessionId.get(sessionId);
-    if (!leaseKey) return;
+    if (!leaseKey) {
+      if (opts?.fallbackToDb) {
+        void this.releaseManagedSessionDbLeaseBySessionId(sessionId);
+      }
+      return;
+    }
     this.releaseManagedSessionLeaseByKey(leaseKey);
   }
 
@@ -1464,8 +1542,263 @@ class AgentSessionManager {
     const lease = this.managedSessionLeases.get(leaseKey);
     if (lease) {
       this.managedSessionLeaseBySessionId.delete(lease.sessionId);
+      if (lease.leaseToken) {
+        trackPendingLeaseRelease(
+          this.managedSessionPendingDbReleaseByLeaseKey,
+          leaseKey,
+          this.releaseManagedSessionDbLeaseByToken(lease.leaseToken),
+        );
+      }
     }
     this.managedSessionLeases.delete(leaseKey);
+  }
+
+  private async releaseManagedSessionLeaseHandle(handle: ManagedSessionLeaseHandle): Promise<void> {
+    this.managedSessionPendingLocks.delete(handle.leaseKey);
+    const lease = this.managedSessionLeases.get(handle.leaseKey);
+    if (lease) {
+      this.managedSessionLeaseBySessionId.delete(lease.sessionId);
+      this.managedSessionLeases.delete(handle.leaseKey);
+    }
+    const leaseToken = handle.leaseToken ?? lease?.leaseToken;
+    if (leaseToken) {
+      const releasePromise = this.releaseManagedSessionDbLeaseByToken(leaseToken);
+      trackPendingLeaseRelease(this.managedSessionPendingDbReleaseByLeaseKey, handle.leaseKey, releasePromise);
+      await releasePromise;
+    }
+  }
+
+  private async createManagedSessionDbLease(userId: string, sessionKey: string): Promise<string | undefined> {
+    const leaseToken = crypto.randomUUID();
+    const now = new Date().toISOString();
+    try {
+      const acquired = await createManagedSessionDbLeaseWithReclaim(db, {
+        userId,
+        sessionKey,
+        leaseToken,
+        nowIso: now,
+        nowMs: Date.now(),
+        staleMs: MANAGED_SESSION_LEASE_STALE_MS,
+      });
+      if (acquired) {
+        return leaseToken;
+      }
+
+      throw new Error(`托管会话正在被运行中的会话或流水线占用: ${sessionKey}`);
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
+  private async bindManagedSessionDbLeaseSessionId(leaseToken: string, sessionId: string): Promise<void> {
+    try {
+      await db
+        .update(terminalSessionPoolLeases)
+        .set({ sessionId, updatedAt: new Date().toISOString() })
+        .where(eq(terminalSessionPoolLeases.leaseToken, leaseToken));
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return;
+      }
+      throw err;
+    }
+  }
+
+  private async releaseManagedSessionDbLeaseByToken(leaseToken: string): Promise<void> {
+    try {
+      await db
+        .delete(terminalSessionPoolLeases)
+        .where(eq(terminalSessionPoolLeases.leaseToken, leaseToken));
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return;
+      }
+      console.warn(`[SessionPoolLease] 释放 DB 租约失败(token=${leaseToken.slice(0, 8)}): ${(err as Error).message}`);
+    }
+  }
+
+  private async releaseManagedSessionDbLeaseBySessionId(sessionId: string): Promise<void> {
+    try {
+      await db
+        .delete(terminalSessionPoolLeases)
+        .where(eq(terminalSessionPoolLeases.sessionId, sessionId));
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return;
+      }
+      console.warn(`[SessionPoolLease] 释放 DB 租约失败(session=${sessionId}): ${(err as Error).message}`);
+    }
+  }
+
+  private async reapStaleManagedSessionDbLeases(
+    userId: string,
+    sessionKeys?: string[],
+  ): Promise<number> {
+    if (Array.isArray(sessionKeys) && sessionKeys.length === 0) {
+      return 0;
+    }
+
+    const staleBeforeIso = buildLeaseStaleBeforeIso(Date.now(), MANAGED_SESSION_LEASE_STALE_MS);
+    try {
+      const conditions = [
+        eq(terminalSessionPoolLeases.userId, userId),
+        lt(terminalSessionPoolLeases.updatedAt, staleBeforeIso),
+      ];
+      if (Array.isArray(sessionKeys) && sessionKeys.length > 0) {
+        conditions.push(inArray(terminalSessionPoolLeases.sessionKey, sessionKeys));
+      }
+
+      const deleted = await db
+        .delete(terminalSessionPoolLeases)
+        .where(conditions.length === 1 ? conditions[0] : and(...conditions))
+        .returning({ id: terminalSessionPoolLeases.id });
+      if (deleted.length > 0) {
+        console.warn(`[SessionPoolLease] 已回收过期租约: ${deleted.length}`);
+      }
+      return deleted.length;
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return 0;
+      }
+      throw err;
+    }
+  }
+
+  private async listManagedSessionDbLeasedKeys(
+    userId: string,
+    sessionKeys?: string[],
+    opts?: { forceReap?: boolean },
+  ): Promise<Set<string>> {
+    if (Array.isArray(sessionKeys) && sessionKeys.length === 0) {
+      return new Set();
+    }
+
+    try {
+      await this.waitManagedSessionDbReleases(userId, sessionKeys);
+      const shouldForceReap = Array.isArray(sessionKeys) && sessionKeys.length <= 1;
+      const shouldReapNow = opts?.forceReap
+        || shouldForceReap
+        || this.shouldRunManagedSessionLeaseReap(userId, Date.now());
+      if (shouldReapNow) {
+        await this.reapStaleManagedSessionDbLeases(userId, sessionKeys);
+      }
+      const where = Array.isArray(sessionKeys) && sessionKeys.length > 0
+        ? and(
+          eq(terminalSessionPoolLeases.userId, userId),
+          inArray(terminalSessionPoolLeases.sessionKey, sessionKeys),
+        )
+        : eq(terminalSessionPoolLeases.userId, userId);
+      const rows: Array<Pick<TerminalSessionPoolLeaseRow, 'sessionKey'>> = await db
+        .select({ sessionKey: terminalSessionPoolLeases.sessionKey })
+        .from(terminalSessionPoolLeases)
+        .where(where);
+      return new Set(rows.map((row) => row.sessionKey));
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return new Set();
+      }
+      throw err;
+    }
+  }
+
+  private async waitManagedSessionDbReleases(userId: string, sessionKeys?: string[]): Promise<void> {
+    if (this.managedSessionPendingDbReleaseByLeaseKey.size === 0) {
+      return;
+    }
+
+    const leaseKeys = Array.isArray(sessionKeys) && sessionKeys.length > 0
+      ? sessionKeys.map((sessionKey) => this.buildManagedSessionLeaseKey(userId, sessionKey))
+      : Array.from(this.managedSessionPendingDbReleaseByLeaseKey.keys()).filter((leaseKey) => leaseKey.startsWith(`${userId}::`));
+
+    if (leaseKeys.length === 0) return;
+    await Promise.all(
+      leaseKeys.map((leaseKey) => waitPendingLeaseRelease(
+        this.managedSessionPendingDbReleaseByLeaseKey,
+        leaseKey,
+        { timeoutMs: MANAGED_SESSION_LEASE_RELEASE_WAIT_TIMEOUT_MS },
+      )),
+    );
+  }
+
+  private shouldRunManagedSessionLeaseReap(userId: string, nowMs: number): boolean {
+    const last = this.managedSessionLeaseReapAtByUser.get(userId);
+    if (typeof last === 'number' && (nowMs - last) < MANAGED_SESSION_LEASE_REAP_MIN_INTERVAL_MS) {
+      return false;
+    }
+    this.managedSessionLeaseReapAtByUser.set(userId, nowMs);
+    return true;
+  }
+
+  private async isManagedSessionLeasedWithDb(userId: string, sessionKey: string): Promise<boolean> {
+    if (this.isManagedSessionLeased(userId, sessionKey)) {
+      return true;
+    }
+    const dbLeasedKeys = await this.listManagedSessionDbLeasedKeys(userId, [sessionKey], { forceReap: true });
+    return dbLeasedKeys.has(sessionKey);
+  }
+
+  private async tryReclaimStaleManagedSessionDbLease(userId: string, sessionKey: string): Promise<boolean> {
+    try {
+      const reclaimed = await tryReclaimStaleManagedSessionDbLeaseCore(db, {
+        userId,
+        sessionKey,
+        nowMs: Date.now(),
+        staleMs: MANAGED_SESSION_LEASE_STALE_MS,
+      });
+      if (reclaimed) {
+        console.warn(`[SessionPoolLease] 回收过期租约: ${sessionKey}`);
+      }
+      return reclaimed;
+    } catch (err) {
+      if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+        this.warnLeaseTableMissingOnce();
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  private async refreshManagedSessionLeaseHeartbeats(): Promise<void> {
+    if (this.managedSessionLeases.size === 0) return;
+
+    const now = new Date().toISOString();
+    for (const [leaseKey, lease] of this.managedSessionLeases.entries()) {
+      if (!lease.leaseToken) continue;
+
+      const meta = this.sessions.get(lease.sessionId);
+      if (!meta || !ptyManager.has(lease.sessionId)) {
+        this.releaseManagedSessionLeaseByKey(leaseKey);
+        continue;
+      }
+
+      try {
+        await db
+          .update(terminalSessionPoolLeases)
+          .set({ updatedAt: now, sessionId: lease.sessionId })
+          .where(eq(terminalSessionPoolLeases.leaseToken, lease.leaseToken));
+      } catch (err) {
+        if (isSqliteMissingSchemaError(err, ['terminal_session_pool_leases'])) {
+          this.warnLeaseTableMissingOnce();
+          return;
+        }
+        console.warn(`[SessionPoolLease] 心跳更新失败: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  private warnLeaseTableMissingOnce(): void {
+    if (this.leaseTableMissingWarned) return;
+    this.leaseTableMissingWarned = true;
+    console.warn('[SessionPoolLease] terminal_session_pool_leases 表缺失，降级为进程内租约（建议尽快执行迁移）');
   }
 
   private isManagedSessionLeased(userId: string, sessionKey: string): boolean {
@@ -1477,8 +1810,9 @@ class AgentSessionManager {
     const sessionLease = this.managedSessionLeases.get(leaseKey);
     if (sessionLease) {
       const meta = this.sessions.get(sessionLease.sessionId);
-      const stillRunning = Boolean(meta && meta.status === 'running' && ptyManager.has(sessionLease.sessionId));
-      if (stillRunning) {
+      // 只要 PTY 仍存活就视为占用，哪怕会话状态已转为 cancelled/completed（等待进程退出中）。
+      const ptyAlive = Boolean(meta && ptyManager.has(sessionLease.sessionId));
+      if (ptyAlive) {
         return true;
       }
       // 清理孤儿租约：会话已终止或已被 GC。
@@ -1591,7 +1925,7 @@ class AgentSessionManager {
       if (!row) {
         throw new Error(`托管会话不存在或不属于当前用户: ${session.sessionKey}`);
       }
-      if (this.isManagedSessionLeased(userId, session.sessionKey)) {
+      if (await this.isManagedSessionLeasedWithDb(userId, session.sessionKey)) {
         throw new Error(`托管会话 ${session.sessionKey} 正在被其他流水线占用，请稍后重试或更换会话`);
       }
       if (row.repoPath !== repoPath) {
@@ -1669,6 +2003,7 @@ class AgentSessionManager {
     mode: 'create' | 'resume' | 'continue';
     resumeSessionId?: string;
     preparedSessionKey?: string;
+    managedSessionKey?: string;
   } {
     const { pipeline, stepIndex, node, nodeAgentId } = input;
 
@@ -1693,6 +2028,7 @@ class AgentSessionManager {
           mode: selected.mode,
           resumeSessionId: selected.resumeSessionId,
           preparedSessionKey: selected.sessionKey,
+          ...(selected.source === 'managed' ? { managedSessionKey: selected.sessionKey } : {}),
         };
       }
     }
@@ -1843,7 +2179,9 @@ class AgentSessionManager {
       if (meta.taskId) {
         unlinkTaskSessionIndexIfMatched(this.taskSessionIndex, meta.taskId, sessionId);
       }
-      this.releaseManagedSessionLeaseBySessionId(sessionId);
+      this.releaseManagedSessionLeaseBySessionId(sessionId, {
+        fallbackToDb: Boolean(meta.managedSessionKey),
+      });
       this.sessions.delete(sessionId);
       this.sessionFinishedAt.delete(sessionId);
     }
@@ -2014,6 +2352,7 @@ class AgentSessionManager {
             autoExit: !nodeHooked,
             mode: sessionPlan.mode,
             resumeSessionId: sessionPlan.resumeSessionId,
+            sessionKey: sessionPlan.managedSessionKey,
             _pipelineTaskId: node.taskId,
             _pipelineId: pipeline.pipelineId,
           },

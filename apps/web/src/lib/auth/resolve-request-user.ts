@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import { resolveSessionUser, SESSION_COOKIE_NAME, type SessionUser } from './session';
 import { getConfiguredAuthToken, AUTH_COOKIE_NAME } from './constants';
 import { getAuthMode } from './config';
+import { isLegacyTokenAllowedInUserSystemFromEnv } from './env-policy';
 
 export type RequestUser = SessionUser & {
   /** 认证来源 */
@@ -118,8 +119,11 @@ export async function resolveRequestUser(request: NextRequest): Promise<RequestU
       }
 
       // 2b. Legacy CAM_AUTH_TOKEN
+      // 默认只在 legacy_token 模式可用。若确需 user_system 兼容，必须显式打开 CAM_ALLOW_LEGACY_TOKEN_IN_USER_SYSTEM。
       const configuredToken = getConfiguredAuthToken();
-      if (configuredToken && trimmedToken === configuredToken) {
+      const allowLegacyToken = authMode === 'legacy_token'
+        || (authMode === 'user_system' && isLegacyTokenAllowedInUserSystemFromEnv());
+      if (allowLegacyToken && configuredToken && trimmedToken === configuredToken) {
         return createLegacyVirtualUser('legacy_token');
       }
     }

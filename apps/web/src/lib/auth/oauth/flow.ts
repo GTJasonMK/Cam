@@ -4,13 +4,10 @@
 
 import crypto from 'crypto';
 import type { OAuthProviderConfig } from './providers';
+import { getOAuthStateSecretOrThrow } from './state-secret.ts';
 
-// State 签名密钥：优先使用 CAM_OAUTH_STATE_SECRET，回退到 CAM_AUTH_TOKEN
 function getStateSecret(): string {
-  const secret = process.env.CAM_OAUTH_STATE_SECRET?.trim()
-    || process.env.CAM_AUTH_TOKEN?.trim()
-    || 'cam-oauth-state-default-key';
-  return secret;
+  return getOAuthStateSecretOrThrow();
 }
 
 const STATE_TTL_MS = 10 * 60 * 1000; // state 有效期 10 分钟
@@ -43,6 +40,7 @@ export function generateOAuthState(provider: string): string {
 
 /** 验证 state 签名和有效期 */
 export function verifyOAuthState(state: string, expectedProvider: string): boolean {
+  const secret = getStateSecret();
   try {
     const parts = state.split(':');
     if (parts.length !== 4) return false;
@@ -52,7 +50,7 @@ export function verifyOAuthState(state: string, expectedProvider: string): boole
 
     // 验证 HMAC
     const payload = `${provider}:${timestamp}:${random}`;
-    const expectedHmac = crypto.createHmac('sha256', getStateSecret())
+    const expectedHmac = crypto.createHmac('sha256', secret)
       .update(payload)
       .digest('hex')
       .slice(0, 32);

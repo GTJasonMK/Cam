@@ -12,6 +12,8 @@ const SUPPORTED_AGENTS = (process.env.SUPPORTED_AGENTS || '').split(',').filter(
 const TASK_ID = process.env.TASK_ID || null; // 单任务模式：调度器注入
 const POLL_INTERVAL_MS = 5_000; // 5 秒轮询一次任务
 const HEARTBEAT_INTERVAL_MS = 10_000; // 10 秒心跳
+const REGISTER_RETRY_BASE_MS = 5_000;
+const REGISTER_RETRY_MAX_MS = 60_000;
 
 let isRunning = true;
 let currentTaskId: string | null = null;
@@ -39,6 +41,39 @@ function collectReportedEnvVars(): string[] {
   return Array.from(new Set(found)).sort();
 }
 
+function computeRegisterRetryDelayMs(attempt: number): number {
+  const safeAttempt = Math.max(1, attempt);
+  const exp = Math.min(10, safeAttempt - 1);
+  const delay = REGISTER_RETRY_BASE_MS * (2 ** exp);
+  return Math.min(REGISTER_RETRY_MAX_MS, delay);
+}
+
+async function registerWorkerWithRetry(input: {
+  id: string;
+  name: string;
+  supportedAgentIds: string[];
+  mode: 'daemon' | 'task';
+  reportedEnvVars: string[];
+}): Promise<boolean> {
+  let attempt = 0;
+  while (isRunning) {
+    attempt += 1;
+    try {
+      await registerWorker(input);
+      return true;
+    } catch (err) {
+      const delayMs = computeRegisterRetryDelayMs(attempt);
+      console.error(`[Worker] 注册失败(第 ${attempt} 次): ${(err as Error).message}`);
+      if (!isRunning) {
+        break;
+      }
+      console.log(`[Worker] ${Math.round(delayMs / 1000)} 秒后重试...`);
+      await sleep(delayMs);
+    }
+  }
+  return false;
+}
+
 async function main(): Promise<void> {
   console.log(`[Worker] 启动: ${WORKER_ID}`);
   console.log(`[Worker] 支持的 Agent: ${SUPPORTED_AGENTS.length > 0 ? SUPPORTED_AGENTS.join(', ') : '全部'}`);
@@ -52,20 +87,17 @@ async function main(): Promise<void> {
     console.log(`[Worker] 已检测到环境变量: ${reportedEnvVars.join(', ')}`);
   }
 
-  // 1. 注册 Worker
-  try {
-    await registerWorker({
-      id: WORKER_ID,
-      name: WORKER_ID,
-      supportedAgentIds: SUPPORTED_AGENTS,
-      mode,
-      reportedEnvVars,
-    });
-  } catch (err) {
-    console.error(`[Worker] 注册失败: ${(err as Error).message}`);
-    console.log('[Worker] 5 秒后重试...');
-    await sleep(5000);
-    return main(); // 重试
+  // 1. 注册 Worker（循环重试，避免递归调用）
+  const registered = await registerWorkerWithRetry({
+    id: WORKER_ID,
+    name: WORKER_ID,
+    supportedAgentIds: SUPPORTED_AGENTS,
+    mode,
+    reportedEnvVars,
+  });
+  if (!registered) {
+    console.warn('[Worker] 已停止或注册未完成，退出');
+    return;
   }
 
   // 2. 单任务模式：执行指定任务并退出（容器会 AutoRemove）

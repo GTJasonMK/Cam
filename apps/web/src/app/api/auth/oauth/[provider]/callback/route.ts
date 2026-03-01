@@ -10,6 +10,7 @@ import { users, oauthAccounts } from '@/lib/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getProviderById } from '@/lib/auth/oauth/providers';
 import { verifyOAuthState, exchangeCodeForToken, fetchOAuthUserInfo } from '@/lib/auth/oauth/flow';
+import { isOAuthStateSecretConfigured } from '@/lib/auth/oauth/state-secret';
 import { createSession, getSessionCookieMaxAgeSeconds, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { invalidateAuthModeCache } from '@/lib/auth/config';
 import { isValidRole, type Role } from '@/lib/auth/permissions';
@@ -72,6 +73,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   if (!provider) {
     return redirectToLoginWithError('OAuth 提供商未启用', publicOrigin);
+  }
+
+  if (!isOAuthStateSecretConfigured()) {
+    return redirectToLoginWithError('OAuth 未就绪：请先配置 CAM_OAUTH_STATE_SECRET', publicOrigin);
   }
 
   const { searchParams } = request.nextUrl;

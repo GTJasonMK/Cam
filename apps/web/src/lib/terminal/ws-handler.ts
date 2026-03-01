@@ -25,6 +25,34 @@ function collectStepSessionIds(step: { nodes: Array<{ sessionId?: string }> }): 
   return step.nodes.map((node) => node.sessionId).filter((id): id is string => Boolean(id));
 }
 
+function sendAgentCreated(
+  ws: WebSocket,
+  meta: {
+    sessionId: string;
+    agentDefinitionId: string;
+    agentDisplayName: string;
+    workBranch: string;
+    repoPath: string;
+    mode: 'create' | 'resume' | 'continue';
+    claudeSessionId?: string;
+    managedSessionKey?: string;
+  },
+): void {
+  send(ws, {
+    type: 'agent-created',
+    sessionId: meta.sessionId,
+    shell: 'agent',
+    agentDefinitionId: meta.agentDefinitionId,
+    agentDisplayName: meta.agentDisplayName,
+    workBranch: meta.workBranch,
+    status: 'running',
+    repoPath: meta.repoPath,
+    mode: meta.mode,
+    claudeSessionId: meta.claudeSessionId,
+    managedSessionKey: meta.managedSessionKey,
+  });
+}
+
 /**
  * Attach Agent 会话到 WebSocket（PTY 输出 + 退出处理 + 流水线推进）
  * 提取为辅助函数以便 agent-create 和 pipeline-create 复用
@@ -132,19 +160,7 @@ async function handlePipelineAdvancement(
 
     // 同时发送 agent-created 让前端感知新会话
     for (const meta of nextMetas) {
-      send(ws, {
-        type: 'agent-created',
-        sessionId: meta.sessionId,
-        shell: 'agent',
-        agentDefinitionId: meta.agentDefinitionId,
-        agentDisplayName: meta.agentDisplayName,
-        workBranch: meta.workBranch,
-        status: 'running',
-        repoPath: meta.repoPath,
-        mode: meta.mode,
-        claudeSessionId: meta.claudeSessionId,
-        managedSessionKey: meta.managedSessionKey,
-      });
+      sendAgentCreated(ws, meta);
     }
   } else {
     // 没有下一步 → 流水线完成
@@ -321,19 +337,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
 
           attachAgentSession(ws, meta, attachedSessions, user);
 
-          send(ws, {
-            type: 'agent-created',
-            sessionId: meta.sessionId,
-            shell: 'agent',
-            agentDefinitionId: meta.agentDefinitionId,
-            agentDisplayName: meta.agentDisplayName,
-            workBranch: meta.workBranch,
-            status: 'running',
-            repoPath: meta.repoPath,
-            mode: meta.mode,
-            claudeSessionId: meta.claudeSessionId,
-            managedSessionKey: meta.managedSessionKey,
-          });
+          sendAgentCreated(ws, meta);
         } catch (err) {
           send(ws, { type: 'error', message: (err as Error).message });
         }
@@ -409,18 +413,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
 
           // 同时发送 agent-created 让前端添加会话条目
           for (const meta of startedSessionMetas) {
-            send(ws, {
-              type: 'agent-created',
-              sessionId: meta.sessionId,
-              shell: 'agent',
-              agentDefinitionId: meta.agentDefinitionId,
-              agentDisplayName: meta.agentDisplayName,
-              workBranch: meta.workBranch,
-              status: 'running',
-              repoPath: meta.repoPath,
-              mode: meta.mode,
-              managedSessionKey: meta.managedSessionKey,
-            });
+            sendAgentCreated(ws, meta);
           }
         } catch (err) {
           send(ws, { type: 'error', message: (err as Error).message });
@@ -532,18 +525,7 @@ export function handleTerminalConnection(ws: WebSocket, user: WsUser): void {
             });
 
             for (const meta of sessionMetas) {
-              send(ws, {
-                type: 'agent-created',
-                sessionId: meta.sessionId,
-                shell: 'agent',
-                agentDefinitionId: meta.agentDefinitionId,
-                agentDisplayName: meta.agentDisplayName,
-                workBranch: meta.workBranch,
-                status: 'running',
-                repoPath: meta.repoPath,
-                mode: meta.mode,
-                managedSessionKey: meta.managedSessionKey,
-              });
+              sendAgentCreated(ws, meta);
             }
           }
 

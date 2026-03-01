@@ -6,61 +6,13 @@
 
 import { stat, access } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { resolve, basename, extname } from 'node:path';
+import { basename, extname } from 'node:path';
 import { Readable } from 'node:stream';
 import { NextResponse } from 'next/server.js';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
-import { normalizeHostPathInput } from '@/lib/terminal/path-normalize';
+import { getMimeTypeByExtension } from '@/lib/terminal/file-types';
+import { isPathWithinAllowedRoots, resolveTerminalPath } from '@/lib/terminal/path-access';
 import { apiBadRequest, apiError } from '@/lib/http/api-response';
-
-/** 常见 MIME 类型映射 */
-const MIME_MAP: Record<string, string> = {
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.json': 'application/json',
-  '.js': 'text/javascript',
-  '.mjs': 'text/javascript',
-  '.ts': 'text/typescript',
-  '.tsx': 'text/typescript',
-  '.jsx': 'text/javascript',
-  '.html': 'text/html',
-  '.htm': 'text/html',
-  '.css': 'text/css',
-  '.xml': 'application/xml',
-  '.yaml': 'text/yaml',
-  '.yml': 'text/yaml',
-  '.toml': 'text/plain',
-  '.csv': 'text/csv',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.pdf': 'application/pdf',
-  '.zip': 'application/zip',
-  '.gz': 'application/gzip',
-  '.tar': 'application/x-tar',
-  '.7z': 'application/x-7z-compressed',
-  '.rar': 'application/vnd.rar',
-  '.sh': 'text/x-shellscript',
-  '.py': 'text/x-python',
-  '.rs': 'text/x-rust',
-  '.go': 'text/x-go',
-  '.java': 'text/x-java',
-  '.c': 'text/x-c',
-  '.cpp': 'text/x-c++',
-  '.h': 'text/x-c',
-  '.log': 'text/plain',
-  '.env': 'text/plain',
-  '.sql': 'application/sql',
-  '.wasm': 'application/wasm',
-};
-
-function getMimeType(ext: string): string {
-  return MIME_MAP[ext.toLowerCase()] || 'application/octet-stream';
-}
 
 async function handleGet(request: AuthenticatedRequest) {
   const { searchParams } = new URL(request.url);
@@ -70,7 +22,10 @@ async function handleGet(request: AuthenticatedRequest) {
     return apiBadRequest('缺少 path 查询参数');
   }
 
-  const filePath = resolve(normalizeHostPathInput(rawPath));
+  const filePath = resolveTerminalPath(rawPath);
+  if (!isPathWithinAllowedRoots(filePath)) {
+    return apiError('PATH_NOT_ALLOWED', '文件路径不在允许访问范围内', { status: 403 });
+  }
 
   // 验证文件存在
   try {
@@ -93,7 +48,7 @@ async function handleGet(request: AuthenticatedRequest) {
 
   const fileName = basename(filePath);
   const ext = extname(filePath);
-  const mimeType = getMimeType(ext);
+  const mimeType = getMimeTypeByExtension(ext);
 
   // 创建可读流并转换为 Web ReadableStream
   const nodeStream = createReadStream(filePath);

@@ -177,6 +177,7 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
   const [managedSessionsLoading, setManagedSessionsLoading] = useState(false);
 
   const discoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const managedDiscoverRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 发现请求序号，防止竞态：仅最新请求的响应生效 */
   const discoverSeqRef = useRef(0);
 
@@ -282,6 +283,11 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
 
   // 目录 + Agent 变化时加载托管会话池（单会话按 sessionKey 恢复）
   useEffect(() => {
+    if (managedDiscoverRef.current) {
+      clearTimeout(managedDiscoverRef.current);
+      managedDiscoverRef.current = null;
+    }
+
     if (!open || !workDir.trim() || !isCLIAgent(selectedAgent)) {
       setManagedSessions([]);
       setManagedSessionsLoading(false);
@@ -290,7 +296,6 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
 
     let cancelled = false;
     const loadManagedSessions = async () => {
-      setManagedSessionsLoading(true);
       try {
         const query = new URLSearchParams({
           workDir: workDir.trim(),
@@ -320,9 +325,17 @@ export function AgentCreateDialog({ open, onOpenChange, send, prefill }: Props) 
       }
     };
 
-    void loadManagedSessions();
+    setManagedSessionsLoading(true);
+    managedDiscoverRef.current = setTimeout(() => {
+      void loadManagedSessions();
+    }, 350);
+
     return () => {
       cancelled = true;
+      if (managedDiscoverRef.current) {
+        clearTimeout(managedDiscoverRef.current);
+        managedDiscoverRef.current = null;
+      }
     };
   }, [open, workDir, selectedAgent]);
 

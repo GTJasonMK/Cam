@@ -5,14 +5,16 @@
 // ============================================================
 
 import { readdir, access, stat } from 'node:fs/promises';
-import { join, dirname, resolve, extname } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth/with-auth';
 import { discoverClaudeSessions } from '@/lib/terminal/claude-session-discovery';
 import { discoverCodexSessions } from '@/lib/terminal/codex-session-discovery';
-import { normalizeHostPathInput } from '@/lib/terminal/path-normalize';
+import {
+  getTerminalAllowedRoots,
+  isPathWithinAllowedRoots,
+  resolveTerminalPath,
+} from '@/lib/terminal/path-access';
 import { apiError, apiSuccess } from '@/lib/http/api-response';
-
-const IS_WINDOWS = process.platform === 'win32';
 
 /** Agent 会话摘要（统一类型，Claude / Codex 共用） */
 export interface AgentSessionSummary {
@@ -85,66 +87,39 @@ async function detectDirFeatures(fullPath: string): Promise<{ isGitRepo: boolean
   };
 }
 
-/** 获取 Windows 盘符列表（并行检测） */
-async function getWindowsDrives(): Promise<DirectoryEntry[]> {
-  const checks = Array.from({ length: 26 }, (_, i) => {
-    const letter = String.fromCharCode(65 + i);
-    const drivePath = `${letter}:\\`;
-    return exists(drivePath).then((ok) =>
-      ok ? { name: `${letter}:`, path: drivePath, isDirectory: true, isGitRepo: false, hasClaude: false, hasCodex: false } : null,
-    );
-  });
-  const results = await Promise.all(checks);
-  return results.filter((d): d is DirectoryEntry => d !== null);
+function getRootLabel(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  return basename(trimmed) || trimmed || path;
 }
 
-/** 获取默认根目录列表 */
-async function getRootEntries(): Promise<DirectoryEntry[]> {
-  if (IS_WINDOWS) {
-    return getWindowsDrives();
-  }
-  return scanDirectory('/');
+async function buildDirectoryEntry(fullPath: string, name?: string): Promise<DirectoryEntry> {
+  const features = await detectDirFeatures(fullPath);
+  return {
+    name: name || getRootLabel(fullPath),
+    path: fullPath,
+    isDirectory: true,
+    ...features,
+  };
 }
 
-/**
- * 扫描指定目录的子条目
- * 使用 withFileTypes 避免额外 stat 调用，并行检测 Git/Claude/Codex 特征
- */
-async function scanDirectory(dirPath: string): Promise<DirectoryEntry[]> {
-  let dirents: import('node:fs').Dirent[];
-  try {
-    dirents = await readdir(dirPath, { withFileTypes: true, encoding: 'utf-8' });
-  } catch {
-    return [];
-  }
-
-  // 过滤：只保留目录，排除隐藏目录（.claude 除外）
-  const dirs = dirents.filter(
-    (d) => d.isDirectory() && (!d.name.startsWith('.') || d.name === '.claude'),
-  );
-
-  // 并行检测所有目录的特征
-  const entries = await Promise.all(
-    dirs.map(async (d) => {
-      const fullPath = join(dirPath, d.name);
-      const features = await detectDirFeatures(fullPath);
-      return {
-        name: d.name,
-        path: fullPath,
-        isDirectory: true,
-        ...features,
-      };
+/** 返回允许访问的根目录列表，避免暴露系统盘符/系统根目录 */
+async function getAllowedRootEntries(): Promise<DirectoryEntry[]> {
+  const allowedRoots = getTerminalAllowedRoots();
+  const roots = await Promise.all(
+    allowedRoots.map(async (rootPath) => {
+      const resolvedRoot = resolveTerminalPath(rootPath);
+      try {
+        const rootStat = await stat(resolvedRoot);
+        if (!rootStat.isDirectory()) return null;
+      } catch {
+        return null;
+      }
+      return buildDirectoryEntry(resolvedRoot);
     }),
   );
 
-  // 按名称排序，Git 仓库和项目优先
-  entries.sort((a, b) => {
-    if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
-    if (a.hasClaude !== b.hasClaude) return a.hasClaude ? -1 : 1;
-    if (a.hasCodex !== b.hasCodex) return a.hasCodex ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-
+  const entries = roots.filter((item): item is DirectoryEntry => item !== null);
+  entries.sort((a, b) => a.name.localeCompare(b.name));
   return entries;
 }
 
@@ -225,9 +200,9 @@ async function handleGet(request: AuthenticatedRequest) {
 
   // 未指定路径：返回常用根目录
   if (!rawPath) {
-    const entries = await getRootEntries();
+    const entries = await getAllowedRootEntries();
     const response: BrowseResponse = {
-      currentPath: IS_WINDOWS ? '' : '/',
+      currentPath: '',
       parentPath: null,
       isGitRepo: false,
       hasClaude: false,
@@ -235,12 +210,16 @@ async function handleGet(request: AuthenticatedRequest) {
       entries,
       agentSessions: [],
       claudeSessions: [],
+      ...(includeFiles ? { files: [], fileCount: 0 } : {}),
     };
     return apiSuccess(response);
   }
 
   // 规范化路径
-  const targetPath = resolve(normalizeHostPathInput(rawPath));
+  const targetPath = resolveTerminalPath(rawPath);
+  if (!isPathWithinAllowedRoots(targetPath)) {
+    return apiError('PATH_NOT_ALLOWED', '路径不在允许访问范围内', { status: 403 });
+  }
 
   // 验证路径存在且为目录
   let dirents: import('node:fs').Dirent[];
@@ -263,8 +242,7 @@ async function handleGet(request: AuthenticatedRequest) {
     Promise.all(
       dirs.map(async (d) => {
         const fullPath = join(targetPath, d.name);
-        const features = await detectDirFeatures(fullPath);
-        return { name: d.name, path: fullPath, isDirectory: true, ...features };
+        return buildDirectoryEntry(fullPath, d.name);
       }),
     ),
     detectDirFeatures(targetPath),
@@ -282,7 +260,7 @@ async function handleGet(request: AuthenticatedRequest) {
 
   // 计算父目录
   const parentPath = dirname(targetPath);
-  const hasParent = parentPath !== targetPath;
+  const hasParent = parentPath !== targetPath && isPathWithinAllowedRoots(parentPath);
 
   const response: BrowseResponse = {
     currentPath: targetPath,

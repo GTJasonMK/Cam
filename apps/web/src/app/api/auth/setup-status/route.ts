@@ -8,6 +8,7 @@ import { users } from '@/lib/db/schema';
 import { sql } from 'drizzle-orm';
 import { getConfiguredAuthToken } from '@/lib/auth/constants';
 import { getEnabledProviders } from '@/lib/auth/oauth/providers';
+import { isOAuthStateSecretConfigured } from '@/lib/auth/oauth/state-secret';
 import { getAuthMode } from '@/lib/auth/config';
 import { apiInternalError, apiSuccess } from '@/lib/http/api-response';
 
@@ -21,10 +22,12 @@ export async function GET() {
     const hasUsers = (result?.count ?? 0) > 0;
     const hasLegacyToken = Boolean(getConfiguredAuthToken());
     const authMode = await getAuthMode();
-    const oauthProviders = getEnabledProviders().map((p) => ({
-      id: p.id,
-      displayName: p.displayName,
-    }));
+    const oauthProviders = isOAuthStateSecretConfigured()
+      ? getEnabledProviders().map((p) => ({
+        id: p.id,
+        displayName: p.displayName,
+      }))
+      : [];
 
     return apiSuccess({
       hasUsers,

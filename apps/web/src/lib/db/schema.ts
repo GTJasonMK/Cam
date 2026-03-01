@@ -246,6 +246,29 @@ export const terminalSessionPool = sqliteTable(
   ]
 );
 
+// ----- 终端托管会话池租约（用于多实例下 session_key 占用一致性） -----
+export const terminalSessionPoolLeases = sqliteTable(
+  'terminal_session_pool_leases',
+  {
+    id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+    userId: text('user_id').notNull(),
+    sessionKey: text('session_key').notNull(),
+    /** 单次租约令牌（用于精确释放） */
+    leaseToken: text('lease_token').notNull(),
+    /** 绑定的运行时会话 ID（create 完成后写入） */
+    sessionId: text('session_id'),
+    createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex('uniq_terminal_session_pool_leases_user_key').on(table.userId, table.sessionKey),
+    uniqueIndex('uniq_terminal_session_pool_leases_token').on(table.leaseToken),
+    index('idx_terminal_session_pool_leases_user').on(table.userId),
+    index('idx_terminal_session_pool_leases_session').on(table.sessionId),
+    index('idx_terminal_session_pool_leases_updated').on(table.updatedAt),
+  ]
+);
+
 // ----- 用户表 -----
 export const users = sqliteTable(
   'users',

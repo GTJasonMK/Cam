@@ -99,6 +99,13 @@
       "when": 1771895600000,
       "tag": "0014_terminal_session_pool",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1772582400000,
+      "tag": "0015_terminal_session_pool_leases",
+      "breakpoints": true
     }
   ]
 }

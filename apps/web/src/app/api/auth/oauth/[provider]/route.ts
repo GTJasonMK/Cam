@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProviderById } from '@/lib/auth/oauth/providers';
 import { generateOAuthState, buildAuthorizeUrl } from '@/lib/auth/oauth/flow';
+import { isOAuthStateSecretConfigured } from '@/lib/auth/oauth/state-secret';
 import { resolvePublicOrigin } from '@/lib/auth/public-origin';
 import { buildAuthCookieOptions } from '@/lib/auth/cookie-options';
 import { apiError } from '@/lib/http/api-response';
@@ -19,6 +20,14 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   if (!provider) {
     return apiError('PROVIDER_NOT_FOUND', `OAuth 提供商 ${providerId} 未启用`, { status: 404 });
+  }
+
+  if (!isOAuthStateSecretConfigured()) {
+    return apiError(
+      'OAUTH_NOT_READY',
+      'OAuth 未就绪：请配置 CAM_OAUTH_STATE_SECRET',
+      { status: 503 },
+    );
   }
 
   // 构建回调 URL
